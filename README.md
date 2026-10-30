@@ -6,10 +6,9 @@ asks for approvals through a `Frontend` protocol, so UIs are swappable.
     uv sync
     uv run jimbo "summarize this repo"          # one-shot
     uv run jimbo                                # interactive (plain UI)
-    uv run jimbo --model ollama:<tag> --yolo
+    uv run jimbo --model <provider>:<model> --yolo
 
-Config via `JIMBO_*` env vars (see `config.py`). Ollama's `/v1` endpoint may ignore `num_ctx`;
-bake it into the model's Modelfile.
+Config via `JIMBO_*` env vars (see `config.py`). See [Providers](#providers) for model setup.
 
 Status: milestone 1 (provider, session/events, approval policy chain, plain frontend,
 `read_file`/`list_dir`). Not yet: write/edit/shell tools, sandbox, JSONL logger/protocol docs.
@@ -20,8 +19,7 @@ Status: milestone 1 (provider, session/events, approval policy chain, plain fron
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) for dependency management
-- A model endpoint: [Ollama](https://ollama.com) running locally (default, `http://localhost:11434/v1`)
-  or any OpenAI-compatible server
+- A model endpoint from one of the [providers](#providers) below
 
 ### Install
 
@@ -33,15 +31,8 @@ uv sync                  # creates .venv and installs runtime + dev dependencies
 ### Configure
 
 Settings live in `src/jimbo/config.py` and are read from `JIMBO_*` environment variables
-(e.g. `JIMBO_MODEL`, `JIMBO_OLLAMA_BASE_URL`, `JIMBO_API_KEY`) or overridden with CLI flags.
-Local `.env` files are git-ignored; do not commit secrets.
-
-For the default local setup, pull a model and point jimbo at it:
-
-```bash
-ollama pull <tag>
-uv run jimbo --model ollama:<tag> "summarize this repo"
-```
+(e.g. `JIMBO_MODEL`, `JIMBO_API_KEY`) or overridden with CLI flags. Local `.env` files are
+git-ignored; do not commit secrets.
 
 ### Secrets on macOS (Keychain)
 
@@ -58,14 +49,57 @@ Read it back into the environment when launching, e.g.:
 JIMBO_API_KEY="$(security find-generic-password -a "$USER" -s OPENROUTER_API_KEY -w)" uv run jimbo
 ```
 
-Then select the OpenRouter provider with a `openrouter:` model prefix:
+## Providers
+
+The model is selected as `<provider>:<model name>`, via `--model` or `JIMBO_MODEL`. All providers
+speak the OpenAI-compatible chat API and share `JIMBO_API_KEY`, `JIMBO_TEMPERATURE` and
+`JIMBO_REQUEST_TIMEOUT`. Providers are registered in `src/jimbo/providers/registry.py`.
+
+| Provider     | Base URL setting             | Default base URL               | API key  | `num_ctx` |
+|--------------|------------------------------|--------------------------------|----------|-----------|
+| `ollama`     | `JIMBO_OLLAMA_BASE_URL`      | `http://localhost:11434/v1`    | not used | sent      |
+| `openai`     | `JIMBO_OPENAI_BASE_URL`      | none, must be set              | required | sent      |
+| `openrouter` | `JIMBO_OPENROUTER_BASE_URL`  | `https://openrouter.ai/api/v1` | required | not sent  |
+
+### ollama
+
+Local models via [Ollama](https://ollama.com). This is the default provider.
 
 ```bash
-uv run jimbo --model openrouter:anthropic/claude-sonnet-4.5 "summarize this repo"
+ollama pull <tag>
+uv run jimbo --model ollama:<tag> "summarize this repo"
 ```
 
-The `ollama`, `openai` and `openrouter` providers are registered. OpenRouter defaults to
-`https://openrouter.ai/api/v1` (override with `JIMBO_OPENROUTER_BASE_URL`) and does not receive `num_ctx`.
+Context size is requested with `JIMBO_NUM_CTX` (default 90000), but Ollama's `/v1` endpoint may
+ignore it; bake it into the model's Modelfile instead.
+
+### openai
+
+OpenAI itself, or any other OpenAI-compatible server (LM Studio, vLLM, ...). The base URL has no
+default, so set it:
+
+```bash
+JIMBO_OPENAI_BASE_URL=https://api.openai.com/v1 JIMBO_API_KEY=sk-... \
+  uv run jimbo --model openai:<model> "summarize this repo"
+```
+
+`JIMBO_NUM_CTX` is sent as an extra body field, which hosted APIs may reject; set it empty if so.
+
+### openrouter
+
+[OpenRouter](https://openrouter.ai) hosted models. Model names include the upstream vendor:
+
+```bash
+export JIMBO_API_KEY="$(security find-generic-password -a "$USER" -s OPENROUTER_API_KEY -w)"
+uv run jimbo --model openrouter:z-ai/glm-5.3-flash "summarize this repo"
+```
+
+### Adding a provider
+
+Add an entry to `PROVIDERS` in `src/jimbo/providers/registry.py`. For an OpenAI-compatible
+endpoint, add a base URL setting to `config.py` and register
+`OpenAICompatProvider("<setting>", default_base_url=..., send_num_ctx=...)`. Other APIs need a
+class implementing `ProviderSpec` (`providers/base.py`).
 
 ### Test
 
