@@ -1,14 +1,17 @@
 import argparse
 import asyncio
+import os
 from pathlib import Path
 
 from .config import Settings
+from .core.jsonl import JsonlSink
 from .core.runner import run_frontend
 from .frontends.registry import build_frontend
 from .wiring import build_session
 
 
 def main() -> None:
+    os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")  # banner garbles streaming output
     ap = argparse.ArgumentParser(prog="jimbo", description="A simple coding agent")
     ap.add_argument("prompt", nargs="?", help="one-shot task; omit for an interactive session")
     ap.add_argument("--model", help="<provider>:<name>, e.g. ollama:coder-qwen3.8-27b:latest")
@@ -22,18 +25,32 @@ def main() -> None:
     if args.yolo:
         settings.approval = ["yolo"]
     frontend = build_frontend(settings.ui)
-    session = build_session(settings, frontend)
+    sink = JsonlSink(settings.log_dir) if settings.log_sessions else None
+    session = build_session(settings, frontend, [sink] if sink else None)
 
     async def go() -> None:
-        if args.prompt:
-            await session.send(args.prompt)
-        else:
-            await run_frontend(session, frontend)
+        start = getattr(frontend, "start", None)
+        if start:
+            await start()
+        try:
+            if args.prompt and hasattr(frontend, "submit"):
+                frontend.submit(args.prompt)  # server frontends stay up after the first prompt
+                await run_frontend(session, frontend)
+            elif args.prompt:
+                await session.send(args.prompt)
+            else:
+                await run_frontend(session, frontend)
+        finally:
+            if stop := getattr(frontend, "stop", None):
+                await stop()
 
     try:
         asyncio.run(go())
     except KeyboardInterrupt:
         pass
+    finally:
+        if sink:
+            sink.close()
 
 
 if __name__ == "__main__":

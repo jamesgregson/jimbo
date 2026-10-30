@@ -20,9 +20,14 @@ class Settings(BaseSettings):
 
     workspace: Path = Path.cwd()
     ui: str = "plain"
+    web_host: str = "127.0.0.1"
+    web_port: int = 8765
+    web_open_browser: bool = True
     # Policy chain, evaluated in order; first non-"ask" verdict wins.
     approval: list[str] = ["readonly", "remembered", "ask"]
     request_limit: int = 50
+    log_sessions: bool = True
+    log_dir: Path = Path.home() / ".jimbo" / "sessions"
     tool_retries: int = 3
 
     def split_model(self) -> tuple[str, str]:

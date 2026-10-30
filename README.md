@@ -9,12 +9,21 @@ asks for approvals through a `Frontend` protocol, so UIs are swappable.
     uv run jimbo --model <provider>:<model> --yolo
     uv run jimbo --ui tui                       # rich inline UI (streaming markdown)
 
+    uv run jimbo --ui web                       # browser UI on http://127.0.0.1:8765
+
+The `web` UI serves a local page (URL with a one-time token is printed and opened; set
+`JIMBO_WEB_HOST`, `JIMBO_WEB_PORT`, `JIMBO_WEB_OPEN_BROWSER=false` to change). Approvals appear as a
+dialog with the diff. Keep the host on localhost: the page can approve file writes.
+
 The `tui` UI: Enter submits, Alt+Enter inserts a newline, Ctrl+D (or Ctrl+C twice) quits.
+
+Each session is logged as JSONL events to `~/.jimbo/sessions/<session_id>.jsonl`
+(`JIMBO_LOG_DIR` to move it, `JIMBO_LOG_SESSIONS=false` to disable).
 
 Config via `JIMBO_*` env vars (see `config.py`). See [Providers](#providers) for model setup.
 
-Status: milestone 1 (provider, session/events, approval policy chain, plain frontend,
-`read_file`/`list_dir`). Not yet: write/edit/shell tools, sandbox, JSONL logger/protocol docs.
+Status: milestone 1 (provider, session/events, approval policy chain, plain + tui + web frontends,
+`read_file`/`list_dir`/`write_file`/`edit_file`). Not yet: shell tool, sandbox, protocol docs.
 
 ## Setup
 

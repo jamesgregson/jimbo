@@ -1,5 +1,6 @@
 """Approval gate. Policy (what needs a human) is separate from UI (how a human is asked)."""
 
+import asyncio
 from pathlib import Path
 from typing import Awaitable, Callable, Literal, Protocol
 
@@ -83,15 +84,19 @@ class AskUser:
         self._ask = ask
         self._remembered = remembered
         self._n = 0
+        self._lock = asyncio.Lock()  # parallel tool calls must not prompt the user concurrently
 
     async def evaluate(self, call: ToolCallInfo) -> Verdict:
-        self._n += 1
-        d = await self._ask(
-            ApprovalRequest(id=str(self._n), tool=call.tool, summary=call.summary, detail=call.detail)
-        )
-        if d.allow and d.remember == "session" and self._remembered is not None:
-            self._remembered.allowed_tools.add(call.tool)
-        return Verdict(action="allow" if d.allow else "deny", reason=d.note, decided_by="user")
+        async with self._lock:
+            if self._remembered is not None and call.tool in self._remembered.allowed_tools:
+                return Verdict(action="allow", decided_by="remembered", reason="remembered for session")
+            self._n += 1
+            d = await self._ask(
+                ApprovalRequest(id=str(self._n), tool=call.tool, summary=call.summary, detail=call.detail)
+            )
+            if d.allow and d.remember == "session" and self._remembered is not None:
+                self._remembered.allowed_tools.add(call.tool)
+            return Verdict(action="allow" if d.allow else "deny", reason=d.note, decided_by="user")
 
 
 class ApprovalGate:

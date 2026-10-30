@@ -6,6 +6,8 @@ from pydantic_ai.messages import (
     FunctionToolResultEvent,
     ModelMessage,
     PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
     TextPartDelta,
 )
 
@@ -42,7 +44,10 @@ class AgentSession:
                     if Agent.is_model_request_node(node):
                         async with node.stream(run.ctx) as stream:
                             async for ev in stream:
-                                if isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta):
+                                if isinstance(ev, PartStartEvent) and isinstance(ev.part, TextPart):
+                                    if ev.part.content:  # first chunk arrives here, not as a delta
+                                        await self.emit("assistant_text_delta", text=ev.part.content)
+                                elif isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta):
                                     await self.emit("assistant_text_delta", text=ev.delta.content_delta)
                     elif Agent.is_call_tools_node(node):
                         async with node.stream(run.ctx) as stream:

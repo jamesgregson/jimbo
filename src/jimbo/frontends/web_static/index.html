@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jimbo</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #fff; --fg: #1d1d1b; --dim: #6b6b66; --line: #e2e2dd;
+    --user: #e8f0fe; --tool: #f1f5f9; --ok: #1a7f37; --err: #c62828; --warn: #9a6700;
+    --add: #e6ffec; --del: #ffebe9; --accent: #3b6fd4; --code: #efefea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --panel: #1f1f1c; --fg: #e8e8e3; --dim: #8f8f88; --line: #33332f;
+      --user: #1c2a44; --tool: #262623; --ok: #56d364; --err: #ff7b72; --warn: #d29922;
+      --add: #12301b; --del: #3d1a1a; --accent: #7aa2f7; --code: #2a2a26;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+           display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 15px; margin: 0; }
+  #status { font-size: 12px; color: var(--dim); margin-left: auto; }
+  #status.busy { color: var(--accent); }
+  #status.off { color: var(--err); }
+  #log { flex: 1; overflow-y: auto; padding: 16px; }
+  #log > * { max-width: 860px; margin-left: auto; margin-right: auto; }
+  .msg { margin: 10px auto; padding: 8px 12px; border-radius: 10px; word-break: break-word; }
+  .user { background: var(--user); white-space: pre-wrap; }
+  .assistant { background: var(--panel); border: 1px solid var(--line); }
+  .assistant p { margin: 0 0 8px; white-space: pre-wrap; } .assistant p:last-child { margin: 0; }
+  code { background: var(--code); padding: 0 4px; border-radius: 4px; font: 12.5px ui-monospace, Menlo, monospace; }
+  pre { margin: 6px 0; padding: 8px 10px; background: var(--code); border-radius: 6px; overflow: auto;
+        font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; max-height: 420px; }
+  pre code { background: none; padding: 0; }
+  .card { margin: 8px auto; border: 1px solid var(--line); background: var(--tool); border-radius: 8px; overflow: hidden; }
+  .card > summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 8px; align-items: baseline;
+                    font: 12px ui-monospace, Menlo, monospace; list-style: none; }
+  .card > summary::-webkit-details-marker { display: none; }
+  .card .name { font-weight: 700; }
+  .card .sum { color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid currentColor; }
+  .card .sect { padding: 6px 10px; border-top: 1px solid var(--line); }
+  .card pre { background: transparent; padding: 0; margin: 0; }
+  .ok { color: var(--ok); } .err { color: var(--err); } .dim { color: var(--dim); } .warn { color: var(--warn); }
+  .note { font-size: 12px; color: var(--dim); margin: 6px auto; }
+  .errbox { border: 1px solid var(--err); color: var(--err); border-radius: 8px; padding: 8px 12px; margin: 10px auto; }
+  .a { background: var(--add); display: block; } .d { background: var(--del); display: block; }
+  form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+  textarea { flex: 1; resize: none; max-height: 200px; background: var(--bg); color: var(--fg);
+             border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 0 18px; font: inherit; cursor: pointer; }
+  button.sec { background: var(--bg); color: var(--fg); border: 1px solid var(--line); padding: 6px 14px; }
+  button.deny { background: var(--err); }
+  button:disabled { opacity: .5; cursor: default; }
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; place-items: center; padding: 16px; }
+  #modal.show { display: grid; }
+  #dlg { background: var(--panel); border-radius: 12px; padding: 16px; width: min(760px, 100%);
+         max-height: 90vh; overflow: auto; border: 1px solid var(--warn); }
+  #dlg h2 { font-size: 15px; margin: 0 0 4px; } #dlg .sum { margin-bottom: 8px; font-weight: 600; }
+  #dlg .btns { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<header><h1>Jimbo</h1><span id="status" class="off">connecting…</span></header>
+<div id="log"></div>
+<form id="form">
+  <textarea id="input" rows="1" placeholder="Message jimbo — Enter to send, Shift+Enter for newline" autofocus></textarea>
+  <button id="send">Send</button>
+</form>
+<div id="modal"><div id="dlg"></div></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const log = $("#log"), input = $("#input"), sendBtn = $("#send"), statusEl = $("#status");
+const token = new URLSearchParams(location.search).get("token") || "";
+let ws, running = false, seg = null, segText = "", cards = new Map(), pendingId = null;
+
+function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+function setRunning(v) {
+  running = v; sendBtn.disabled = v || !ws || ws.readyState !== 1;
+  if (ws && ws.readyState === 1) setStatus(v ? "working…" : "idle", v ? "busy" : "");
+}
+function scroll() { const near = log.scrollHeight - log.scrollTop - log.clientHeight < 120; if (near) log.scrollTop = log.scrollHeight; }
+function add(node) { log.append(node); scroll(); return node; }
+
+// Minimal markdown: fenced code blocks, inline code, paragraphs. Everything goes through textContent.
+function renderMd(target, text) {
+  target.replaceChildren();
+  text.split(/(```[\s\S]*?(?:```|$))/).forEach((part) => {
+    if (part.startsWith("```")) {
+      const body = part.replace(/^```[^\n]*\n?/, "").replace(/```$/, "");
+      const pre = el("pre"); pre.append(el("code", null, body)); target.append(pre);
+    } else if (part.trim()) {
+      part.split(/\n{2,}/).forEach((para) => {
+        const p = el("p");
+        para.split(/(`[^`\n]+`)/).forEach((t) => p.append(t.startsWith("`") && t.endsWith("`") && t.length > 1 ? el("code", null, t.slice(1, -1)) : t));
+        target.append(p);
+      });
+    }
+  });
+}
+
+function diff(text) {
+  const pre = el("pre");
+  for (const line of text.split("\n")) {
+    const cls = line.startsWith("+") && !line.startsWith("+++") ? "a" : line.startsWith("-") && !line.startsWith("---") ? "d" : "";
+    pre.append(el("span", cls, line + "\n"));
+  }
+  return pre;
+}
+const clip = (s, n) => { s = String(s).replace(/\s+/g, " "); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+const sect = (node) => { const d = el("div", "sect"); d.append(node); return d; };
+
+function onEvent(ev) {
+  const d = ev.data;
+  switch (ev.kind) {
+    case "user_message": seg = null; add(el("div", "msg user", d.text)); setRunning(true); break;
+    case "assistant_text_delta":
+      if (!seg) { seg = add(el("div", "msg assistant")); segText = ""; }
+      segText += d.text; renderMd(seg, segText); scroll(); break;
+    case "assistant_text":
+      if (!seg) { const m = add(el("div", "msg assistant")); renderMd(m, d.text); }
+      seg = null; break;
+    case "tool_call": {
+      seg = null;
+      const det = el("details", "card"), sm = el("summary"), badge = el("span", "badge dim", "running");
+      sm.append(el("span", "name", d.tool), el("span", "sum", clip(JSON.stringify(d.args), 140)), badge);
+      det.append(sm, sect(el("pre", null, JSON.stringify(d.args, null, 2))));
+      det._badge = badge; cards.set(d.id, det); add(det); break;
+    }
+    case "tool_result": {
+      const det = cards.get(d.id); if (!det) break;
+      det._badge.className = "badge " + (d.ok ? "ok" : "err"); det._badge.textContent = d.ok ? "ok" : "error";
+      det.append(sect(el("pre", d.ok ? null : "err", d.content))); if (!d.ok) det.open = true; break;
+    }
+    case "approval_resolved":
+      if (d.decided_by !== "user") add(el("div", "note", `approval ${d.tool}: ${d.action} (${d.decided_by})`)); break;
+    case "usage": add(el("div", "note", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`)); break;
+    case "error": seg = null; add(el("div", "errbox", `${d.type}: ${d.message}`)); break;
+    case "run_finished": seg = null; setRunning(false); input.focus(); break;
+  }
+}
+
+function showApproval(req) {
+  pendingId = req.id;
+  const dlg = $("#dlg"); dlg.replaceChildren(el("h2", null, `Approve ${req.tool}`), el("div", "sum", req.summary));
+  if (req.detail) dlg.append(diff(req.detail));
+  const btns = el("div", "btns");
+  for (const [label, decision, cls] of [["Deny", "no", "deny"], ["Allow once", "yes", "sec"], ["Always this session", "always", ""]]) {
+    const b = el("button", cls, label); b.type = "button";
+    b.onclick = () => ws.send(JSON.stringify({ type: "approve", id: req.id, decision })); btns.append(b);
+  }
+  dlg.append(btns); $("#modal").classList.add("show"); btns.lastChild.focus();
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  ws.onopen = () => { log.replaceChildren(); cards.clear(); seg = null; setRunning(false); };  // history is replayed
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.type === "event") onEvent(msg.event);
+    else if (msg.type === "approval") showApproval(msg.request);
+    else if (msg.type === "approval_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
+  };
+  ws.onclose = () => { setStatus("disconnected — retrying…", "off"); sendBtn.disabled = true; setTimeout(connect, 1500); };
+}
+
+function submit() {
+  const text = input.value.trim();
+  if (!text || running || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: "send", text })); input.value = ""; input.style.height = "auto";
+}
+$("#form").onsubmit = (e) => { e.preventDefault(); submit(); };
+input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } };
+input.oninput = () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; };
+connect();
+</script>
+</body>
+</html>

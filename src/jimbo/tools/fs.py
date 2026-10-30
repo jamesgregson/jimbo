@@ -1,3 +1,5 @@
+import difflib
+
 from pydantic_ai import ModelRetry, RunContext
 
 from ..core.deps import Deps, ToolDenied
@@ -47,4 +49,51 @@ async def list_dir(ctx: RunContext[Deps], path: str = ".") -> str:
     return "\n".join(names) or "[empty]"
 
 
-ALL_TOOLS = [read_file, list_dir]
+def _diff(path: str, old: str, new: str) -> str:
+    d = difflib.unified_diff(old.splitlines(), new.splitlines(), f"a/{path}", f"b/{path}", lineterm="")
+    return "\n".join(list(d)[:200])
+
+
+async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
+    """Create or overwrite a text file in the workspace (parent directories are created)."""
+    try:
+        p = resolve_in_workspace(ctx.deps.workspace, path)
+        old = p.read_text("utf-8") if p.is_file() else ""
+        verb = "overwrite" if p.is_file() else "create"
+        await ctx.deps.authorize("write_file", {"path": path}, f"{verb} {path}",
+                                 detail=_diff(path, old, content))
+    except (PathEscape, ToolDenied) as e:
+        raise ModelRetry(str(e)) from e
+    except UnicodeDecodeError:
+        raise ModelRetry(f"{path!r} is not valid UTF-8 text") from None
+    if p.is_dir():
+        raise ModelRetry(f"{path!r} is a directory")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, "utf-8")
+    return f"wrote {len(content)} chars to {path}"
+
+
+async def edit_file(ctx: RunContext[Deps], path: str, old: str, new: str, replace_all: bool = False) -> str:
+    """Replace text in an existing file. `old` must match exactly once unless replace_all is true."""
+    try:
+        p = resolve_in_workspace(ctx.deps.workspace, path)
+        if not p.is_file():
+            raise ModelRetry(f"{path!r} is not a file")
+        text = p.read_text("utf-8")
+        n = text.count(old) if old else 0
+        if n == 0:
+            raise ModelRetry("`old` not found in file (it must match exactly, including whitespace)")
+        if n > 1 and not replace_all:
+            raise ModelRetry(f"`old` matches {n} times; add context to make it unique or set replace_all")
+        updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        await ctx.deps.authorize("edit_file", {"path": path}, f"edit {path}",
+                                 detail=_diff(path, text, updated))
+    except (PathEscape, ToolDenied) as e:
+        raise ModelRetry(str(e)) from e
+    except UnicodeDecodeError:
+        raise ModelRetry(f"{path!r} is not valid UTF-8 text") from None
+    p.write_text(updated, "utf-8")
+    return f"edited {path} ({n if replace_all else 1} replacement(s))"
+
+
+ALL_TOOLS = [read_file, list_dir, write_file, edit_file]

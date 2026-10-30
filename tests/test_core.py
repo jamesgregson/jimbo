@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
@@ -77,3 +79,72 @@ async def test_remember_for_session(tmp_path):
     await s.deps.authorize("write_file", {}, "w1")
     await s.deps.authorize("write_file", {}, "w2")
     assert fe.asked == 1
+
+
+async def test_write_and_edit_tools(tmp_path):
+    from types import SimpleNamespace
+    from pydantic_ai import ModelRetry
+    from jimbo.tools.fs import edit_file, write_file
+
+    fe = ScriptedFrontend()
+    s = build_session(Settings(workspace=tmp_path), fe, model=TestModel())
+    ctx = SimpleNamespace(deps=s.deps)
+    await write_file(ctx, "sub/r.txt", "a\nb\n")
+    assert (tmp_path / "sub/r.txt").read_text() == "a\nb\n"
+    await edit_file(ctx, "sub/r.txt", "b", "c")
+    assert (tmp_path / "sub/r.txt").read_text() == "a\nc\n"
+    with pytest.raises(ModelRetry):
+        await edit_file(ctx, "sub/r.txt", "zzz", "x")
+    with pytest.raises(ModelRetry):
+        await write_file(ctx, "../x.txt", "no")
+    fe.allow = False
+    s2 = build_session(Settings(workspace=tmp_path), fe, model=TestModel())
+    with pytest.raises(ModelRetry):
+        await write_file(SimpleNamespace(deps=s2.deps), "n.txt", "x")
+    assert not (tmp_path / "n.txt").exists()
+
+
+async def test_parallel_approvals_are_serialized():
+    import asyncio
+    from jimbo.core.approval import AskUser, RememberedDecisions, ToolCallInfo
+    active = peak = asked = 0
+
+    async def ask(req):
+        nonlocal active, peak, asked
+        asked += 1
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return ApprovalDecision(allow=True, remember="session")
+
+    au = AskUser(ask, RememberedDecisions())
+    call = ToolCallInfo(tool="write_file", args={}, summary="s", workspace=Path("."))
+    vs = await asyncio.gather(*(au.evaluate(call) for _ in range(3)))
+    assert peak == 1 and asked == 1 and all(v.action == "allow" for v in vs)
+
+
+async def test_jsonl_sink_logs_session(tmp_path):
+    import json
+    from jimbo.core.jsonl import JsonlSink
+
+    sink = JsonlSink(tmp_path / "logs")
+    s = build_session(Settings(workspace=tmp_path), ScriptedFrontend(), [sink], model=TestModel())
+    await s.send("hi")
+    sink.close()
+    lines = (tmp_path / "logs" / f"{s.session_id}.jsonl").read_text().splitlines()
+    rows = [json.loads(x) for x in lines]
+    assert rows[0]["kind"] == "user_message" and rows[-1]["kind"] == "run_finished"
+    assert [r["seq"] for r in rows] == sorted(r["seq"] for r in rows)
+
+
+async def test_streamed_text_keeps_first_chunk(tmp_path):
+    async def stream(messages, info):
+        yield "Now "
+        yield "let me"
+
+    fe = ScriptedFrontend()
+    s = build_session(Settings(workspace=tmp_path), fe, model=FunctionModel(stream_function=stream))
+    await s.send("go")
+    streamed = "".join(e.data["text"] for e in fe.events if e.kind == "assistant_text_delta")
+    assert streamed == "Now let me"

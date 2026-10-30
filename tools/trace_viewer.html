@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jimbo Trace Viewer</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #fff; --fg: #1d1d1b; --dim: #6b6b66; --line: #e2e2dd;
+    --user: #e8f0fe; --tool: #f1f5f9; --ok: #1a7f37; --err: #c62828; --warn: #9a6700;
+    --add: #e6ffec; --del: #ffebe9; --accent: #3b6fd4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --panel: #1f1f1c; --fg: #e8e8e3; --dim: #8f8f88; --line: #33332f;
+      --user: #1c2a44; --tool: #262623; --ok: #56d364; --err: #ff7b72; --warn: #d29922;
+      --add: #12301b; --del: #3d1a1a; --accent: #7aa2f7;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--panel);
+           border-bottom: 1px solid var(--line); padding: 10px 16px; }
+  h1 { font-size: 15px; margin: 0 0 6px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; color: var(--dim); font-size: 12px; }
+  .bar b { color: var(--fg); font-weight: 600; }
+  .bar label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+  input[type=search] { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+                       border-radius: 6px; padding: 3px 8px; font: inherit; }
+  button { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+           padding: 3px 10px; font: inherit; cursor: pointer; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; }
+  #drop { border: 2px dashed var(--line); border-radius: 12px; padding: 60px 20px; text-align: center;
+          color: var(--dim); }
+  body.drag #drop { border-color: var(--accent); color: var(--accent); }
+  body.loaded #drop { display: none; }
+  body.drag::after { content: "Drop JSONL trace"; position: fixed; inset: 0; display: grid; place-items: center;
+                     background: color-mix(in srgb, var(--bg) 85%, transparent); font-size: 22px; color: var(--accent); }
+  .turn { margin-bottom: 28px; }
+  .row { margin: 8px 0; display: flex; gap: 10px; }
+  .t { flex: 0 0 56px; color: var(--dim); font: 11px ui-monospace, Menlo, monospace; text-align: right; padding-top: 4px; }
+  .body { flex: 1; min-width: 0; }
+  .user .body { background: var(--user); border-radius: 10px; padding: 8px 12px; white-space: pre-wrap; }
+  .assistant .body { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+                     padding: 8px 12px; white-space: pre-wrap; word-break: break-word; }
+  .card { border: 1px solid var(--line); background: var(--tool); border-radius: 8px; overflow: hidden; }
+  .card > summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 8px; align-items: baseline;
+                    font: 12px ui-monospace, Menlo, monospace; list-style: none; }
+  .card > summary::-webkit-details-marker { display: none; }
+  .card .name { font-weight: 700; }
+  .card .sum { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .badge { font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid currentColor; }
+  .ok { color: var(--ok); } .err { color: var(--err); } .warn { color: var(--warn); } .dim { color: var(--dim); }
+  .sect { padding: 6px 10px; border-top: 1px solid var(--line); }
+  .sect h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+  pre { margin: 0; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word;
+        max-height: 420px; overflow: auto; }
+  .diff .a { background: var(--add); display: block; } .diff .d { background: var(--del); display: block; }
+  .chip { font-size: 12px; color: var(--dim); }
+  .errbox { border: 1px solid var(--err); color: var(--err); border-radius: 8px; padding: 8px 12px; }
+  .usage { font-size: 12px; color: var(--dim); border-top: 1px dashed var(--line); padding-top: 4px; }
+  .hide { display: none !important; }
+  mark { background: #ffe066; color: #000; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Jimbo Trace Viewer</h1>
+  <div class="bar" id="bar">
+    <span>Drag a <code>.jsonl</code> session log anywhere on this page, or</span>
+    <button id="pick">choose a file</button>
+    <input type="file" id="file" accept=".jsonl,.json,.txt" hidden>
+  </div>
+</header>
+<main>
+  <div id="drop">Drop a session log from <code>~/.jimbo/sessions/</code> here</div>
+  <div id="out"></div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+const fmtT = (ms) => ms < 1000 ? `+${Math.round(ms)}ms` : `+${(ms / 1000).toFixed(1)}s`;
+const clip = (s, n) => { s = String(s).replace(/\s+/g, " "); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+
+function diffBlock(text) {
+  const pre = el("pre", "diff");
+  for (const line of text.split("\n")) {
+    const cls = line.startsWith("+") && !line.startsWith("+++") ? "a"
+              : line.startsWith("-") && !line.startsWith("---") ? "d" : "";
+    const s = el("span", cls, line + "\n");
+    pre.append(s);
+  }
+  return pre;
+}
+
+function section(title, node) {
+  const s = el("div", "sect");
+  s.append(el("h4", null, title), node);
+  return s;
+}
+
+function parse(text) {
+  const events = [], bad = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (!line.trim()) return;
+    try { events.push(JSON.parse(line)); } catch { bad.push(i + 1); }
+  });
+  events.sort((a, b) => a.seq - b.seq);
+  return { events, bad };
+}
+
+function render(events, bad, name) {
+  const out = $("#out");
+  out.replaceChildren();
+  document.body.classList.add("loaded");
+  if (!events.length) { out.append(el("div", "errbox", "No events found in file.")); return; }
+
+  const t0 = Date.parse(events[0].ts);
+  const rel = (ev) => Date.parse(ev.ts) - t0;
+  const last = events[events.length - 1];
+  const count = (k) => events.filter((e) => e.kind === k).length;
+  const usage = events.filter((e) => e.kind === "usage");
+  const tokIn = usage.reduce((n, e) => n + (e.data.input_tokens || 0), 0);
+  const tokOut = usage.reduce((n, e) => n + (e.data.output_tokens || 0), 0);
+  const nErr = count("error") + events.filter((e) => e.kind === "tool_result" && !e.data.ok).length;
+
+  const bar = $("#bar");
+  bar.replaceChildren();
+  const stat = (label, val, cls) => {
+    const s = el("span"); s.append(label + " ");
+    const b = el("b", cls, val); s.append(b); return s;
+  };
+  bar.append(
+    stat("session", events[0].session_id), stat("file", name),
+    stat("started", new Date(events[0].ts).toLocaleString()), stat("duration", fmtT(rel(last)).slice(1)),
+    stat("turns", count("user_message")), stat("tool calls", count("tool_call")),
+    stat("errors", nErr, nErr ? "err" : ""), stat("tokens", `${tokIn} in / ${tokOut} out`),
+  );
+  if (bad.length) bar.append(stat("unparseable lines", bad.slice(0, 5).join(",") + (bad.length > 5 ? "…" : ""), "warn"));
+
+  const q = el("input"); q.type = "search"; q.placeholder = "search…";
+  bar.append(q);
+  const toggles = {};
+  for (const [key, label] of [["tool", "tools"], ["approval", "approvals"], ["usage", "usage"]]) {
+    const l = el("label"); const c = el("input"); c.type = "checkbox"; c.checked = true;
+    l.append(c, label); bar.append(l); toggles[key] = c;
+    c.onchange = () => applyHide();
+  }
+  const expand = el("button", null, "expand all"); let open = false;
+  expand.onclick = () => { open = !open; out.querySelectorAll("details").forEach((d) => (d.open = open));
+                           expand.textContent = open ? "collapse all" : "expand all"; };
+  bar.append(expand);
+
+  // Build turns.
+  let turn = null, seg = null, segStreamed = false;
+  const cards = new Map();
+  const newTurn = () => { turn = el("section", "turn"); out.append(turn); seg = null; segStreamed = false; };
+  const row = (cls, ev, node, kind) => {
+    const r = el("div", "row " + cls);
+    if (kind) r.dataset.kind = kind;
+    r.append(el("div", "t", fmtT(rel(ev))));
+    const b = el("div", "body"); b.append(node); r.append(b);
+    (turn || (newTurn(), turn)).append(r);
+    return r;
+  };
+
+  for (const ev of events) {
+    const d = ev.data;
+    switch (ev.kind) {
+      case "user_message":
+        newTurn();
+        row("user", ev, el("div", null, d.text));
+        break;
+      case "assistant_text_delta":
+        if (!seg) { seg = el("div"); seg.dataset.text = ""; row("assistant", ev, seg); }
+        seg.dataset.text += d.text; seg.textContent = seg.dataset.text; segStreamed = true;
+        break;
+      case "assistant_text":
+        if (!segStreamed) row("assistant", ev, el("div", null, d.text));
+        seg = null; segStreamed = false;
+        break;
+      case "tool_call": {
+        seg = null; segStreamed = false;
+        const det = el("details", "card");
+        const sm = el("summary");
+        const status = el("span", "badge dim", "running");
+        sm.append(el("span", "name", d.tool), el("span", "sum", clip(JSON.stringify(d.args), 140)), status);
+        det.append(sm, section("arguments", el("pre", null, JSON.stringify(d.args, null, 2))));
+        det._status = status;
+        cards.set(d.id, det);
+        row("tool", ev, det, "tool");
+        break;
+      }
+      case "tool_result": {
+        const det = cards.get(d.id);
+        if (!det) break;
+        det._status.className = "badge " + (d.ok ? "ok" : "err");
+        det._status.textContent = d.ok ? "ok" : "error";
+        det.append(section(d.ok ? "result" : "error", el("pre", d.ok ? null : "err", d.content)));
+        if (!d.ok) det.open = true;
+        break;
+      }
+      case "approval_requested": {
+        const det = el("details", "card");
+        const sm = el("summary");
+        sm.append(el("span", "warn name", "approval requested"), el("span", "sum", `${d.tool}: ${d.summary}`));
+        det.append(sm);
+        if (d.detail) det.append(section("detail", diffBlock(d.detail)));
+        det.open = !!d.detail;
+        row("tool", ev, det, "approval");
+        break;
+      }
+      case "approval_resolved": {
+        const ok = d.action === "allow";
+        const c = el("div", "chip");
+        c.append(`approval ${d.tool}: `, el("b", ok ? "ok" : "err", d.action), ` (${d.decided_by}${d.reason ? ", " + d.reason : ""})`);
+        row("", ev, c, "approval");
+        break;
+      }
+      case "usage":
+        row("", ev, el("div", "usage", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`), "usage");
+        break;
+      case "error":
+        row("", ev, el("div", "errbox", `${d.type}: ${d.message}`));
+        break;
+      case "run_finished":
+        if (!d.ok) row("", ev, el("div", "chip err", "run failed"));
+        seg = null; segStreamed = false;
+        break;
+    }
+  }
+
+  function applyHide() {
+    const needle = q.value.toLowerCase();
+    out.querySelectorAll(".row").forEach((r) => {
+      const k = r.dataset.kind;
+      const off = k && toggles[k] && !toggles[k].checked;
+      const miss = needle && !r.textContent.toLowerCase().includes(needle);
+      r.classList.toggle("hide", !!(off || miss));
+    });
+  }
+  q.oninput = applyHide;
+  applyHide();
+}
+
+async function load(file) {
+  const { events, bad } = parse(await file.text());
+  render(events, bad, file.name);
+}
+
+$("#pick").onclick = () => $("#file").click();
+$("#file").onchange = (e) => e.target.files[0] && load(e.target.files[0]);
+let depth = 0;
+addEventListener("dragenter", (e) => { e.preventDefault(); depth++; document.body.classList.add("drag"); });
+addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; document.body.classList.remove("drag"); } });
+addEventListener("dragover", (e) => e.preventDefault());
+addEventListener("drop", (e) => {
+  e.preventDefault(); depth = 0; document.body.classList.remove("drag");
+  const f = e.dataTransfer.files[0];
+  if (f) load(f);
+});
+</script>
+</body>
+</html>
