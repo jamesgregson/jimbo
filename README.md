@@ -7,6 +7,9 @@ asks for approvals through a `Frontend` protocol, so UIs are swappable.
     uv run jimbo "summarize this repo"          # one-shot
     uv run jimbo                                # interactive (plain UI)
     uv run jimbo --model <provider>:<model> --yolo
+    uv run jimbo --ui tui                       # rich inline UI (streaming markdown)
+
+The `tui` UI: Enter submits, Alt+Enter inserts a newline, Ctrl+D (or Ctrl+C twice) quits.
 
 Config via `JIMBO_*` env vars (see `config.py`). See [Providers](#providers) for model setup.
 

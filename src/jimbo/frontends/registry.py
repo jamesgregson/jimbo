@@ -1,7 +1,15 @@
+from typing import Callable
+
 from ..core.interaction import Frontend
 from .cli_plain import PlainFrontend
 
-FRONTENDS: dict[str, type] = {"plain": PlainFrontend}
+def _tui() -> Frontend:
+    from .tui import TuiFrontend  # imported lazily so `plain` doesn't need rich/prompt_toolkit
+
+    return TuiFrontend()
+
+
+FRONTENDS: dict[str, Callable[[], Frontend]] = {"plain": PlainFrontend, "tui": _tui}
 
 
 def build_frontend(name: str) -> Frontend:
