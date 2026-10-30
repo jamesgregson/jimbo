@@ -7,6 +7,7 @@ from .openai_compat import OpenAICompatProvider
 PROVIDERS: dict[str, ProviderSpec] = {
     "ollama": OpenAICompatProvider("ollama_base_url"),
     "openai": OpenAICompatProvider("openai_base_url"),
+    "openrouter": OpenAICompatProvider("openrouter_base_url", send_num_ctx=False),
 }
 
 

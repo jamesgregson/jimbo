@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     model: str = "ollama:coder-qwen3.6-27b:latest"
     ollama_base_url: str = "http://localhost:11434/v1"
     openai_base_url: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
     api_key: str = "unused"
     num_ctx: int | None = 90000  # best-effort; /v1 may ignore it, prefer baking into the Modelfile
     temperature: float | None = None

@@ -8,9 +8,15 @@ from ..config import Settings
 class OpenAICompatProvider:
     """Any OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, OpenAI itself)."""
 
-    def __init__(self, base_url_attr: str, default_base_url: str | None = None):
+    def __init__(
+        self,
+        base_url_attr: str,
+        default_base_url: str | None = None,
+        send_num_ctx: bool = True,
+    ):
         self._attr = base_url_attr
         self._default = default_base_url
+        self._send_num_ctx = send_num_ctx
 
     def build_model(self, model_name: str, settings: Settings) -> Model:
         base_url = getattr(settings, self._attr, None) or self._default
@@ -18,6 +24,6 @@ class OpenAICompatProvider:
         ms: OpenAIChatModelSettings = {"timeout": settings.request_timeout}
         if settings.temperature is not None:
             ms["temperature"] = settings.temperature
-        if settings.num_ctx is not None:
+        if self._send_num_ctx and settings.num_ctx is not None:
             ms["extra_body"] = {"options": {"num_ctx": settings.num_ctx}}
         return OpenAIChatModel(model_name, provider=provider, settings=ms)
