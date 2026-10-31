@@ -141,3 +141,13 @@ async def test_code_fence_blank_lines_do_not_split_blocks():
     from jimbo.frontends.tui import _block_end
     assert _block_end("```py\na\n\nb\n") is None
     assert _block_end("para\n\nnext") == 5
+
+
+async def test_approval_shows_risk_assessment():
+    a = {"summary": "Deletes the build directory.", "risk": "high", "reasons": ["forced or recursive delete"],
+         "model": "ollama:small", "raised": False}
+    fe, out = make(["y"])
+    await fe.request_approval(ApprovalRequest(id="1", tool="shell", summary="run: rm -rf build", assessment=a))
+    text = out.getvalue()
+    assert "HIGH" in text and "Deletes the build directory." in text
+    assert "forced or recursive delete" in text and "assessed by ollama:small" in text

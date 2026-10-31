@@ -166,7 +166,9 @@ class AgentSession:
                                 allow_empty: bool = True) -> list[ModelMessage] | None:
         from ..tools.todos import format_todos
         todos = format_todos(self.deps.todos) if self.deps.todos else ""
-        new = await compact_history(self.agent.model, messages, keep=self.compact_keep, focus=focus,
+        router = self.deps.models
+        model = await router.aresolve("compaction") if router else self.agent.model
+        new = await compact_history(model, messages, keep=self.compact_keep, focus=focus,
                                     todos=todos, allow_empty=allow_empty)
         if new is not None:
             before = self.context_tokens
@@ -212,6 +214,8 @@ class AgentSession:
             return await self._task
         finally:
             self._task = None
+            if self.deps.models:
+                self.deps.models.pop_scope()  # skill model choices last for one turn
             self.persist()
 
     async def _run(self, content: str | list[UserContent]) -> str | None:

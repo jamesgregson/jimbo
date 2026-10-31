@@ -153,6 +153,13 @@ codebase when planning, without reading whole files.
 - Persist `ModelMessage`s (`ModelMessagesTypeAdapter`) alongside the event JSONL after each turn
   (and after compaction). `jimbo --resume [id]` / `/resume` reloads history and replays events to the UI.
 
+### Phase 9b — Model routing and shell assessment — done
+Per-provider credentials (`[providers.*]`: env, file, command or inline key), a `ModelRouter` that picks a
+model per task (`[models]`, `/models`, skill frontmatter `models:`), and an LLM summary plus risk level on
+shell approval prompts (`[tasks.shell_assess]`). Follow-ups: shell *output* summaries (`shell_summarize`,
+deliberately left out), an `LLMGuard` policy that auto-allows low risk, per-model `num_ctx`/`vision`/
+`context_window`, `index` adopting the `index` task, subagents using `push_scope`.
+
 ### Phase 10 — Later
 Subagents (`task` tool running a child `AgentSession` with read-only tools), MCP client
 (pydantic-ai `MCPServer` toolsets through `authorize`), `web_fetch` tool, hooks, protocol docs for

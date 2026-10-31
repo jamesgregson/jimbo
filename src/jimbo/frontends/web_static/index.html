@@ -105,6 +105,9 @@
   #dlg input { width: 100%; box-sizing: border-box; margin-top: 10px; background: var(--bg); color: var(--fg);
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
   .msg.user.steer { opacity: .85; border-style: dashed; }
+  .risk { margin: 8px 0; padding: 8px 10px; border-left: 4px solid #3a3; background: rgba(128,128,128,.12); }
+  .risk.medium { border-color: #cb2; } .risk.high { border-color: #e55; } .risk.critical { border-color: #e55; background: rgba(238,85,85,.2); }
+  .risk .why { font-size: 12px; opacity: .7; margin-top: 2px; }
   #modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; place-items: center; padding: 16px; }
   #modal.show { display: grid; }
   #dlg { background: var(--panel); border-radius: 12px; padding: 16px; width: min(760px, 100%);
@@ -263,7 +266,7 @@ function onEvent(ev) {
       det.append(sect(el("pre", d.ok ? null : "err", d.content))); if (!d.ok) det.open = true; break;
     }
     case "approval_resolved":
-      if (d.decided_by !== "user") add(el("div", "note", `approval ${d.tool}: ${d.action} (${d.decided_by})`)); break;
+      if (d.decided_by !== "user") add(el("div", "note", `approval ${d.tool}: ${d.action} (${d.decided_by})` + (d.assessment ? ` · risk ${d.assessment.risk}: ${d.assessment.summary}` : ""))); break;
     case "usage": {
       add(el("div", "note", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`)); break;
     }
@@ -290,6 +293,14 @@ function onEvent(ev) {
 function showApproval(req) {
   pendingId = req.id;
   const dlg = $("#dlg"); dlg.replaceChildren(el("h2", null, `Approve ${req.tool}`), el("div", "sum", req.summary));
+  const a = req.assessment;
+  if (a) {
+    const box = el("div", "risk " + a.risk);
+    box.append(el("b", null, a.risk.toUpperCase()), " " + a.summary);
+    if (a.reasons.length) box.append(el("div", "why", a.reasons.join("; ")));
+    if (a.model) box.append(el("div", "why", "assessed by " + a.model));
+    dlg.append(box);
+  }
   if (req.detail) dlg.append(diff(req.detail));
   const btns = el("div", "btns"), answer = (decision, note) => ws.send(JSON.stringify({ type: "approve", id: req.id, decision, note }));
   const why = el("input"); why.type = "text"; why.placeholder = "Why? (optional) — Enter to deny"; why.hidden = true;

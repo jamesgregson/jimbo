@@ -120,7 +120,8 @@ variables (e.g. `JIMBO_MODEL`, `JIMBO_API_KEY`), `<workspace>/.jimbo/config.toml
 secrets.
 
 A workspace config comes with whatever repo you cloned, so it can't loosen security: `model`,
-`api_key`, base URLs, `web_host`, `approval`, `approval_allow` and the `sandbox*` settings are ignored
+`api_key`, base URLs, `providers`, `model_aliases`, `models`, `tasks`, `web_host`, `approval`,
+`approval_allow` and the `sandbox*` settings are ignored
 there (with a warning) and only read from `~/.jimbo/config.toml`. Its `approval_deny` rules are added
 to yours.
 
@@ -133,23 +134,82 @@ Store API keys in your keychain rather than in plaintext files:
 security add-generic-password -a "$USER" -s "OPENROUTER_API_KEY" -w
 ```
 
-Read it back into the environment when launching, e.g.:
+Then point the provider at it with `api_key_cmd` (see [API keys](#api-keys)), or read it into the
+environment when launching:
 
 ```bash
-JIMBO_API_KEY="$(security find-generic-password -a "$USER" -s OPENROUTER_API_KEY -w)" uv run jimbo
+OPENROUTER_API_KEY="$(security find-generic-password -a "$USER" -s OPENROUTER_API_KEY -w)" uv run jimbo
 ```
 
 ## Providers
 
 The model is selected as `<provider>:<model name>`, via `--model` or `JIMBO_MODEL`. All providers
-speak the OpenAI-compatible chat API and share `JIMBO_API_KEY`, `JIMBO_TEMPERATURE` and
-`JIMBO_REQUEST_TIMEOUT`. Providers are registered in `src/jimbo/providers/registry.py`.
+speak the OpenAI-compatible chat API and share `JIMBO_TEMPERATURE` and `JIMBO_REQUEST_TIMEOUT`. Each
+provider has its own endpoint and credentials. Adapters are registered in `src/jimbo/providers/registry.py`.
 
 | Provider     | Base URL setting             | Default base URL               | API key  | `num_ctx` |
 |--------------|------------------------------|--------------------------------|----------|-----------|
 | `ollama`     | `JIMBO_OLLAMA_BASE_URL`      | `http://localhost:11434/v1`    | not used | sent      |
-| `openai`     | `JIMBO_OPENAI_BASE_URL`      | none, must be set              | required | sent      |
-| `openrouter` | `JIMBO_OPENROUTER_BASE_URL`  | `https://openrouter.ai/api/v1` | required | not sent  |
+| `openai`     | `JIMBO_OPENAI_BASE_URL`      | none, must be set              | `OPENAI_API_KEY` or `JIMBO_API_KEY` | sent      |
+| `openrouter` | `JIMBO_OPENROUTER_BASE_URL`  | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY`, required | not sent  |
+
+### API keys
+
+Credentials belong to a provider, so several providers can be configured at once and a key is only
+ever sent to its own endpoint. Define providers in `~/.jimbo/config.toml`; a built-in name overrides that
+provider, any other name adds a new OpenAI-compatible endpoint (`provider:model` then uses it):
+
+```toml
+[providers.openrouter]
+api_key_cmd = ["security", "find-generic-password", "-a", "james", "-s", "OPENROUTER_API_KEY", "-w"]
+
+[providers.work]
+base_url = "https://llm.internal/v1"
+api_key_env = "WORK_LLM_KEY"        # or api_key_file = "~/.jimbo/keys/work" (must be chmod 600)
+require_key = true                  # fail at startup rather than send a dummy key
+```
+
+Use at most one of `api_key_env`, `api_key_file`, `api_key_cmd` (an argument list, run without a shell,
+10s timeout, once per process) or `api_key` (inline; discouraged, and jimbo warns if the file is readable
+by others). With none set, `openai` and `openrouter` fall back to `OPENAI_API_KEY` / `OPENROUTER_API_KEY`
+(`JIMBO_API_KEY` still works for `openai` only), and local providers send a dummy key. Keys never appear
+in `/models`, events or logs; `/models` shows where each one comes from.
+
+### Models per task
+
+The main model is one *task* among several. `compaction` and `shell_assess` can each use a different
+model; unset tasks use the main model. Give models short aliases, and choose per task:
+
+```toml
+[model_aliases]
+fast  = "ollama:qwen3:4b"
+smart = "openrouter:anthropic/claude-sonnet-5-5"
+
+[models]
+shell_assess = "fast"
+compaction   = "main"
+```
+
+`/models` shows what each task resolves to and why; `/models set <task> <alias|provider:name>` changes it
+for the session and `/models reset [task]` undoes it. A skill can ask for models in its frontmatter
+(`models: {shell_assess: smart}`); that lasts one turn and may only name your aliases, never define a
+model or endpoint.
+
+### Shell summary and risk assessment
+
+When a model is set for `shell_assess`, the approval prompt for a shell command shows a short summary and a
+risk level (low, medium, high, critical) written by that model. It is advice only: the command is treated
+as untrusted text, and fixed checks (`sudo`, `rm -rf`, `curl | sh`, force pushes, writes outside the
+workspace, ...) set a minimum risk the model cannot lower. If the model is slow or fails, the prompt
+appears without it.
+
+```toml
+[tasks.shell_assess]
+mode = "auto"   # off | auto (on once a model is set) | ask (use the main model if none) | always (also for allowed calls)
+timeout = 8     # seconds to wait before showing the prompt without it
+```
+
+With a remote model, the commands (not file contents) are sent to it.
 
 ### ollama
 
@@ -169,7 +229,7 @@ OpenAI itself, or any other OpenAI-compatible server (LM Studio, vLLM, ...). The
 default, so set it:
 
 ```bash
-JIMBO_OPENAI_BASE_URL=https://api.openai.com/v1 JIMBO_API_KEY=sk-... \
+JIMBO_OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_API_KEY=sk-... \
   uv run jimbo --model openai:<model> "summarize this repo"
 ```
 

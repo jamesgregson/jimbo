@@ -1,6 +1,6 @@
 """Project instructions (AGENTS.md / JIMBO.md) and skills (`<dir>/<name>/SKILL.md`), loaded from disk."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .commands import NAME_RE, parse_frontmatter
@@ -15,6 +15,7 @@ class Skill:
     description: str
     body: str
     path: Path
+    models: dict[str, str] = field(default_factory=dict)  # task -> model alias, applied while the skill is in use
 
 
 def _read(path: Path) -> str | None:
@@ -50,10 +51,24 @@ def load_skills(dirs: list[Path]) -> dict[str, Skill]:
             name = str(meta.get("name") or path.parent.name)
             if not NAME_RE.fullmatch(name):
                 continue
-            skills[name] = Skill(name, " ".join(str(meta.get("description") or "").split()), body, path)
+            raw = meta.get("models")
+            models = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+            skills[name] = Skill(name, " ".join(str(meta.get("description") or "").split()), body, path, models)
     return skills
 
 
 def format_skill_index(skills: dict[str, Skill]) -> str:
     lines = [f"- {s.name}: {s.description}" if s.description else f"- {s.name}" for s in skills.values()]
     return "\n".join(lines)
+
+
+def apply_skill_models(deps, skill: Skill) -> str | None:
+    """Scope the skill's `models:` choices to this turn. Returns a warning if they can't be applied
+    (unknown alias): the skill still runs, on the models the user configured."""
+    if not skill.models or deps.models is None:
+        return None
+    try:
+        deps.models.push_scope(f"skill {skill.name}", skill.models)
+    except ValueError as e:
+        return str(e)
+    return None

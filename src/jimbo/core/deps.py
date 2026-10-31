@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from .approval import ApprovalGate, ToolCallInfo
 
 if TYPE_CHECKING:
+    from .models import ModelRouter
     from .skills import Skill
     from ..tools.sandbox import Sandbox
     from ..tools.todos import TodoItem
@@ -24,6 +25,7 @@ class Deps:
     sandbox: "Sandbox | None" = None
     shell_timeout: int = 120
     shell_timeout_max: int = 600
+    models: "ModelRouter | None" = None
     todos: "list[TodoItem]" = field(default_factory=list)
     mode: Literal["normal", "plan"] = "normal"
     project_instructions: str = ""

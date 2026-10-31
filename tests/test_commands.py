@@ -116,7 +116,8 @@ async def test_clear(tmp_path):
     assert last(fe)["text"] == "Conversation cleared."
 
 
-async def test_model_show_switch_and_reject(tmp_path):
+async def test_model_show_switch_and_reject(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     s, fe = make(tmp_path, model="ollama:first")
     await s.commands.dispatch(s, "/model")
     assert last(fe)["text"] == "model: ollama:first"
@@ -237,4 +238,4 @@ async def test_workspace_commands_override_user_commands(tmp_path):
 
 async def test_missing_command_dirs_are_fine(tmp_path):
     s, _ = make(tmp_path)  # neither user/commands nor .jimbo/commands exists
-    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "compact", "help", "model", "plan", "quit", "resume", "skills", "todos", "usage"}
+    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "compact", "help", "model", "models", "plan", "quit", "resume", "skills", "todos", "usage"}

@@ -16,6 +16,7 @@ class ToolCallInfo(BaseModel):
     detail: str | None = None
     read_only: bool = False
     workspace: Path
+    assessment: dict | None = None  # advisory summary/risk, filled in by an Assessor
 
 
 class Verdict(BaseModel):
@@ -29,6 +30,7 @@ class ApprovalRequest(BaseModel):
     tool: str
     summary: str
     detail: str | None = None
+    assessment: dict | None = None
 
 
 class ApprovalDecision(BaseModel):
@@ -156,8 +158,10 @@ class AskUser:
         self,
         ask: Callable[[ApprovalRequest], Awaitable[ApprovalDecision]],
         remembered: RememberedDecisions | None = None,
+        assess: Callable[[ToolCallInfo], Awaitable[None]] | None = None,
     ) -> None:
         self._ask = ask
+        self._assess = assess  # sets call.assessment; only runs when a human is about to be asked
         self._remembered = remembered
         self._n = 0
         self._lock = asyncio.Lock()  # parallel tool calls must not prompt the user concurrently
@@ -167,9 +171,10 @@ class AskUser:
             if self._remembered is not None and call.tool in self._remembered.allowed_tools:
                 return Verdict(action="allow", decided_by="remembered", reason="remembered for session")
             self._n += 1
-            d = await self._ask(
-                ApprovalRequest(id=str(self._n), tool=call.tool, summary=call.summary, detail=call.detail)
-            )
+            if self._assess is not None and call.assessment is None:
+                await self._assess(call)
+            d = await self._ask(ApprovalRequest(id=str(self._n), tool=call.tool, summary=call.summary,
+                                                detail=call.detail, assessment=call.assessment))
             if d.allow and d.remember == "session" and self._remembered is not None:
                 self._remembered.allowed_tools.add(call.tool)
             reason = None if d.allow else f"User denied this action: {d.note}" if d.note else None

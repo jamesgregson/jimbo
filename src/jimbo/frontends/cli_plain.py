@@ -56,6 +56,10 @@ class PlainFrontend:
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         print(f"\nApprove {req.tool}: {req.summary}", file=sys.stderr)
+        if a := req.assessment:
+            print(f"[risk: {a['risk'].upper()}] {a['summary']}", file=sys.stderr)
+            if a["reasons"]:
+                print("  " + "; ".join(a["reasons"]), file=sys.stderr)
         if req.detail:
             print(req.detail, file=sys.stderr)
         ans = (await asyncio.to_thread(input, "[y]es / [n]o / [a]lways this session? ")).strip().lower()

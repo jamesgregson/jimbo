@@ -2,28 +2,19 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from ..config import Settings
+from ..config import ProviderConfig, Settings
+from .credentials import resolve_api_key
 
 
 class OpenAICompatProvider:
     """Any OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, OpenAI itself)."""
 
-    def __init__(
-        self,
-        base_url_attr: str,
-        default_base_url: str | None = None,
-        send_num_ctx: bool = True,
-    ):
-        self._attr = base_url_attr
-        self._default = default_base_url
-        self._send_num_ctx = send_num_ctx
-
-    def build_model(self, model_name: str, settings: Settings) -> Model:
-        base_url = getattr(settings, self._attr, None) or self._default
-        provider = OpenAIProvider(base_url=base_url, api_key=settings.api_key)
+    def build_model(self, model_name: str, name: str, cfg: ProviderConfig, settings: Settings) -> Model:
+        key = resolve_api_key(name, cfg)
+        provider = OpenAIProvider(base_url=cfg.base_url, api_key=key.get_secret_value() if key else "unused")
         ms: OpenAIChatModelSettings = {"timeout": settings.request_timeout}
         if settings.temperature is not None:
             ms["temperature"] = settings.temperature
-        if self._send_num_ctx and settings.num_ctx is not None:
+        if cfg.send_num_ctx and settings.num_ctx is not None:
             ms["extra_body"] = {"options": {"num_ctx": settings.num_ctx}}
         return OpenAIChatModel(model_name, provider=provider, settings=ms)

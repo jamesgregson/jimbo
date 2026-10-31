@@ -81,3 +81,13 @@ async def test_note_ignored_unless_denied(client):
     await ws.receive_json()
     await ws.send_json({"type": "approve", "id": "9", "decision": "yes", "note": "x"})
     assert (await asyncio.wait_for(task, 1)).note is None
+
+
+async def test_approval_carries_assessment(client):
+    ws = await client.ws_connect(ws_url(client))
+    a = {"summary": "s", "risk": "low", "reasons": [], "model": None, "raised": False}
+    task = asyncio.create_task(client.fe.request_approval(
+        ApprovalRequest(id="9", tool="shell", summary="run: ls", assessment=a)))
+    assert (await ws.receive_json())["request"]["assessment"] == a
+    await ws.send_json({"type": "approve", "id": "9", "decision": "yes"})
+    await asyncio.wait_for(task, 1)

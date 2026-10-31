@@ -345,6 +345,14 @@ class TuiFrontend:
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         self._stop_live()
         body: list = [Text(req.summary, style="bold")]
+        if a := req.assessment:
+            style = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold white on red"}[a["risk"]]
+            line = Text.assemble((f" {a['risk'].upper()} ", style), f"  {a['summary']}")
+            body.append(line)
+            if a["reasons"]:
+                body.append(Text("  · " + "; ".join(a["reasons"]), style="dim"))
+            if a.get("model"):
+                body.append(Text(f"  assessed by {a['model']}", style="dim"))
         if req.detail:
             is_diff = req.detail.lstrip().startswith(("---", "diff ", "@@"))
             body.append(Syntax(req.detail, "diff", theme="ansi_dark") if is_diff else Text(req.detail))

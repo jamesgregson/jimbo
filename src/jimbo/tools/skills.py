@@ -2,6 +2,7 @@ from pydantic_ai import ModelRetry, RunContext, Tool
 from pydantic_ai.tools import ToolDefinition
 
 from ..core.deps import Deps, ToolDenied
+from ..core.skills import apply_skill_models
 
 
 async def load_skill(ctx: RunContext[Deps], name: str) -> str:
@@ -16,7 +17,9 @@ async def load_skill(ctx: RunContext[Deps], name: str) -> str:
         await ctx.deps.authorize("load_skill", {"name": name}, f"load skill {name}", read_only=True)
     except ToolDenied as e:
         raise ModelRetry(str(e)) from e
-    return f"Skill directory: {skill.path.parent}\n\n{skill.body}"
+    note = apply_skill_models(ctx.deps, skill)
+    warn = f"\n\n[note: this skill's model choices were not applied: {note}]" if note else ""
+    return f"Skill directory: {skill.path.parent}\n\n{skill.body}{warn}"
 
 
 async def _only_with_skills(ctx: RunContext[Deps], tool_def: ToolDefinition) -> ToolDefinition | None:

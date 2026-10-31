@@ -7,8 +7,9 @@ from .config import Settings
 from .core.approval import ApprovalPolicy
 from .core.commands import CommandError, CommandRegistry, QuitSession
 from .core.session import AgentSession
-from .core.skills import Skill, format_skill_index
-from .providers.registry import build_model
+from .core.skills import Skill, apply_skill_models, format_skill_index
+from .providers.credentials import describe_key_source
+from .providers.registry import all_providers
 from .tools.todos import format_todos
 
 
@@ -44,13 +45,46 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     async def model(session: AgentSession, args: str) -> str:
         if not args:
             return f"model: {settings.model}"
-        new = settings.model_copy(update={"model": args})
         try:
-            session.agent = build_agent(new, build_model(new))
+            session.agent = build_agent(settings, session.deps.models.set_main(args))
         except ValueError as e:
             raise CommandError(str(e)) from None
-        settings.model = args
         return f"model: {args}"
+
+    async def models(session: AgentSession, args: str) -> str:
+        router = session.deps.models
+        words = args.split()
+        try:
+            match words:
+                case []:
+                    return describe_models(session)
+                case ["set", "main", value]:
+                    return await model(session, router.explain_value(value))
+                case ["set", task, value]:
+                    r = router.set_override(task, value)
+                    return f"{task}: {r.spec}" + (f" [{r.via}]" if r.via else "")
+                case ["reset"]:
+                    router.clear_override()
+                    return "Session model choices cleared."
+                case ["reset", task]:
+                    router.clear_override(task)
+                    return f"{task}: " + router.explain(task).spec
+        except ValueError as e:
+            raise CommandError(str(e)) from None
+        raise CommandError("usage: /models [set <task> <alias|provider:name> | reset [task]]")
+
+    def describe_models(session: AgentSession) -> str:
+        router = session.deps.models
+        rows = [f"  {r.task:<14}{r.spec}" + (f" [{r.via}]" if r.via else "") + f"  ({r.source})"
+                for r in router.describe()]
+        mode = settings.task("shell_assess").mode
+        if mode == "auto":
+            mode = "on" if router.is_configured("shell_assess") else "off (set a model to enable)"
+        rows.append(f"shell_assess mode: {mode}")
+        aliases = [f"  {k} = {v}" for k, v in settings.model_aliases.items()]
+        provs = [f"  {n:<12}{c.base_url or 'default url'}  key: {describe_key_source(c)}"
+                 for n, c in all_providers(settings).items()]
+        return "\n".join(["Tasks:", *rows, *(["Aliases:", *aliases] if aliases else []), "Providers:", *provs])
 
     async def usage(session: AgentSession, args: str) -> str:
         u = session.total_usage
@@ -104,6 +138,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("clear", "forget the conversation so far", clear)
     registry.add("compact", "summarize older history to free context: /compact [focus]", compact_)
     registry.add("model", "show or switch model: /model <provider>:<name>", model)
+    registry.add("models", "which model runs each task: /models [set <task> <alias|spec> | reset [task]]", models)
     registry.add("usage", "token usage and context fill for this session", usage)
     registry.add("approve", "show or set approval chain: /approve [yolo|default]", approve)
     registry.add("plan", "toggle plan mode (read-only until you approve a plan): /plan [on|off]", plan)
@@ -120,6 +155,7 @@ def register_skill_commands(registry: CommandRegistry, skills: dict[str, Skill])
             continue
 
         async def run(session: AgentSession, args: str, skill: Skill = skill) -> None:
+            apply_skill_models(session.deps, skill)  # a bad alias just leaves the user's models in place
             prompt = f"Use the skill '{skill.name}'. Its instructions:\n\n{skill.body}"
             await session.send(f"{prompt}\n\n{args}" if args else prompt)
 

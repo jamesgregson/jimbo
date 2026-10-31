@@ -227,7 +227,7 @@ Approvals are about intent; separate mechanisms limit what a call can physically
    (model-adjustable up to `shell_timeout_max`), the command runs in its own process group so the whole
    tree can be killed on timeout or interrupt, and output keeps only its head and tail when too long.
 4. **Config trust** ([config.py](src/jimbo/config.py)): a cloned repo's `.jimbo/config.toml` cannot set
-   `model`, keys, URLs, `approval*`, or `sandbox*`; those are read only from `~/.jimbo/config.toml`. Its
+   `model`, `providers`, `model_aliases`, `models`, `tasks`, keys, URLs, `approval*`, or `sandbox*`; those are read only from `~/.jimbo/config.toml`. Its
    `approval_deny` rules are added to the user's, never replacing them.
 
 ## Extensibility
@@ -241,8 +241,18 @@ Approvals are about intent; separate mechanisms limit what a call can physically
 - **Markdown commands**: `<dir>/<name>.md` files in `~/.jimbo/commands` and `<workspace>/.jimbo/commands`
   become `/<name>`, with `$ARGUMENTS` substitution.
 - **Providers**: `"<provider>:<model>"` resolves through
-  [providers/registry.py](src/jimbo/providers/registry.py). All current ones speak the OpenAI-compatible
-  API; `/model` swaps the agent mid-session without losing history.
+  [providers/registry.py](src/jimbo/providers/registry.py) to a per-provider `ProviderConfig` (endpoint plus
+  one credential source, resolved lazily in [providers/credentials.py](src/jimbo/providers/credentials.py)).
+  All current adapters speak the OpenAI-compatible API; `/model` swaps the agent mid-session without losing
+  history.
+- **Model routing**: [core/models.py](src/jimbo/core/models.py) `ModelRouter` maps a task name (`main`,
+  `shell_assess`, `compaction`, ...) to a model: skill scope (aliases only) > `/models set` > `[models]` >
+  main. It lives on `Deps.models`; background calls go through
+  [core/llm_tasks.py](src/jimbo/core/llm_tasks.py) `run_task`, which returns None on failure or timeout.
+- **Shell assessment**: [core/assess.py](src/jimbo/core/assess.py). `AskUser` calls an assess hook just
+  before prompting, so only calls that need a human cost a model request (mode `always` also covers allowed
+  calls via the gate observer). The model's risk is combined with a deterministic floor by `max`; the result
+  rides on `ApprovalRequest.assessment` and the `approval_requested` / `approval_resolved` events.
 - **Attachments**: `@path` mentions are inlined (capped) for the model while the logged `user_message`
   keeps the original text; pasted images are validated for type and size and dropped with a warning when
   `vision = false`.
