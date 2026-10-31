@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console, Group
@@ -26,6 +27,21 @@ def _clip(s: str, n: int = 100) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+class SlashCompleter(Completer):
+    """Completes /command names (filled from the `commands` event) at the start of the input."""
+
+    def __init__(self) -> None:
+        self.commands: dict[str, str] = {}
+
+    def get_completions(self, document, complete_event):
+        t = document.text_before_cursor
+        if not t.startswith("/") or " " in t:
+            return
+        for name, help in self.commands.items():
+            if name.startswith(t[1:]):
+                yield Completion("/" + name, start_position=-len(t), display_meta=help)
+
+
 def _history() -> History:
     try:
         return FileHistory(str(HISTORY_FILE))
@@ -45,15 +61,18 @@ class TuiFrontend:
 
         self._session: PromptSession | None = None
         self._kb = kb
+        self.completer = SlashCompleter()
         self._ask = ask
         self._buf = ""
         self._live: Live | None = None
         self._usage: dict | None = None
+        self._context: dict | None = None
         self._interrupted = False
 
     def _prompt_session(self) -> PromptSession:
         if self._session is None:
-            self._session = PromptSession(history=_history(), key_bindings=self._kb)
+            self._session = PromptSession(history=_history(), key_bindings=self._kb,
+                                          completer=self.completer, complete_while_typing=True)
         return self._session
 
     async def _prompt(self, message: str) -> str:
@@ -111,15 +130,25 @@ class TuiFrontend:
                 c.print(Text(f"  approval: {d['tool']} → {d['action']} ({d['decided_by']})", style="dim"))
             case "usage":
                 self._usage = d
+            case "context":
+                self._context = d
+            case "commands":
+                self.completer.commands = {c["name"]: c["help"] for c in d["commands"]}
+            case "command_output":
+                c.print(Text(d["text"], style="" if d["ok"] else "red"))
             case "error":
                 self._stop_live()
                 c.print(Panel(f"{d['type']}: {d['message']}", title="error", border_style="red"))
             case "run_finished":
                 self._stop_live()
+                if d.get("cancelled"):
+                    c.print(Text("(interrupted)", style="dim yellow"))
                 if self._usage:
                     u, self._usage = self._usage, None
-                    c.print(Rule(f"{u['requests']} req · {u['input_tokens']} in · {u['output_tokens']} out",
-                                 style="dim", align="right"))
+                    line = f"{u['requests']} req · {u['input_tokens']} in · {u['output_tokens']} out"
+                    if (ctx := self._context) and ctx.get("window"):
+                        line += f" · ctx {100 * ctx['tokens'] / ctx['window']:.0f}%"
+                    c.print(Rule(line, style="dim", align="right"))
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         self._stop_live()

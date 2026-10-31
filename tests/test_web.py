@@ -56,3 +56,11 @@ async def test_approval_roundtrip(client, decision, allow, remember):
     d = await asyncio.wait_for(task, 1)
     assert d.allow is allow and d.remember == remember
     assert (await ws.receive_json())["type"] == "approval_closed"
+
+
+async def test_cancel_message_calls_bound_cancel(client):
+    called = asyncio.Event()
+    client.fe.bind_cancel(called.set)
+    ws = await client.ws_connect(ws_url(client))
+    await ws.send_json({"type": "cancel"})
+    await asyncio.wait_for(called.wait(), 1)

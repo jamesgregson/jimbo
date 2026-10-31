@@ -1,6 +1,8 @@
 """Approval gate. Policy (what needs a human) is separate from UI (how a human is asked)."""
 
 import asyncio
+import re
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Awaitable, Callable, Literal, Protocol
 
@@ -61,6 +63,51 @@ class RememberedDecisions:
     async def evaluate(self, call: ToolCallInfo) -> Verdict:
         if call.tool in self.allowed_tools:
             return Verdict(action="allow", decided_by=self.name, reason="remembered for session")
+        return Verdict(action="ask", decided_by=self.name)
+
+
+_SHELL_SEGMENTS = re.compile(r"&&|\|\||[;|&\n]")
+_SHELL_META = re.compile(r"[;&|<>`$()\n]")
+
+
+class PatternRules:
+    """Allow/deny rules like "shell:git status*", "write_file:docs/*" or "read_file:.env*". Deny wins.
+
+    The part after ':' is a glob matched against the call's first argument (shell command or path); a bare
+    tool name matches every call. Shell allow rules never match compound commands (pipes, ;, &&,
+    redirects, $...), so "shell:git status*" can't approve "git status; rm -rf ~". Shell deny rules match
+    if any segment does. Deny rules are best effort, not a security boundary: use the sandbox for that.
+    """
+
+    name = "rules"
+
+    def __init__(self, allow: list[str], deny: list[str]) -> None:
+        self.allow = [self._parse(r) for r in allow]
+        self.deny = [self._parse(r) for r in deny]
+
+    @staticmethod
+    def _parse(rule: str) -> tuple[str, str]:
+        tool, _, pattern = rule.partition(":")
+        return tool.strip(), pattern.strip() or "*"
+
+    @staticmethod
+    def _match(rules: list[tuple[str, str]], tool: str, subjects: list[str]) -> str | None:
+        for t, p in rules:
+            if fnmatchcase(tool, t) and any(fnmatchcase(s, p) for s in subjects):
+                return f"{t}:{p}"
+        return None
+
+    async def evaluate(self, call: ToolCallInfo) -> Verdict:
+        subject = str(next(iter(call.args.values()), "")).strip()
+        if call.tool == "shell":
+            segments = [s.strip() for s in _SHELL_SEGMENTS.split(subject) if s.strip()] or [subject]
+            allowable = [] if _SHELL_META.search(subject) else [subject]
+        else:
+            segments = allowable = [subject]
+        if rule := self._match(self.deny, call.tool, segments):
+            return Verdict(action="deny", reason=f"denied by rule {rule!r}", decided_by=self.name)
+        if rule := self._match(self.allow, call.tool, allowable):
+            return Verdict(action="allow", reason=f"allowed by rule {rule!r}", decided_by=self.name)
         return Verdict(action="ask", decided_by=self.name)
 
 

@@ -50,6 +50,12 @@
   .note { font-size: 12px; color: var(--dim); margin: 6px auto; }
   .errbox { border: 1px solid var(--err); color: var(--err); border-radius: 8px; padding: 8px 12px; margin: 10px auto; }
   .a { background: var(--add); display: block; } .d { background: var(--del); display: block; }
+  .cmd { background: var(--tool); border: 1px solid var(--line); font: 12.5px/1.45 ui-monospace, Menlo, monospace;
+         white-space: pre-wrap; }
+  .cmd .head { color: var(--dim); }
+  #hint { padding: 0 16px; background: var(--panel); font: 12px ui-monospace, Menlo, monospace; }
+  #hint:empty { display: none; }
+  #hint div { padding: 2px 0; } #hint div:first-child { color: var(--accent); }
   form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--panel); }
   textarea { flex: 1; resize: none; max-height: 200px; background: var(--bg); color: var(--fg);
              border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
@@ -68,6 +74,7 @@
 <body>
 <header><h1>Jimbo</h1><span id="status" class="off">connecting…</span></header>
 <div id="log"></div>
+<div id="hint"></div>
 <form id="form">
   <textarea id="input" rows="1" placeholder="Message jimbo — Enter to send, Shift+Enter for newline" autofocus></textarea>
   <button id="send">Send</button>
@@ -79,10 +86,12 @@ const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls)
 const log = $("#log"), input = $("#input"), sendBtn = $("#send"), statusEl = $("#status");
 const token = new URLSearchParams(location.search).get("token") || "";
 let ws, running = false, seg = null, segText = "", cards = new Map(), pendingId = null;
+let commands = [], lastCtx = null;
 
 function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
 function setRunning(v) {
-  running = v; sendBtn.disabled = v || !ws || ws.readyState !== 1;
+  running = v; sendBtn.disabled = !ws || ws.readyState !== 1;
+  sendBtn.textContent = v ? "Stop" : "Send"; sendBtn.classList.toggle("deny", v);
   if (ws && ws.readyState === 1) setStatus(v ? "working…" : "idle", v ? "busy" : "");
 }
 function scroll() { const near = log.scrollHeight - log.scrollTop - log.clientHeight < 120; if (near) log.scrollTop = log.scrollHeight; }
@@ -140,9 +149,22 @@ function onEvent(ev) {
     }
     case "approval_resolved":
       if (d.decided_by !== "user") add(el("div", "note", `approval ${d.tool}: ${d.action} (${d.decided_by})`)); break;
-    case "usage": add(el("div", "note", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`)); break;
+    case "usage": {
+      let s = `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`;
+      if (lastCtx && lastCtx.window) s += ` · context ${Math.round(100 * lastCtx.tokens / lastCtx.window)}%`;
+      add(el("div", "note", s)); break;
+    }
+    case "context": lastCtx = d; break;
+    case "commands": commands = d.commands; break;
+    case "command_output": {
+      const box = add(el("div", "msg cmd" + (d.ok ? "" : " err")));
+      box.append(el("div", "head", "/" + d.command), d.text); break;
+    }
     case "error": seg = null; add(el("div", "errbox", `${d.type}: ${d.message}`)); break;
-    case "run_finished": seg = null; setRunning(false); input.focus(); break;
+    case "run_finished":
+      seg = null; setRunning(false); input.focus();
+      if (d.cancelled) add(el("div", "note warn", "interrupted"));
+      break;
   }
 }
 
@@ -175,9 +197,22 @@ function submit() {
   if (!text || running || !ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify({ type: "send", text })); input.value = ""; input.style.height = "auto";
 }
-$("#form").onsubmit = (e) => { e.preventDefault(); submit(); };
-input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } };
-input.oninput = () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; };
+function matches() {
+  const t = input.value;
+  return t.startsWith("/") && !/\s/.test(t) ? commands.filter((c) => c.name.startsWith(t.slice(1))) : [];
+}
+function updateHint() { $("#hint").replaceChildren(...matches().map((c) => el("div", null, `/${c.name} — ${c.help}`))); }
+$("#form").onsubmit = (e) => {
+  e.preventDefault();
+  if (running) ws.send(JSON.stringify({ type: "cancel" })); else submit();
+};
+input.onkeydown = (e) => {
+  if (e.key === "Tab" && matches().length) { e.preventDefault(); input.value = "/" + matches()[0].name + " "; updateHint(); }
+  else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); updateHint(); }
+};
+input.oninput = () => {
+  input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; updateHint();
+};
 connect();
 </script>
 </body>

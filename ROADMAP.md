@@ -34,7 +34,7 @@ commands, paste, steering, skills, compaction, planning, todos, plus the gaps fo
 Ordering principle: build the two foundations everything else hangs on (**command dispatch** and
 **run-as-a-task**), then the high-value tools, then features roughly by dependency.
 
-### Phase 0 — Foundations (small, unblocks everything)
+### Phase 0 — Foundations (small, unblocks everything) — done
 1. **Run as a cancellable task.** `run_frontend` runs `session.send()` in an `asyncio.Task`; add
    `session.cancel()`; on `CancelledError` keep history up to the last complete message pair and emit
    `run_finished(ok=False, cancelled=True)`. TUI: Esc/Ctrl+C during a run cancels instead of quitting.
@@ -47,13 +47,13 @@ Ordering principle: build the two foundations everything else hangs on (**comman
    after each model request emit `context` event with last `input_tokens` / window. Feeds `/usage`,
    status line and auto-compaction.
 
-### Phase 1 — Slash commands (first batch on the registry)
+### Phase 1 — Slash commands (first batch on the registry) — done
 `/help`, `/clear` (reset history), `/model <p:m>` (rebuild agent), `/usage`, `/approve yolo|ask`,
 `/quit`. Later phases register `/compact`, `/plan`, `/todos`, `/skills`, `/resume`.
 Also: user-defined commands as markdown files in `~/.jimbo/commands/` and `.jimbo/commands/`
 (file body = prompt template with `$ARGUMENTS`); same loader pattern reused by skills.
 
-### Phase 2 — Shell and search tools
+### Phase 2 — Shell and search tools — done
 - `tools/search.py`: `glob(pattern)`, `grep(pattern, path, glob)` — read-only, use `rg` if present,
   else Python fallback; respect `.gitignore`; output caps like `fs.py`.
 - `tools/shell.py`: `run(command, timeout)` via `asyncio.create_subprocess_shell` in the workspace,

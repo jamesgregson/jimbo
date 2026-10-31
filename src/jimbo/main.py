@@ -23,8 +23,8 @@ def main() -> None:
     overrides = {k: v for k, v in {"model": args.model, "workspace": args.workspace, "ui": args.ui}.items() if v}
     settings = Settings(**overrides)
     if args.yolo:
-        settings.approval = ["yolo"]
-    frontend = build_frontend(settings.ui)
+        settings.approval = ["rules", "yolo"]  # deny rules still apply
+    frontend = build_frontend(settings)
     sink = JsonlSink(settings.log_dir) if settings.log_sessions else None
     session = build_session(settings, frontend, [sink] if sink else None)
 

@@ -34,6 +34,11 @@ class PlainFrontend:
                 print(f"\n[error] {d['type']}: {d['message']}", file=sys.stderr)
             case "approval_resolved":
                 print(f"[approval] {d['tool']}: {d['action']} by {d['decided_by']}", file=sys.stderr)
+            case "command_output":
+                print(d["text"], file=sys.stdout if d["ok"] else sys.stderr)
+            case "run_finished" if d.get("cancelled"):
+                self._streamed = False
+                print("\n[interrupted]", file=sys.stderr)
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         print(f"\nApprove {req.tool}: {req.summary}", file=sys.stderr)

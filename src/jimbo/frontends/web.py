@@ -2,7 +2,8 @@
 
 Server -> client: {"type": "event", "event": Event}, {"type": "approval", "request": ApprovalRequest},
                   {"type": "approval_closed", "id": str}
-Client -> server: {"type": "send", "text": str}, {"type": "approve", "id": str, "decision": "yes|no|always"}
+Client -> server: {"type": "send", "text": str}, {"type": "approve", "id": str, "decision": "yes|no|always"},
+                  {"type": "cancel"}
 """
 
 import asyncio
@@ -11,6 +12,7 @@ import json
 import secrets
 import webbrowser
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 from aiohttp import WSMsgType, web
@@ -31,6 +33,11 @@ class WebFrontend:
         self._history: list[dict] = []
         self._pending: dict[str, tuple[ApprovalRequest, asyncio.Future[ApprovalDecision]]] = {}
         self._runner: web.AppRunner | None = None
+        self._cancel: Callable[[], object] | None = None
+
+    def bind_cancel(self, cancel: Callable[[], object]) -> None:
+        """Called by run_frontend so the page's stop button can interrupt the run."""
+        self._cancel = cancel
 
     # ---- Frontend protocol ----
     async def next_user_input(self) -> str | None:
@@ -116,6 +123,8 @@ class WebFrontend:
             return
         if kind == "send" and isinstance(msg.get("text"), str) and msg["text"].strip():
             self._inputs.put_nowait(msg["text"])
+        elif kind == "cancel" and self._cancel:
+            self._cancel()
         elif kind == "approve" and msg.get("id") in self._pending:
             _, fut = self._pending[msg["id"]]
             d = msg.get("decision")

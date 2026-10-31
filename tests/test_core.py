@@ -11,6 +11,10 @@ from jimbo.tools.paths import PathEscape, resolve_in_workspace
 from jimbo.wiring import build_session
 
 
+def settings(tmp_path, **kw):
+    return Settings(workspace=tmp_path, user_dir=tmp_path / "user", **kw)
+
+
 class ScriptedFrontend:
     def __init__(self, inputs=(), allow=True):
         self.inputs, self.allow, self.events = list(inputs), allow, []
@@ -51,7 +55,7 @@ async def test_session_runs_tools_and_emits_events(tmp_path):
         else:
             yield {0: DeltaToolCall(name="read_file", json_args='{"path": "a.txt"}')}
 
-    s = build_session(Settings(workspace=tmp_path), fe, model=FunctionModel(script, stream_function=stream))
+    s = build_session(settings(tmp_path), fe, model=FunctionModel(script, stream_function=stream))
     out = await s.send("go")
     assert out == "saw: 1\thello\n2\tworld"
     assert out is not None
@@ -64,7 +68,7 @@ async def test_session_runs_tools_and_emits_events(tmp_path):
 async def test_denied_non_readonly_fails_closed(tmp_path):
     from jimbo.core.deps import ToolDenied
     fe = ScriptedFrontend(allow=False)
-    s = build_session(Settings(workspace=tmp_path), fe, model=TestModel())
+    s = build_session(settings(tmp_path), fe, model=TestModel())
     with pytest.raises(ToolDenied):
         await s.deps.authorize("write_file", {}, "write x")
 
@@ -75,7 +79,7 @@ async def test_remember_for_session(tmp_path):
             self.asked = getattr(self, "asked", 0) + 1
             return ApprovalDecision(allow=True, remember="session")
     fe = Always()
-    s = build_session(Settings(workspace=tmp_path), fe, model=TestModel())
+    s = build_session(settings(tmp_path), fe, model=TestModel())
     await s.deps.authorize("write_file", {}, "w1")
     await s.deps.authorize("write_file", {}, "w2")
     assert fe.asked == 1
@@ -87,7 +91,7 @@ async def test_write_and_edit_tools(tmp_path):
     from jimbo.tools.fs import edit_file, write_file
 
     fe = ScriptedFrontend()
-    s = build_session(Settings(workspace=tmp_path), fe, model=TestModel())
+    s = build_session(settings(tmp_path), fe, model=TestModel())
     ctx = SimpleNamespace(deps=s.deps)
     await write_file(ctx, "sub/r.txt", "a\nb\n")
     assert (tmp_path / "sub/r.txt").read_text() == "a\nb\n"
@@ -98,7 +102,7 @@ async def test_write_and_edit_tools(tmp_path):
     with pytest.raises(ModelRetry):
         await write_file(ctx, "../x.txt", "no")
     fe.allow = False
-    s2 = build_session(Settings(workspace=tmp_path), fe, model=TestModel())
+    s2 = build_session(settings(tmp_path), fe, model=TestModel())
     with pytest.raises(ModelRetry):
         await write_file(SimpleNamespace(deps=s2.deps), "n.txt", "x")
     assert not (tmp_path / "n.txt").exists()
@@ -129,7 +133,7 @@ async def test_jsonl_sink_logs_session(tmp_path):
     from jimbo.core.jsonl import JsonlSink
 
     sink = JsonlSink(tmp_path / "logs")
-    s = build_session(Settings(workspace=tmp_path), ScriptedFrontend(), [sink], model=TestModel())
+    s = build_session(settings(tmp_path), ScriptedFrontend(), [sink], model=TestModel())
     await s.send("hi")
     sink.close()
     lines = (tmp_path / "logs" / f"{s.session_id}.jsonl").read_text().splitlines()
@@ -144,7 +148,145 @@ async def test_streamed_text_keeps_first_chunk(tmp_path):
         yield "let me"
 
     fe = ScriptedFrontend()
-    s = build_session(Settings(workspace=tmp_path), fe, model=FunctionModel(stream_function=stream))
+    s = build_session(settings(tmp_path), fe, model=FunctionModel(stream_function=stream))
     await s.send("go")
     streamed = "".join(e.data["text"] for e in fe.events if e.kind == "assistant_text_delta")
     assert streamed == "Now let me"
+
+
+def outputs(fe):
+    return [e.data for e in fe.events if e.kind == "command_output"]
+
+
+async def test_builtin_commands(tmp_path):
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path), fe, model=TestModel())
+    reg = s.commands
+    assert not await reg.dispatch(s, "/Users/me/file.py is broken")  # paths are prompts, not commands
+    assert not await reg.dispatch(s, "hello")
+    assert await reg.dispatch(s, "/help")
+    assert "/clear" in outputs(fe)[-1]["text"]
+    assert await reg.dispatch(s, "/nope")
+    assert not outputs(fe)[-1]["ok"]
+    await s.send("hi")
+    assert s.history and s.total_usage.requests >= 1
+    await reg.dispatch(s, "/clear")
+    assert s.history == []
+    await reg.dispatch(s, "/model bogus")
+    assert not outputs(fe)[-1]["ok"] and "provider" in outputs(fe)[-1]["text"]
+    await reg.dispatch(s, "/approve yolo")
+    assert outputs(fe)[-1]["text"] == "approval: rules → yolo"
+    fe.allow = False
+    await s.deps.authorize("write_file", {}, "w")  # would raise if still asking
+    await reg.dispatch(s, "/approve default")
+    assert "ask" in outputs(fe)[-1]["text"]
+    await reg.dispatch(s, "/usage")
+    assert f"{s.total_usage.requests} requests" in outputs(fe)[-1]["text"]
+
+
+async def test_run_frontend_dispatches_and_quits(tmp_path):
+    from jimbo.core.runner import run_frontend
+    fe = ScriptedFrontend(["/help", "hi", "/quit", "never sent"])
+    s = build_session(settings(tmp_path), fe, model=TestModel())
+    await run_frontend(s, fe)
+    kinds = [e.kind for e in fe.events]
+    assert kinds[0] == "commands" and "command_output" in kinds
+    assert [e.data["text"] for e in fe.events if e.kind == "user_message"] == ["hi"]
+    assert fe.inputs == ["never sent"]
+
+
+async def test_markdown_commands(tmp_path):
+    cmds = tmp_path / ".jimbo" / "commands"
+    cmds.mkdir(parents=True)
+    (cmds / "fix.md").write_text("---\ndescription: fix an issue\n---\nPlease fix $ARGUMENTS now.\n")
+    (cmds / "review.md").write_text("Review the code.")
+    (cmds / "help.md").write_text("shadowing a builtin is ignored")
+    seen = []
+
+    async def stream(messages, info):
+        seen.append(messages[-1].parts[-1].content)
+        yield "ok"
+
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path), fe, model=FunctionModel(stream_function=stream))
+    assert {"name": "fix", "help": "fix an issue"} in s.commands.describe()
+    await s.commands.dispatch(s, "/fix the login bug")
+    await s.commands.dispatch(s, "/review src/a.py")
+    await s.commands.dispatch(s, "/help")
+    assert seen == ["Please fix the login bug now.\n", "Review the code.\n\nsrc/a.py"]
+    assert "shadowing" not in outputs(fe)[-1]["text"]
+
+
+async def test_cancel_keeps_partial_turn_and_session_usable(tmp_path):
+    import asyncio
+    (tmp_path / "a.txt").write_text("hello\n")
+    started, calls = asyncio.Event(), []
+
+    async def stream(messages, info):
+        calls.append(1)
+        last = messages[-1].parts[-1]
+        if len(calls) == 1:
+            yield {0: DeltaToolCall(name="read_file", json_args='{"path": "a.txt"}')}
+        elif isinstance(last, ToolReturnPart):
+            yield "thinking about "
+            started.set()
+            await asyncio.Event().wait()  # hang until cancelled
+        else:
+            yield "fresh answer"
+
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path), fe, model=FunctionModel(stream_function=stream))
+    assert not s.cancel()  # nothing running
+    task = asyncio.create_task(s.send("go"))
+    await asyncio.wait_for(started.wait(), 2)
+    assert s.cancel()
+    assert await asyncio.wait_for(task, 2) is None
+    assert fe.events[-1].kind == "run_finished" and fe.events[-1].data == {"ok": False, "cancelled": True}
+    parts = [p for m in s.history for p in m.parts]
+    assert any(isinstance(p, ToolReturnPart) and "hello" in str(p.content) for p in parts)
+    assert await s.send("again") == "fresh answer"
+
+
+async def test_context_event(tmp_path):
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path, context_window=1000), fe, model=TestModel())
+    await s.send("hi")
+    ctx = [e.data for e in fe.events if e.kind == "context"]
+    assert ctx and ctx[-1]["window"] == 1000 and ctx[-1]["tokens"] == s.context_tokens > 0
+
+
+async def test_sigint_cancels_run_not_jimbo(tmp_path):
+    import asyncio, os, signal
+    from jimbo.core.runner import run_frontend
+    started = asyncio.Event()
+
+    async def stream(messages, info):
+        yield "working"
+        started.set()
+        await asyncio.Event().wait()
+
+    fe = ScriptedFrontend(["go"])
+    s = build_session(settings(tmp_path), fe, model=FunctionModel(stream_function=stream))
+    task = asyncio.create_task(run_frontend(s, fe))
+    await asyncio.wait_for(started.wait(), 2)
+    os.kill(os.getpid(), signal.SIGINT)
+    await asyncio.wait_for(task, 2)
+    assert fe.events[-1].data == {"ok": False, "cancelled": True}
+    assert signal.getsignal(signal.SIGINT) is not None  # handler restored
+
+
+async def test_shell_allowed_by_rule_without_asking(tmp_path):
+    async def stream(messages, info):
+        last = messages[-1].parts[-1]
+        if isinstance(last, ToolReturnPart):
+            yield f"got: {last.content}"
+        else:
+            yield {0: DeltaToolCall(name="shell", json_args='{"command": "echo from-shell"}')}
+
+    fe = ScriptedFrontend(allow=False)  # would deny if asked
+    s = build_session(settings(tmp_path, approval_allow=["shell:echo *"]), fe,
+                      model=FunctionModel(stream_function=stream))
+    assert await s.send("go") == "got: exit code 0\nfrom-shell"
+    resolved = [e.data for e in fe.events if e.kind == "approval_resolved"]
+    assert resolved == [{"tool": "shell", "action": "allow", "decided_by": "rules",
+                         "reason": "allowed by rule 'shell:echo *'"}]

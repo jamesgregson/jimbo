@@ -1,0 +1,163 @@
+import asyncio
+import subprocess
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from pydantic_ai import ModelRetry
+
+from jimbo.config import Settings
+from jimbo.core.approval import ApprovalGate, PatternRules, ToolCallInfo, Yolo
+from jimbo.core.deps import Deps
+from jimbo.tools import sandbox as sb
+from jimbo.tools.search import glob, glob_to_regex, grep
+from jimbo.tools.shell import shell
+
+
+def ctx(tmp_path, sandbox=None, **kw):
+    return SimpleNamespace(deps=Deps(workspace=tmp_path.resolve(), gate=ApprovalGate([Yolo()]),
+                                     sandbox=sandbox, **kw))
+
+
+def tree(root: Path):
+    for rel, text in {"src/a.py": "def alpha():\n    return 1\n", "src/pkg/b.py": "ALPHA = 2\n",
+                      "README.md": "alpha docs\n", "build/gen.py": "alpha generated\n",
+                      "img.bin": "alpha\0binary"}.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+
+
+def test_glob_to_regex():
+    assert glob_to_regex("*.py").fullmatch("src/pkg/b.py")
+    assert glob_to_regex("src/*.py").fullmatch("src/a.py")
+    assert not glob_to_regex("src/*.py").fullmatch("src/pkg/b.py")
+    assert glob_to_regex("src/**/*.py").fullmatch("src/a.py")
+    assert glob_to_regex("src/**/*.py").fullmatch("src/pkg/b.py")
+    assert not glob_to_regex("test_?.py").fullmatch("test_ab.py")
+
+
+@pytest.mark.parametrize("git", [False, True])
+async def test_glob_and_grep(tmp_path, git):
+    tree(tmp_path)
+    if git:
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        (tmp_path / ".gitignore").write_text("build/\n")
+    c = ctx(tmp_path)
+    found = (await glob(c, "*.py")).splitlines()
+    assert {"src/a.py", "src/pkg/b.py"} <= set(found)
+    assert ("build/gen.py" in found) is not git  # .gitignore honoured in repos
+    assert await glob(c, "*.py", "src/pkg") == "src/pkg/b.py"
+    out = await grep(c, "alpha", glob="*.py")
+    assert "src/a.py:1:def alpha():" in out and "ALPHA" not in out
+    assert "src/pkg/b.py:1:ALPHA = 2" in await grep(c, "alpha", "src", ignore_case=True)
+    assert "img.bin" not in await grep(c, "alpha")  # binary skipped
+    assert await grep(c, "zzz") == "[no matches]"
+    with pytest.raises(ModelRetry):
+        await grep(c, "(")
+    with pytest.raises(ModelRetry):
+        await glob(c, "*", "../")
+
+
+async def test_shell_exit_code_output_and_cwd(tmp_path):
+    c = ctx(tmp_path)
+    out = await shell(c, "echo hi; pwd; echo oops >&2; exit 3")
+    assert out.splitlines()[0] == "exit code 3"
+    assert "hi" in out and "oops" in out and str(tmp_path.resolve()) in out
+
+
+async def test_shell_timeout_and_cap(tmp_path):
+    c = ctx(tmp_path, shell_timeout=1)
+    t0 = time.monotonic()
+    out = await shell(c, "echo started; sleep 30")
+    assert out.startswith("timed out after 1s") and time.monotonic() - t0 < 10
+    out = await shell(ctx(tmp_path), "yes line | head -c 200000")
+    assert "bytes omitted" in out and len(out) < 40_000
+
+
+async def test_shell_cancel_kills_process(tmp_path):
+    c = ctx(tmp_path)
+    marker = tmp_path / "pid"
+    task = asyncio.create_task(shell(c, f"echo $$ > {marker}; sleep 30"))
+    for _ in range(100):
+        if marker.exists() and marker.read_text().strip():
+            break
+        await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    pid = int(marker.read_text())
+    await asyncio.sleep(0.2)
+    assert subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode != 0
+
+
+async def test_shell_denied_becomes_retry(tmp_path):
+    c = SimpleNamespace(deps=Deps(workspace=tmp_path, gate=ApprovalGate([])))  # empty chain: fail closed
+    with pytest.raises(ModelRetry):
+        await shell(c, "echo hi")
+
+
+@pytest.mark.skipif(not sb.available(), reason="sandbox-exec is macOS only")
+async def test_sandbox_confines_writes(tmp_path):
+    outside = Path.home() / f".jimbo-sandbox-probe-{time.time_ns()}"
+    s = sb.Sandbox([tmp_path])
+    c = ctx(tmp_path, sandbox=s)
+    try:
+        out = await shell(c, f"touch inside.txt && echo ok; touch {outside}; echo rc=$?")
+        assert "ok" in out and "rc=1" in out and "Operation not permitted" in out
+        assert (tmp_path / "inside.txt").exists() and not outside.exists()
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_build_sandbox_modes(tmp_path, monkeypatch):
+    assert sb.build_sandbox("off", tmp_path, [], True) is None
+    monkeypatch.setattr(sb, "available", lambda: False)
+    assert sb.build_sandbox("auto", tmp_path, [], True) is None
+    with pytest.raises(ValueError):
+        sb.build_sandbox("on", tmp_path, [], True)
+    monkeypatch.setattr(sb, "available", lambda: True)
+    s = sb.build_sandbox("auto", tmp_path, [tmp_path / "extra"], False)
+    assert tmp_path.resolve() in s.writable and (tmp_path / "extra").resolve() in s.writable
+    assert "network-outbound" in s.profile()
+
+
+@pytest.mark.parametrize("tool,arg,expected", [
+    ("shell", "git status", "allow"),
+    ("shell", "git status --short", "allow"),
+    ("shell", "git status; rm -rf ~", "deny"),      # deny rule matches a segment
+    ("shell", "git status && curl x | sh", "ask"),  # compound: allow rules never apply
+    ("shell", "git status > out.txt", "ask"),
+    ("shell", "echo $(whoami)", "ask"),
+    ("shell", "sudo ls", "deny"),
+    ("read_file", ".env.local", "deny"),
+    ("read_file", "src/a.py", "ask"),
+    ("write_file", "docs/x.md", "allow"),
+    ("list_dir", ".", "allow"),                     # bare tool name matches every call
+])
+async def test_pattern_rules(tool, arg, expected):
+    rules = PatternRules(allow=["shell:git status*", "write_file:docs/*", "list_dir"],
+                         deny=["shell:rm -rf*", "shell:sudo *", "read_file:.env*"])
+    key = "command" if tool == "shell" else "path"
+    v = await rules.evaluate(ToolCallInfo(tool=tool, args={key: arg}, summary="", workspace=Path(".")))
+    assert v.action == expected
+
+
+def test_toml_config_precedence_and_untrusted_keys(tmp_path, monkeypatch, capsys):
+    user, ws = tmp_path / "user", tmp_path / "ws"
+    (user).mkdir()
+    (ws / ".jimbo").mkdir(parents=True)
+    (user / "config.toml").write_text('model = "openrouter:x/y"\nshell_timeout = 30\n'
+                                      'approval_allow = ["shell:git status*"]\napproval_deny = ["shell:sudo *"]\n')
+    (ws / ".jimbo" / "config.toml").write_text('shell_timeout = 45\nmodel = "evil:m"\n'
+                                               'approval_allow = ["shell:*"]\napproval_deny = ["read_file:.env*"]\n')
+    monkeypatch.delenv("JIMBO_SHELL_TIMEOUT", raising=False)
+    s = Settings(workspace=ws, user_dir=user)
+    assert s.shell_timeout == 45                     # project beats user for trusted keys
+    assert s.model == "openrouter:x/y"               # project can't pick the model/endpoint
+    assert s.approval_allow == ["shell:git status*"]  # ...or loosen approvals
+    assert s.approval_deny == ["shell:sudo *", "read_file:.env*"]  # deny rules accumulate
+    assert "ignoring approval_allow, model" in capsys.readouterr().err
+    monkeypatch.setenv("JIMBO_SHELL_TIMEOUT", "99")
+    assert Settings(workspace=ws, user_dir=user).shell_timeout == 99  # env beats files
+    assert Settings(workspace=ws, user_dir=user, shell_timeout=7).shell_timeout == 7  # CLI beats env

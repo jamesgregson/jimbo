@@ -66,3 +66,18 @@ async def test_input_quit_and_double_interrupt():
     assert await fe.next_user_input() is None
     fe, _ = make([KeyboardInterrupt(), KeyboardInterrupt()])
     assert await fe.next_user_input() is None
+
+
+async def test_commands_completion_output_and_interrupt():
+    from prompt_toolkit.document import Document
+    fe, out = make()
+    await fe.render(ev(1, "commands", commands=[{"name": "help", "help": "list"}, {"name": "clear", "help": "x"}]))
+    got = [c.text for c in fe.completer.get_completions(Document("/he"), None)]
+    assert got == ["/help"]
+    assert not list(fe.completer.get_completions(Document("/help me"), None))
+    await fe.render(ev(2, "command_output", command="help", ok=True, text="/help — list"))
+    await fe.render(ev(3, "context", tokens=250, window=1000))
+    await fe.render(ev(4, "usage", requests=1, input_tokens=200, output_tokens=50))
+    await fe.render(ev(5, "run_finished", ok=False, cancelled=True))
+    s = out.getvalue()
+    assert "/help — list" in s and "(interrupted)" in s and "ctx 25%" in s

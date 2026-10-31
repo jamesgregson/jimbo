@@ -16,8 +16,11 @@ EventKind = Literal[
     "approval_requested",
     "approval_resolved",
     "usage",
+    "context",
     "error",
     "run_finished",
+    "commands",
+    "command_output",
 ]
 
 

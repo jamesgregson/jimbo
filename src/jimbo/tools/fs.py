@@ -96,4 +96,4 @@ async def edit_file(ctx: RunContext[Deps], path: str, old: str, new: str, replac
     return f"edited {path} ({n if replace_all else 1} replacement(s))"
 
 
-ALL_TOOLS = [read_file, list_dir, write_file, edit_file]
+FS_TOOLS = [read_file, list_dir, write_file, edit_file]
