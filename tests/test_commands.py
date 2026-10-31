@@ -189,7 +189,9 @@ async def test_quit_raises():
 
 def test_parse_frontmatter():
     assert parse_frontmatter("---\ndescription: fix it\nother: a: b\n---\n\nBody\n") == (
-        {"description": "fix it", "other": "a: b"}, "Body\n")
+        {"description": "fix it", "other": "a: b"}, "Body\n")  # invalid YAML falls back to flat parsing
+    meta, body = parse_frontmatter("---\ndescription: >\n  line one\n  line two\nmetadata:\n  v: '1'\n---\nB")
+    assert meta == {"description": "line one line two\n", "metadata": {"v": "1"}} and body == "B"
     assert parse_frontmatter("no frontmatter") == ({}, "no frontmatter")
     assert parse_frontmatter("---\nunclosed: yes\nbody") == ({}, "---\nunclosed: yes\nbody")
 
@@ -235,4 +237,4 @@ async def test_workspace_commands_override_user_commands(tmp_path):
 
 async def test_missing_command_dirs_are_fine(tmp_path):
     s, _ = make(tmp_path)  # neither user/commands nor .jimbo/commands exists
-    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "help", "model", "quit", "todos", "usage"}
+    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "help", "model", "quit", "skills", "todos", "usage"}

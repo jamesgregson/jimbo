@@ -87,7 +87,7 @@ Also: user-defined commands as markdown files in `~/.jimbo/commands/` and `.jimb
   UIs); approving removes `PlanMode` and seeds todos from the plan. Instructions gain a plan-mode section
   (pydantic-ai dynamic `@agent.instructions` reading `deps.mode`).
 
-### Phase 6 — Project instructions and skills
+### Phase 6 — Project instructions and skills — done
 - Dynamic instructions: load `AGENTS.md` / `JIMBO.md` from workspace root (+ `~/.jimbo/AGENTS.md`).
 - Skills: discover `*/SKILL.md` in `~/.jimbo/skills` and `.jimbo/skills`; parse frontmatter
   (`name`, `description`); list name+description in instructions; `load_skill(name)` tool returns

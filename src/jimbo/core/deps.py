@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from .approval import ApprovalGate, ToolCallInfo
 
 if TYPE_CHECKING:
+    from .skills import Skill
     from ..tools.sandbox import Sandbox
     from ..tools.todos import TodoItem
 
@@ -23,6 +24,12 @@ class Deps:
     shell_timeout: int = 120
     shell_timeout_max: int = 600
     todos: "list[TodoItem]" = field(default_factory=list)
+    project_instructions: str = ""
+    skills: "dict[str, Skill]" = field(default_factory=dict)
+
+    def read_roots(self) -> list[Path]:
+        """Directories outside the workspace that read-only file tools may access: loaded skills' folders."""
+        return [s.path.parent for s in self.skills.values()]
 
     async def authorize(self, tool: str, args: dict, summary: str, *, detail: str | None = None,
                         read_only: bool = False) -> None:

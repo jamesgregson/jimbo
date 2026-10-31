@@ -3,17 +3,17 @@ import difflib
 from pydantic_ai import ModelRetry, RunContext
 
 from ..core.deps import Deps, ToolDenied
-from .paths import PathEscape, resolve_in_workspace
+from .paths import PathEscape, resolve_in_workspace, resolve_readable
 
 MAX_READ_BYTES = 64_000
 MAX_LIST_ENTRIES = 500
 
 
 async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: int = 500) -> str:
-    """Read a text file in the workspace. Returns numbered lines starting at line `offset` (1-based)."""
+    """Read a text file in the workspace (or in a skill's directory, by absolute path). Returns numbered lines starting at line `offset` (1-based)."""
     try:
         await ctx.deps.authorize("read_file", {"path": path}, f"read {path}", read_only=True)
-        p = resolve_in_workspace(ctx.deps.workspace, path)
+        p = resolve_readable(ctx.deps.workspace, path, ctx.deps.read_roots())
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
     if not p.is_file():
@@ -37,7 +37,7 @@ async def list_dir(ctx: RunContext[Deps], path: str = ".") -> str:
     """List entries of a workspace directory. Directories end with '/'."""
     try:
         await ctx.deps.authorize("list_dir", {"path": path}, f"list {path}", read_only=True)
-        p = resolve_in_workspace(ctx.deps.workspace, path)
+        p = resolve_readable(ctx.deps.workspace, path, ctx.deps.read_roots())
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
     if not p.is_dir():

@@ -3,7 +3,9 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+import yaml
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -68,19 +70,26 @@ class CommandRegistry:
         return True
 
 
-def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Split simple `key: value` frontmatter (between `---` lines) from a markdown body."""
+def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """Split YAML frontmatter (between `---` lines) from a markdown body.
+
+    Invalid YAML falls back to flat `key: value` lines so a stray colon doesn't lose the whole header."""
     if not text.startswith("---\n"):
         return {}, text
     head, sep, body = text[4:].partition("\n---\n")
     if not sep:
         return {}, text
-    meta = {}
-    for line in head.splitlines():
-        key, colon, value = line.partition(":")
-        if colon:
-            meta[key.strip()] = value.strip()
-    return meta, body.lstrip("\n")
+    try:
+        meta = yaml.safe_load(head)
+    except yaml.YAMLError:
+        meta = None
+    if not isinstance(meta, dict):
+        meta = {}
+        for line in head.splitlines():
+            key, colon, value = line.partition(":")
+            if colon:
+                meta[key.strip()] = value.strip()
+    return {str(k): v for k, v in meta.items()}, body.lstrip("\n")
 
 
 def load_markdown_commands(registry: CommandRegistry, dirs: list[Path]) -> None:
@@ -103,4 +112,4 @@ def load_markdown_commands(registry: CommandRegistry, dirs: list[Path]) -> None:
                     prompt = f"{body.rstrip()}\n\n{args}" if args else body
                 await session.send(prompt)
 
-            registry.add(name, meta.get("description") or f"prompt from {path}", run)
+            registry.add(name, str(meta.get("description") or f"prompt from {path}"), run)

@@ -5,6 +5,7 @@ from .config import Settings
 from .core.approval import ApprovalPolicy
 from .core.commands import CommandError, CommandRegistry, QuitSession
 from .core.session import AgentSession
+from .core.skills import Skill, format_skill_index
 from .providers.registry import build_model
 from .tools.todos import format_todos
 
@@ -58,6 +59,9 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     async def todos(session: AgentSession, args: str) -> str:
         return format_todos(session.deps.todos)
 
+    async def skills(session: AgentSession, args: str) -> str:
+        return format_skill_index(session.deps.skills) or "No skills found."
+
     async def quit_(session: AgentSession, args: str) -> None:
         raise QuitSession
 
@@ -67,4 +71,18 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("usage", "token usage and context fill for this session", usage)
     registry.add("approve", "show or set approval chain: /approve [yolo|default]", approve)
     registry.add("todos", "show the agent's task list", todos)
+    registry.add("skills", "list available skills", skills)
     registry.add("quit", "exit jimbo", quit_)
+
+
+def register_skill_commands(registry: CommandRegistry, skills: dict[str, Skill]) -> None:
+    """/<skill> [args] starts a turn that applies the skill. Existing commands are never overridden."""
+    for skill in skills.values():
+        if skill.name in registry:
+            continue
+
+        async def run(session: AgentSession, args: str, skill: Skill = skill) -> None:
+            prompt = f"Use the skill '{skill.name}'. Its instructions:\n\n{skill.body}"
+            await session.send(f"{prompt}\n\n{args}" if args else prompt)
+
+        registry.add(skill.name, skill.description or f"skill from {skill.path}", run)

@@ -1,10 +1,12 @@
 import platform
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
 from .config import Settings
 from .core.deps import Deps
+from .core.skills import format_skill_index
+from .tools.skills import SKILL_TOOLS
 from .tools.fs import FS_TOOLS
 from .tools.search import SEARCH_TOOLS
 from .tools.shell import shell
@@ -23,11 +25,22 @@ If a tool call is denied, do not retry the same call; explain what you wanted to
 """
 
 
+def project_context(ctx: RunContext[Deps]) -> str:
+    """Dynamic instructions: AGENTS.md contents and the skill index, read from deps on every request."""
+    parts = []
+    if ctx.deps.project_instructions:
+        parts.append(ctx.deps.project_instructions)
+    if ctx.deps.skills:
+        parts.append("# Skills\nCall load_skill(name) to get a skill's full instructions when its "
+                     "description matches the task:\n" + format_skill_index(ctx.deps.skills))
+    return "\n\n".join(parts)
+
+
 def build_agent(settings: Settings, model: Model) -> Agent[Deps, str]:
     return Agent(
         model,
         deps_type=Deps,
-        instructions=SYSTEM_PROMPT.format(os=platform.system()),
-        tools=[*FS_TOOLS, *SEARCH_TOOLS, shell, *TODO_TOOLS],
+        instructions=[SYSTEM_PROMPT.format(os=platform.system()), project_context],
+        tools=[*FS_TOOLS, *SEARCH_TOOLS, shell, *TODO_TOOLS, *SKILL_TOOLS],
         retries=settings.tool_retries,
     )
