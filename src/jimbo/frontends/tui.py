@@ -1,18 +1,20 @@
 """Inline terminal UI: Rich for output (streaming markdown), prompt_toolkit for input."""
 
+import asyncio
 import re
 import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.completion import Completer, Completion, merge_completers
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.keys import Keys
 from rich.console import Console, Group
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
@@ -94,12 +96,35 @@ def _history() -> History:
         return InMemoryHistory()
 
 
+def _block_end(buf: str) -> int | None:
+    """Offset of the first blank line that ends a complete markdown block (outside code fences), if any."""
+    pos, fence, seen = 0, False, False
+    while (nl := buf.find("\n", pos)) != -1:
+        line = buf[pos:nl]
+        if line.lstrip().startswith("```"):
+            fence, seen = not fence, True
+        elif not fence:
+            if not line.strip():
+                if seen:
+                    return pos
+            else:
+                seen = True
+        pos = nl + 1
+    return None
+
+
 class TuiFrontend:
+    supports_steering = True  # the prompt stays active during a run; what's typed there steers it
+
     def __init__(self, console: Console | None = None, ask: Ask | None = None,
                  workspace: Path | None = None) -> None:
         """`console` and `ask` (a one-line prompt function) can be injected for tests."""
         self.console = console or Console()
         kb = KeyBindings()
+        self._cancel: Callable[[], object] | None = None
+        self._running = False
+        self._prompting = False  # next_user_input is waiting on the main prompt
+        self._question: tuple[str, asyncio.Future[str]] | None = None  # asked through the main prompt
         self._pastes: dict[int, str] = {}
         self._images: dict[int, BinaryContent] = {}
 
@@ -111,6 +136,18 @@ class TuiFrontend:
         def _(event) -> None:
             event.current_buffer.insert_text(self.collapse_paste(event.data))
 
+        @kb.add("c-c")  # during a run: stop it; otherwise: the usual interrupt
+        def _(event) -> None:
+            if self._running and self._cancel:
+                self._cancel()
+            else:
+                event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
+
+        @kb.add("escape", filter=Condition(lambda: self._running))
+        def _(event) -> None:
+            if self._cancel:
+                self._cancel()
+
         @kb.add("c-v")  # image from the clipboard (Cmd+V pastes text via the terminal)
         def _(event) -> None:
             event.app.create_background_task(self._paste_image(event.current_buffer))
@@ -120,9 +157,8 @@ class TuiFrontend:
         self.completer = SlashCompleter()
         self.file_completer = FileCompleter(workspace or Path.cwd())
         self._ask = ask
-        self._buf = ""
-        self._live: Live | None = None
-        self._spinner = None
+        self._buf = ""  # streamed assistant text not yet printed
+        self._streamed = False
         self._usage: dict | None = None
         self._stats = ""  # latest context/usage line, shown in the prompt toolbar and the working spinner
         self._interrupted = False
@@ -132,13 +168,43 @@ class TuiFrontend:
             self._session = PromptSession(history=_history(), key_bindings=self._kb,
                                           completer=merge_completers([self.completer, self.file_completer]),
                                           complete_while_typing=True,
-                                          bottom_toolbar=lambda: self._stats or None)
+                                          bottom_toolbar=self._toolbar, refresh_interval=0.5)
         return self._session
 
-    async def _prompt(self, message: str) -> str:
+    def bind_cancel(self, cancel: Callable[[], object]) -> None:
+        """Called by run_frontend: Ctrl+C / Esc during a run stop it."""
+        self._cancel = cancel
+
+    def _toolbar(self) -> str | None:
+        return (f"working… {self._stats}  (Esc stops · type to steer)" if self._running else self._stats) or None
+
+    def _message(self) -> str:
+        if self._question:
+            return self._question[0]
+        return "steer> " if self._running else "\n> "
+
+    def _invalidate(self) -> None:
+        if self._session is not None:
+            self._session.app.invalidate()
+
+    async def _prompt(self, message) -> str:
         if self._ask:
-            return await self._ask(message)
+            return await self._ask(message() if callable(message) else message)
         return await self._prompt_session().prompt_async(message)
+
+    async def _ask_line(self, message: str) -> str:
+        """Ask a one-line question. While the main prompt is up (a run is in flight) it takes the answer;
+        a second prompt on the same terminal would fight it for the keyboard."""
+        if not self._prompting:
+            return await self._prompt(message)
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._question = (message, fut)
+        self._invalidate()
+        try:
+            return await fut
+        finally:
+            self._question = None
+            self._invalidate()
 
     def collapse_paste(self, text: str) -> str:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -175,8 +241,13 @@ class TuiFrontend:
 
     async def next_user_input(self) -> str | UserMessage | None:
         while True:
+            self._prompting = True
             try:
-                text = await self._prompt("\n> ")
+                if self._ask:
+                    text = await self._prompt(self._message)
+                else:
+                    with patch_stdout(raw=True):  # run output prints above the prompt, not through it
+                        text = await self._prompt(self._message)
             except EOFError:
                 return None
             except KeyboardInterrupt:
@@ -185,43 +256,44 @@ class TuiFrontend:
                 self._interrupted = True
                 self.console.print("[dim](press Ctrl+C again or Ctrl+D to quit)[/dim]")
                 continue
+            finally:
+                self._prompting = False
+            if self._question:  # the line answers a question (approval), it isn't a message
+                if not self._question[1].done():
+                    self._question[1].set_result(text)
+                continue
             self._interrupted = False
             return self.expand(text)
 
-    def _start_spinner(self) -> None:
-        """Show a spinner while the agent is working but nothing is streaming (model or tool wait)."""
-        if self._spinner is None and self._live is None and self.console.is_terminal:
-            self._spinner = self.console.status(self._working_text(), spinner="dots")
-            self._spinner.start()
-
-    def _working_text(self) -> Text:
-        return Text(f"working… {self._stats}", style="dim")
-
-    def _stop_spinner(self) -> None:
-        if self._spinner is not None:
-            self._spinner.stop()
-            self._spinner = None
+    def _flush_blocks(self, *, final: bool = False) -> None:
+        """Print the complete markdown blocks buffered so far (all of it when `final`)."""
+        while (i := _block_end(self._buf)) is not None:
+            if self._buf[:i].strip():
+                self.console.print(Markdown(self._buf[:i]))
+            self._buf = self._buf[i:].lstrip("\n")
+        if final:
+            if self._buf.strip():
+                self.console.print(Markdown(self._buf))
+            self._buf = ""
 
     def _stop_live(self) -> None:
-        self._stop_spinner()
-        if self._live is not None:
-            self._live.stop()
-            self._live = None
-        self._buf = ""
+        self._flush_blocks(final=True)
+        self._streamed = False
 
     async def render(self, event: Event) -> None:
         d = event.data
         c = self.console
         match event.kind:
             case "user_message":
-                self._start_spinner()
+                if d.get("steer"):
+                    self._stop_live()
+                    c.print(Text(f"↳ steering: {_clip(d['text'], 200)}", style="bold yellow"))
+                else:
+                    self._running = True
             case "assistant_text_delta":
-                self._stop_spinner()
                 self._buf += d["text"]
-                if self._live is None:
-                    self._live = Live(console=c, auto_refresh=False, vertical_overflow="visible")
-                    self._live.start()
-                self._live.update(Markdown(self._buf), refresh=True)
+                self._streamed = True
+                self._flush_blocks()
             case "tool_call":
                 self._stop_live()
                 args = ", ".join(f"{k}={v!r}" for k, v in d["args"].items())
@@ -232,12 +304,10 @@ class TuiFrontend:
                     c.print(Text(f"  ✓ {_clip(first[0]) if first else ''}", style="dim green"))
                 else:
                     c.print(Text(f"  ✗ {_clip(d['content'], 300)}", style="red"))
-                self._start_spinner()  # the model is thinking again (or another tool is running)
             case "assistant_text":
-                self._stop_spinner()
-                if self._live is not None:
-                    self._stop_live()
-                else:
+                streamed = self._streamed
+                self._stop_live()
+                if not streamed:
                     c.print(Markdown(d["text"]))
             case "approval_resolved" if d["decided_by"] != "user":
                 c.print(Text(f"  approval: {d['tool']} → {d['action']} ({d['decided_by']})", style="dim"))
@@ -245,8 +315,6 @@ class TuiFrontend:
                 self._usage = d
             case "context":
                 self._stats = format_stats(d)
-                if self._spinner is not None:
-                    self._spinner.update(self._working_text())
             case "todos":
                 self._stop_live()
                 for t in d["items"]:
@@ -266,6 +334,8 @@ class TuiFrontend:
                 c.print(Panel(f"{d['type']}: {d['message']}", title="error", border_style="red"))
             case "run_finished":
                 self._stop_live()
+                self._running = False
+                self._invalidate()
                 if d.get("cancelled"):
                     c.print(Text("(interrupted)", style="dim yellow"))
                 if self._usage:
@@ -280,9 +350,12 @@ class TuiFrontend:
             body.append(Syntax(req.detail, "diff", theme="ansi_dark") if is_diff else Text(req.detail))
         self.console.print(Panel(Group(*body), title=f"Approve {req.tool}", border_style="yellow"))
         try:
-            ans = (await self._prompt("[y]es / [n]o / [a]lways this session? ")).strip().lower()
+            ans = (await self._ask_line("[y]es / [n]o / [a]lways this session? ")).strip().lower()
+            if ans.startswith("a"):
+                return ApprovalDecision(allow=True, remember="session")
+            if ans.startswith("y"):
+                return ApprovalDecision(allow=True)
+            note = (await self._ask_line("Why? (optional, enter to skip) ")).strip()
         except (EOFError, KeyboardInterrupt):
             return ApprovalDecision(allow=False, note="no answer")
-        if ans.startswith("a"):
-            return ApprovalDecision(allow=True, remember="session")
-        return ApprovalDecision(allow=ans.startswith("y"))
+        return ApprovalDecision(allow=False, note=note or None)

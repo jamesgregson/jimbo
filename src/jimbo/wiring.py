@@ -1,12 +1,13 @@
 from .agent import build_agent
 from .commands import register_builtins, register_skill_commands
 from .config import Settings
-from .core.approval import (ApprovalGate, ApprovalPolicy, AskUser, PatternRules, ReadOnlyAllow,
+from .core.approval import (ApprovalGate, ApprovalPolicy, AskUser, PatternRules, PlanMode, ReadOnlyAllow,
                             RememberedDecisions, Yolo)
 from .core.commands import load_markdown_commands
 from .core.deps import Deps
 from .core.events import EventSink
 from .core.interaction import Frontend
+from .core.store import SessionStore
 from .core.skills import load_project_instructions, load_skills
 from .core.session import AgentSession
 from .providers.registry import build_model
@@ -33,11 +34,12 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         return await frontend.request_approval(req)
 
     available: dict[str, ApprovalPolicy] = {
+        "plan": PlanMode(lambda: holder["s"].deps.mode == "plan", ask),
         "rules": PatternRules(settings.approval_allow, settings.approval_deny),
         "readonly": ReadOnlyAllow(), "remembered": remembered, "yolo": Yolo(),
         "ask": AskUser(ask, remembered),
     }
-    policies = [available[n] for n in settings.approval]
+    policies = [available["plan"], *(available[n] for n in settings.approval)]
 
     async def observe(call, v):
         await holder["s"].emit("approval_resolved", tool=call.tool, action=v.action,
@@ -61,6 +63,9 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                            context_window=settings.context_window or settings.num_ctx,
                            vision=settings.vision, compact_threshold=settings.compact_threshold,
                            compact_keep=settings.compact_keep)
+    if settings.log_sessions:
+        session.store = SessionStore(settings.log_dir)
+    session.replay_sink = FrontendSink(frontend)
     register_builtins(session.commands, settings, available)
     load_markdown_commands(session.commands, [settings.user_dir / "commands",
                                               deps.workspace / ".jimbo" / "commands"])

@@ -27,12 +27,14 @@ src/jimbo/
     compaction.py      history summarization (/compact and auto-compaction)
     attachments.py     @path mentions and pasted images
     jsonl.py           JsonlSink: session log
+    store.py           SessionStore: history + todos saved per turn (<id>.messages.json) for --resume
   tools/             what the model can call (all go through Deps.authorize)
     fs.py paths.py     read_file, list_dir, write_file, edit_file; workspace path confinement
     search.py          glob, grep
     shell.py           shell (with timeout, output capping, process-group kill)
     sandbox.py         macOS sandbox-exec wrapper for shell
     todos.py skills.py todo_write, load_skill
+    plan.py            exit_plan (plan mode only)
   providers/         model selection: "<provider>:<name>" -> Pydantic AI Model
   frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page)
 ```
@@ -116,6 +118,15 @@ run is in flight it installs a SIGINT handler that cancels the run instead of qu
 (`jimbo "prompt"`) skips the runner and calls `send()` once; server-style frontends (web) stay up after the
 first prompt.
 
+**Steering.** A frontend with `supports_steering = True` (tui, web; not plain, whose approval prompts share
+stdin) is polled for input during a run. The runner passes it to `session.steer()`, and the
+`midrun_history` processor in [agent.py](src/jimbo/agent.py) appends queued steers to the next model request
+as a `UserPromptPart` (emitting `user_message` with `steer=True`). Steers the run never delivered become the
+next turn; a cancelled or failed run discards them with a notice. Slash commands are refused mid-run.
+Denying an approval can carry a reason (`ApprovalDecision.note`), which the model receives as
+`User denied this action: <note>`. In the TUI the approval and reason questions are answered through the
+same prompt that takes steers.
+
 Slash commands (`/name args`) are matched by `CommandRegistry.dispatch` *before* the model sees the text.
 Text like `/Users/x/y` is not a command, so pasted paths go to the model. Custom markdown commands and
 skill commands expand into a normal prompt and run through `session.send()`, so the model can use tools
@@ -180,6 +191,7 @@ The default chain is:
 
 | Policy | Behavior |
 |--------|----------|
+| `plan` (`PlanMode`) | always first; in plan mode denies non-read-only calls and asks the user to approve `exit_plan` |
 | `rules` (`PatternRules`) | `approval_deny` first, then `approval_allow`; a match decides, otherwise `ask` |
 | `readonly` (`ReadOnlyAllow`) | allow calls flagged `read_only` (read, list, glob, grep, todos, load_skill) |
 | `remembered` (`RememberedDecisions`) | allow tools the user chose "always allow this session" for |

@@ -101,6 +101,10 @@
   button.sec { background: var(--bg); color: var(--fg); border: 1px solid var(--line); padding: 6px 14px; }
   button.deny { background: var(--err); }
   button:disabled { opacity: .5; cursor: default; }
+  button[hidden], #dlg input[hidden] { display: none; }
+  #dlg input { width: 100%; box-sizing: border-box; margin-top: 10px; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
+  .msg.user.steer { opacity: .85; border-style: dashed; }
   #modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; place-items: center; padding: 16px; }
   #modal.show { display: grid; }
   #dlg { background: var(--panel); border-radius: 12px; padding: 16px; width: min(760px, 100%);
@@ -120,12 +124,13 @@
 <form id="form">
   <textarea id="input" rows="1" placeholder="Message jimbo — Enter to send, Shift+Enter for newline" autofocus></textarea>
   <button id="send">Send</button>
+  <button id="stop" type="button" class="deny" hidden>Stop</button>
 </form>
 <div id="modal"><div id="dlg"></div></div>
 <script>
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-const log = $("#log"), input = $("#input"), sendBtn = $("#send"), statusEl = $("#status");
+const log = $("#log"), input = $("#input"), sendBtn = $("#send"), stopBtn = $("#stop"), statusEl = $("#status");
 const token = new URLSearchParams(location.search).get("token") || "";
 let ws, running = false, seg = null, segText = "", cards = new Map(), pendingId = null;
 let commands = [], lastCtx = null;
@@ -142,7 +147,7 @@ function showStats(d) {
 function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
 function setRunning(v) {
   running = v; sendBtn.disabled = !ws || ws.readyState !== 1;
-  sendBtn.textContent = v ? "Stop" : "Send"; sendBtn.classList.toggle("deny", v);
+  stopBtn.hidden = !v; input.placeholder = v ? "Steer jimbo — sent with its next step" : "Message jimbo — Enter to send, Shift+Enter for newline";
   $("#thinking").classList.toggle("show", v);
   if (ws && ws.readyState === 1) setStatus(v ? "working…" : "idle", v ? "busy" : "");
 }
@@ -233,10 +238,11 @@ function onEvent(ev) {
   const d = ev.data;
   switch (ev.kind) {
     case "user_message": {
-      seg = null; const m = add(el("div", "msg user", d.text));
+      seg = null; const m = add(el("div", "msg user" + (d.steer ? " steer" : ""), d.text));
+      if (d.steer) m.append(el("span", "chip", "sent mid-run"));
       for (const a of d.attachments || [])
         m.append(el("span", "chip", a.kind === "image" ? `image · ${a.media_type.split("/")[1]} · ${Math.round(a.bytes / 1000)} KB` : `@${a.path}${a.truncated ? " (truncated)" : ""}`));
-      setRunning(true); break;
+      if (!d.steer) setRunning(true); break;
     }
     case "assistant_text_delta":
       if (!seg) { seg = add(el("div", "msg assistant")); segText = ""; }
@@ -285,12 +291,18 @@ function showApproval(req) {
   pendingId = req.id;
   const dlg = $("#dlg"); dlg.replaceChildren(el("h2", null, `Approve ${req.tool}`), el("div", "sum", req.summary));
   if (req.detail) dlg.append(diff(req.detail));
-  const btns = el("div", "btns");
+  const btns = el("div", "btns"), answer = (decision, note) => ws.send(JSON.stringify({ type: "approve", id: req.id, decision, note }));
+  const why = el("input"); why.type = "text"; why.placeholder = "Why? (optional) — Enter to deny"; why.hidden = true;
+  why.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answer("no", why.value); } };
   for (const [label, decision, cls] of [["Deny", "no", "deny"], ["Allow once", "yes", "sec"], ["Always this session", "always", ""]]) {
     const b = el("button", cls, label); b.type = "button";
-    b.onclick = () => ws.send(JSON.stringify({ type: "approve", id: req.id, decision })); btns.append(b);
+    b.onclick = () => {
+      if (decision !== "no") return answer(decision);
+      if (why.hidden) { why.hidden = false; b.textContent = "Deny"; why.focus(); } else answer("no", why.value);
+    };
+    btns.append(b);
   }
-  dlg.append(btns); $("#modal").classList.add("show"); btns.lastChild.focus();
+  dlg.append(why, btns); $("#modal").classList.add("show"); btns.lastChild.focus();
 }
 
 function connect() {
@@ -332,7 +344,7 @@ input.ondragover = (e) => e.preventDefault();
 input.ondrop = (e) => { if (takeImages(e.dataTransfer)) e.preventDefault(); };
 function submit() {
   const text = input.value.trim();
-  if ((!text && !images.length) || running || !ws || ws.readyState !== 1) return;
+  if ((!text && !images.length) || !ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify({ type: "send", text, images: images.map(({ media_type, data }) => ({ media_type, data })) }));
   images.forEach((im) => URL.revokeObjectURL(im.url)); images = []; renderThumbs();
   input.value = ""; input.style.height = "auto";
@@ -358,8 +370,9 @@ function updateHint() {
 }
 $("#form").onsubmit = (e) => {
   e.preventDefault();
-  if (running) ws.send(JSON.stringify({ type: "cancel" })); else submit();
+  submit();
 };
+stopBtn.onclick = () => ws.send(JSON.stringify({ type: "cancel" }));
 input.onkeydown = (e) => {
   if (e.key === "Tab" && fileHits.length && atToken() !== null) { e.preventDefault(); acceptFile(fileHits[0]); }
   else if (e.key === "Tab" && matches().length) { e.preventDefault(); input.value = "/" + matches()[0].name + " "; updateHint(); }

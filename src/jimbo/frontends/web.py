@@ -3,7 +3,7 @@
 Server -> client: {"type": "event", "event": Event}, {"type": "approval", "request": ApprovalRequest},
                   {"type": "approval_closed", "id": str}, {"type": "files", "prefix": str, "files": [str]}
 Client -> server: {"type": "send", "text": str, "images"?: [{"media_type": str, "data": base64}]},
-                  {"type": "approve", "id": str, "decision": "yes|no|always"},
+                  {"type": "approve", "id": str, "decision": "yes|no|always", "note"?: str  (why, on "no")},
                   {"type": "cancel"}, {"type": "complete", "prefix": str}  (workspace files for @path)
 """
 
@@ -32,6 +32,8 @@ MAX_WS_MESSAGE = MAX_IMAGES * (MAX_IMAGE_BYTES * 4 // 3 + 1024) + 1_000_000  # b
 
 
 class WebFrontend:
+    supports_steering = True  # the page keeps sending while a run is in flight
+
     def __init__(self, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
                  workspace: Path | None = None) -> None:
         self.workspace = workspace or Path.cwd()
@@ -140,10 +142,11 @@ class WebFrontend:
             self._cancel()
         elif kind == "approve" and msg.get("id") in self._pending:
             _, fut = self._pending[msg["id"]]
-            d = msg.get("decision")
+            d, note = msg.get("decision"), msg.get("note")
             if not fut.done():
                 fut.set_result(ApprovalDecision(allow=d in ("yes", "always"),
-                                                remember="session" if d == "always" else "no"))
+                                                remember="session" if d == "always" else "no",
+                                                note=note.strip() or None if isinstance(note, str) and d == "no" else None))
 
     async def _send_files(self, ws: web.WebSocketResponse, prefix: str) -> None:
         try:

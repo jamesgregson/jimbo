@@ -80,7 +80,7 @@ Also: user-defined commands as markdown files in `~/.jimbo/commands/` and `.jimb
 - Emit `todos` event; TUI renders a compact checklist after each update, web a sidebar panel;
   `/todos` prints it. Prompt nudges using it for 3+ step tasks.
 
-### Phase 5 — Planning mode
+### Phase 5 — Planning mode — done
 - `PlanMode` approval policy at the head of the chain: allows read-only, denies everything else with
   "plan mode: present a plan instead". Toggle with `/plan` (or Shift+Tab in TUI).
 - `exit_plan(plan: str)` tool → shown via `request_approval` (reuses existing dialog in all three
@@ -123,7 +123,7 @@ codebase when planning, without reading whole files.
 - Auto: after each turn, if context ratio (Phase 0.3) > `Settings.compact_threshold` (0.8), compact
   before the next send. Mid-run (long tool loops) via a pydantic-ai `history_processors` hook.
 
-### Phase 8 — Steering
+### Phase 8 — Steering — done
 - While a run is in flight, frontends keep accepting input (TUI: prompt stays active below Live output
   — the hardest UI work in the plan; web already does this). Input goes to `session.steer(text)` →
   queue.
@@ -131,8 +131,25 @@ codebase when planning, without reading whole files.
   before each model request, so the model sees it at the next step without restarting the run.
   Emit `user_message(steer=True)`. Esc still cancels (Phase 0.1); queued steers left at run end
   become the next turn.
+- **Deny feedback.** Denying a tool call lets the user say why, so the model can course-correct
+  instead of retrying blindly. The plumbing exists: `ApprovalDecision.note` is already returned as the
+  `Verdict.reason` (`core/approval.py`) and `ToolDenied(reason)` hands it to the model as the tool result
+  (`core/deps.py`). What's missing is collecting it in the frontends, which never set `note` today:
+  - TUI / plain: answering `n` follows up with a `Reason (optional, enter to skip): ` prompt; an
+    empty reply keeps today's bare denial. (`d <reason>` inline is a possible shortcut.) Ctrl+C/EOF
+    still means deny with `note="no answer"`.
+  - Web: "Deny" opens an inline text field in the approval modal (Enter submits, empty allowed);
+    the `approve` WS message gains an optional `note` field, passed into `ApprovalDecision`.
+  - Wording: the tool result sent to the model is `User denied this action: <note>` so it can tell a
+    user rejection from a policy rule; with no note, keep the current generic text. `exit_plan`
+    rejection already uses the note this way, so plan feedback comes for free.
+  - Reuse for steering: the note is steering in miniature, delivered at the tool boundary rather than
+    via the queue, so it needs no `session.steer()` and can ship before the rest of this phase.
+  - Tests: `ScriptedFrontend` returns `ApprovalDecision(allow=False, note="use rg instead")`; assert
+    the next `ModelRequest` contains the note in the tool-return part. `test_tui.py` / `test_web.py`
+    cover the extra prompt and the `note` field.
 
-### Phase 9 — Persistence and resume
+### Phase 9 — Persistence and resume — done
 - Persist `ModelMessage`s (`ModelMessagesTypeAdapter`) alongside the event JSONL after each turn
   (and after compaction). `jimbo --resume [id]` / `/resume` reloads history and replays events to the UI.
 

@@ -61,4 +61,7 @@ class PlainFrontend:
         ans = (await asyncio.to_thread(input, "[y]es / [n]o / [a]lways this session? ")).strip().lower()
         if ans.startswith("a"):
             return ApprovalDecision(allow=True, remember="session")
-        return ApprovalDecision(allow=ans.startswith("y"))
+        if ans.startswith("y"):
+            return ApprovalDecision(allow=True)
+        note = (await asyncio.to_thread(input, "Why? (optional, enter to skip) ")).strip()
+        return ApprovalDecision(allow=False, note=note or None)

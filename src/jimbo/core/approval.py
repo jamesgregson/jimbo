@@ -52,6 +52,35 @@ class ReadOnlyAllow:
         return Verdict(action="ask", decided_by=self.name)
 
 
+class PlanMode:
+    """Head of the chain while planning: read-only calls fall through to the normal policies, everything
+    else is denied. `exit_plan` is decided here by asking the user, so yolo/remembered can't skip it."""
+
+    name = "plan"
+
+    def __init__(self, active: Callable[[], bool],
+                 ask: Callable[[ApprovalRequest], Awaitable[ApprovalDecision]]) -> None:
+        self._active = active
+        self._ask = ask
+        self._n = 0
+
+    async def evaluate(self, call: ToolCallInfo) -> Verdict:
+        if not self._active():
+            return Verdict(action="ask", decided_by=self.name)
+        if call.tool == "exit_plan":
+            self._n += 1
+            d = await self._ask(ApprovalRequest(id=f"plan-{self._n}", tool=call.tool,
+                                                summary="Approve this plan and start executing?",
+                                                detail=call.detail))
+            return Verdict(action="allow" if d.allow else "deny",
+                           reason=None if d.allow else d.note or "plan rejected; revise it or ask what to change",
+                           decided_by="user")
+        if call.read_only:
+            return Verdict(action="ask", decided_by=self.name)
+        return Verdict(action="deny", reason="plan mode: present a plan instead (call exit_plan)",
+                       decided_by=self.name)
+
+
 class RememberedDecisions:
     """Session-scoped 'always allow this tool'. Fed by AskUser when the user picks remember."""
 
@@ -143,7 +172,8 @@ class AskUser:
             )
             if d.allow and d.remember == "session" and self._remembered is not None:
                 self._remembered.allowed_tools.add(call.tool)
-            return Verdict(action="allow" if d.allow else "deny", reason=d.note, decided_by="user")
+            reason = None if d.allow else f"User denied this action: {d.note}" if d.note else None
+            return Verdict(action="allow" if d.allow else "deny", reason=reason, decided_by="user")
 
 
 class ApprovalGate:

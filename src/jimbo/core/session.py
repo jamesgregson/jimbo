@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from dataclasses import replace
 
 from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.messages import (
@@ -7,20 +8,23 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelMessage,
+    ModelRequest,
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
     TextPartDelta,
     UserContent,
+    UserPromptPart,
     repair_messages,
 )
 from pydantic_ai.usage import RunUsage
 
 from .attachments import build_content, expand_mentions, image_meta
 from .commands import CommandRegistry
-from .compaction import compact as compact_history
+from .compaction import compact as compact_history, render_transcript
 from .deps import Deps
 from .events import Event, EventKind, EventSink
+from .store import REPLAY_KINDS, SessionStore
 
 
 class AgentSession:
@@ -40,7 +44,11 @@ class AgentSession:
         self.vision = vision  # False: images are dropped with a warning instead of sent to the model
         self.compact_threshold = compact_threshold  # 0 disables auto-compaction
         self.compact_keep = compact_keep
+        self.store: SessionStore | None = None  # set to persist history after each turn (enables /resume)
+        self.replay_sink: EventSink | None = None  # where resume() redraws past events (the frontend only)
         self.deps.midrun_compact = self._compact_midrun
+        self.deps.midrun_steer = self._inject_steers
+        self._steers: list[str | list[UserContent]] = []  # typed during a run, not yet seen by the model
         self.context_tokens = 0  # size of the last model request + response
         self.total_usage = RunUsage()  # whole session; updated live during a run
         self.turn_usage = RunUsage()  # the current (or most recent) prompt
@@ -67,6 +75,37 @@ class AgentSession:
             self._todos_sent = list(self.deps.todos)
             await self.emit("todos", items=[t.model_dump() for t in self.deps.todos])
 
+    def persist(self) -> None:
+        """Save history and todos so the session can be resumed. Best effort: a full disk must not kill a turn."""
+        if self.store is None:
+            return
+        try:
+            self.store.save(self.session_id, self.history, [t.model_dump() for t in self.deps.todos])
+        except OSError:
+            pass
+
+    async def resume(self, prefix: str) -> str:
+        """Load a saved session into this one: history, todos and id (so the log keeps appending to the
+        same file), and redraw its events in the UI. Raises ValueError if it can't be found or read."""
+        from ..tools.todos import TodoItem
+        if self.store is None:
+            raise ValueError("session saving is disabled (log_sessions = false)")
+        saved = self.store.load(self.store.resolve(prefix))
+        events = self.store.events(saved.id)
+        self.history = saved.history
+        self.session_id = saved.id
+        self._seq = max((e.seq for e in events), default=0)
+        self.deps.todos = [TodoItem.model_validate(t) for t in saved.todos]
+        self._todos_sent = list(self.deps.todos)
+        self.context_tokens = 0
+        self.turn_usage, self.total_usage = RunUsage(), RunUsage()
+        if self.replay_sink is not None:
+            for ev in events:
+                if ev.kind in REPLAY_KINDS:
+                    await self.replay_sink.emit(ev)
+        await self.emit_context()
+        return f"Resumed session {saved.id} ({len(self.history)} messages)."
+
     def cancel(self) -> bool:
         """Interrupt the in-flight run, if any. The partial turn is kept in history."""
         if self._task is None or self._task.done():
@@ -77,6 +116,47 @@ class AgentSession:
     @property
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    def steer(self, content: str | list[UserContent]) -> None:
+        """Queue a message typed during a run; the model sees it with its next request. One still queued
+        when the run ends is returned by take_steers() for the caller to send as the next turn."""
+        self._steers.append(content)
+
+    def take_steers(self) -> list[str | list[UserContent]]:
+        """Steers the run ended without delivering; the caller sends them as the next turn."""
+        pending, self._steers = self._steers, []
+        return pending
+
+    async def _drop_steers(self) -> None:
+        if pending := self.take_steers():
+            await self.emit("command_output", command="steer", ok=False,
+                            text=f"run did not finish; discarded {len(pending)} queued message(s)")
+
+    async def _inject_steers(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        if not self._steers or not messages or not isinstance(messages[-1], ModelRequest):
+            return messages
+        parts = []
+        for content in self.take_steers():
+            _, prompt = await self._compose(content, steer=True)
+            parts.append(UserPromptPart(prompt))
+        last = messages[-1]
+        return [*messages[:-1], replace(last, parts=[*last.parts, *parts])]
+
+    async def _compose(self, content: str | list[UserContent], *, steer: bool = False) -> tuple[str, str | list[UserContent]]:
+        """Emit the user_message event for `content`; returns its text and what the model should see."""
+        parts = [content] if isinstance(content, str) else list(content)
+        text = "\n".join(p for p in parts if isinstance(p, str))
+        images = [p for p in parts if isinstance(p, BinaryContent)]
+        sent, files = expand_mentions(text, self.deps.workspace)
+        warning = None
+        if images and not self.vision:
+            warning = f"the model is not marked vision-capable (vision = false); dropped {len(images)} image(s)"
+            images = []
+        attachments = [{"kind": "file", **f} for f in files] + image_meta(images)
+        await self.emit("user_message", text=text, attachments=attachments, **({"steer": True} if steer else {}))
+        if warning:
+            await self.emit("command_output", command="attach", ok=False, text=warning)
+        return text, build_content(sent, images)
 
     def _needs_compaction(self) -> bool:
         return bool(self.compact_threshold and self.context_window
@@ -90,7 +170,8 @@ class AgentSession:
                                     todos=todos, allow_empty=allow_empty)
         if new is not None:
             before = self.context_tokens
-            self.context_tokens = 0  # unknown until the next model request reports it
+            # rough estimate (~4 chars/token) until the next model request reports the real size
+            self.context_tokens = len(render_transcript(new, return_limit=10**9)) // 4
             await self.emit("compaction", messages_before=len(messages), messages_after=len(new),
                             tokens_before=before)
             await self.emit_context()
@@ -112,6 +193,7 @@ class AgentSession:
             return None
         n = len(self.history)
         self.history = new
+        self.persist()
         return f"Compacted {n} messages into {len(new)}."
 
     async def send(self, content: str | list[UserContent]) -> str | None:
@@ -130,21 +212,10 @@ class AgentSession:
             return await self._task
         finally:
             self._task = None
+            self.persist()
 
     async def _run(self, content: str | list[UserContent]) -> str | None:
-        parts = [content] if isinstance(content, str) else list(content)
-        text = "\n".join(p for p in parts if isinstance(p, str))
-        images = [p for p in parts if isinstance(p, BinaryContent)]
-        sent, files = expand_mentions(text, self.deps.workspace)
-        warning = None
-        if images and not self.vision:
-            warning = f"the model is not marked vision-capable (vision = false); dropped {len(images)} image(s)"
-            images = []
-        attachments = [{"kind": "file", **f} for f in files] + image_meta(images)
-        await self.emit("user_message", text=text, attachments=attachments)
-        if warning:
-            await self.emit("command_output", command="attach", ok=False, text=warning)
-        prompt = build_content(sent, images)
+        _, prompt = await self._compose(content)
         run = None
         base = self.total_usage
         self.turn_usage = RunUsage()
@@ -183,10 +254,12 @@ class AgentSession:
                 self.history = repair_messages(run.all_messages())
                 self.turn_usage, self.total_usage = run.usage, base + run.usage
             await self.emit_context()
+            await self._drop_steers()
             await self.emit("run_finished", ok=False, cancelled=True)
             return None
         except Exception as e:  # surfaced to the UI/log; the session stays usable
             await self.emit("error", type=type(e).__name__, message=str(e))
+            await self._drop_steers()
             await self.emit("run_finished", ok=False)
             return None
         self.history = result.all_messages()

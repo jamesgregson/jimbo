@@ -27,6 +27,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
         session.context_tokens = 0
         session.turn_usage = RunUsage()
         session.deps.todos = []
+        session.persist()
         await session._emit_todos()
         await session.emit_context()
         return "Conversation cleared."
@@ -64,16 +65,37 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     async def approve(session: AgentSession, args: str) -> str:
         if args in ("yolo", "default"):
             chain["names"] = ["rules", "yolo"] if args == "yolo" else default_chain
-            session.deps.gate.policies = [policies[n] for n in chain["names"]]
+            session.deps.gate.policies = [policies["plan"], *(policies[n] for n in chain["names"])]
         elif args:
             raise CommandError("usage: /approve [yolo|default]")
         return "approval: " + " → ".join(chain["names"])
+
+    async def plan(session: AgentSession, args: str) -> str:
+        if args not in ("", "on", "off"):
+            raise CommandError("usage: /plan [on|off]")
+        on = args == "on" or (args == "" and session.deps.mode != "plan")
+        session.deps.mode = "plan" if on else "normal"
+        return ("plan mode on: read-only tools only; the agent presents a plan with exit_plan" if on
+                else "plan mode off")
 
     async def todos(session: AgentSession, args: str) -> str:
         return format_todos(session.deps.todos)
 
     async def skills(session: AgentSession, args: str) -> str:
         return format_skill_index(session.deps.skills) or "No skills found."
+
+    async def resume(session: AgentSession, args: str) -> str:
+        if session.is_running:
+            raise CommandError("a run is in progress; wait for it or cancel first")
+        if session.store is None:
+            raise CommandError("session saving is disabled (log_sessions = false)")
+        if not args:
+            rows = [f"{i}  {session.store.summary(i)}" for i in session.store.ids()[:15] if i != session.session_id]
+            return "Recent sessions (/resume <id>):\n" + "\n".join(rows) if rows else "No saved sessions."
+        try:
+            return await session.resume(args)
+        except ValueError as e:
+            raise CommandError(str(e)) from None
 
     async def quit_(session: AgentSession, args: str) -> None:
         raise QuitSession
@@ -84,8 +106,10 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("model", "show or switch model: /model <provider>:<name>", model)
     registry.add("usage", "token usage and context fill for this session", usage)
     registry.add("approve", "show or set approval chain: /approve [yolo|default]", approve)
+    registry.add("plan", "toggle plan mode (read-only until you approve a plan): /plan [on|off]", plan)
     registry.add("todos", "show the agent's task list", todos)
     registry.add("skills", "list available skills", skills)
+    registry.add("resume", "list saved sessions, or load one: /resume [id]", resume)
     registry.add("quit", "exit jimbo", quit_)
 
 

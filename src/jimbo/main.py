@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 from .config import Settings
@@ -18,6 +19,8 @@ def main() -> None:
     ap.add_argument("--workspace", type=Path)
     ap.add_argument("--ui")
     ap.add_argument("--yolo", action="store_true", help="auto-approve everything")
+    ap.add_argument("--resume", nargs="?", const="", metavar="ID",
+                    help="continue a saved session (the most recent if no id/prefix is given)")
     args = ap.parse_args()
 
     overrides = {k: v for k, v in {"model": args.model, "workspace": args.workspace, "ui": args.ui}.items() if v}
@@ -33,6 +36,14 @@ def main() -> None:
         if start:
             await start()
         try:
+            if args.resume is not None:
+                if session.store is None:
+                    raise SystemExit("jimbo: --resume needs log_sessions = true")
+                try:
+                    ids = session.store.ids()
+                    print(await session.resume(args.resume or (ids[0] if ids else "")), file=sys.stderr)
+                except ValueError as e:
+                    raise SystemExit(f"jimbo: {e}") from None
             if args.prompt and hasattr(frontend, "submit"):
                 frontend.submit(args.prompt)  # server frontends stay up after the first prompt
                 await run_frontend(session, frontend)

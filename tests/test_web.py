@@ -64,3 +64,20 @@ async def test_cancel_message_calls_bound_cancel(client):
     ws = await client.ws_connect(ws_url(client))
     await ws.send_json({"type": "cancel"})
     await asyncio.wait_for(called.wait(), 1)
+
+
+async def test_deny_note_roundtrip(client):
+    ws = await client.ws_connect(ws_url(client))
+    task = asyncio.create_task(client.fe.request_approval(ApprovalRequest(id="8", tool="shell", summary="s")))
+    await ws.receive_json()
+    await ws.send_json({"type": "approve", "id": "8", "decision": "no", "note": " use rg instead "})
+    d = await asyncio.wait_for(task, 1)
+    assert not d.allow and d.note == "use rg instead"
+
+
+async def test_note_ignored_unless_denied(client):
+    ws = await client.ws_connect(ws_url(client))
+    task = asyncio.create_task(client.fe.request_approval(ApprovalRequest(id="9", tool="shell", summary="s")))
+    await ws.receive_json()
+    await ws.send_json({"type": "approve", "id": "9", "decision": "yes", "note": "x"})
+    assert (await asyncio.wait_for(task, 1)).note is None
