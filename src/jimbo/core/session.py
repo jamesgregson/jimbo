@@ -3,6 +3,7 @@ import uuid
 
 from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.messages import (
+    BinaryContent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelMessage,
@@ -10,10 +11,12 @@ from pydantic_ai.messages import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    UserContent,
     repair_messages,
 )
 from pydantic_ai.usage import RunUsage
 
+from .attachments import build_content, expand_mentions, image_meta
 from .commands import CommandRegistry
 from .deps import Deps
 from .events import Event, EventKind, EventSink
@@ -24,7 +27,7 @@ class AgentSession:
 
     def __init__(self, agent: Agent[Deps, str], deps: Deps, sinks: list[EventSink],
                  *, request_limit: int = 50, session_id: str | None = None,
-                 context_window: int | None = None) -> None:
+                 context_window: int | None = None, vision: bool = True) -> None:
         self.agent = agent
         self.deps = deps
         self.sinks = sinks
@@ -32,6 +35,7 @@ class AgentSession:
         self.history: list[ModelMessage] = []
         self.commands = CommandRegistry()
         self.context_window = context_window
+        self.vision = vision  # False: images are dropped with a warning instead of sent to the model
         self.context_tokens = 0  # size of the last model request + response
         self.total_usage = RunUsage()
         self._limits = UsageLimits(request_limit=request_limit)
@@ -51,19 +55,35 @@ class AgentSession:
         self._task.cancel()
         return True
 
-    async def send(self, text: str) -> str | None:
-        """Run one turn. Returns the final text, or None if the run failed or was cancelled."""
-        self._task = asyncio.create_task(self._run(text))  # own task so cancel() can't hit the caller
+    async def send(self, content: str | list[UserContent]) -> str | None:
+        """Run one turn. Returns the final text, or None if the run failed or was cancelled.
+
+        `content` is text, or a list mixing text and `BinaryContent` images. `@path` mentions in the
+        text are replaced by the file contents for the model; the user_message event keeps the original.
+        """
+        self._task = asyncio.create_task(self._run(content))  # own task so cancel() can't hit the caller
         try:
             return await self._task
         finally:
             self._task = None
 
-    async def _run(self, text: str) -> str | None:
-        await self.emit("user_message", text=text)
+    async def _run(self, content: str | list[UserContent]) -> str | None:
+        parts = [content] if isinstance(content, str) else list(content)
+        text = "\n".join(p for p in parts if isinstance(p, str))
+        images = [p for p in parts if isinstance(p, BinaryContent)]
+        sent, files = expand_mentions(text, self.deps.workspace)
+        warning = None
+        if images and not self.vision:
+            warning = f"the model is not marked vision-capable (vision = false); dropped {len(images)} image(s)"
+            images = []
+        attachments = [{"kind": "file", **f} for f in files] + image_meta(images)
+        await self.emit("user_message", text=text, attachments=attachments)
+        if warning:
+            await self.emit("command_output", command="attach", ok=False, text=warning)
+        prompt = build_content(sent, images)
         run = None
         try:
-            async with self.agent.iter(text, deps=self.deps, message_history=self.history,
+            async with self.agent.iter(prompt, deps=self.deps, message_history=self.history,
                                        usage_limits=self._limits) as run:
                 async for node in run:
                     if Agent.is_model_request_node(node):

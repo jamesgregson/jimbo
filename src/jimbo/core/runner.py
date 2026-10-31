@@ -2,6 +2,7 @@ import asyncio
 import signal
 from contextlib import contextmanager
 
+from .attachments import UserMessage, build_content
 from .commands import QuitSession
 from .interaction import Frontend
 from .session import AgentSession
@@ -27,12 +28,14 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
     await session.emit("commands", commands=session.commands.describe())
     if bind := getattr(frontend, "bind_cancel", None):  # frontends with their own stop control
         bind(session.cancel)
-    while (text := await frontend.next_user_input()) is not None:
-        if not text.strip():
+    while (msg := await frontend.next_user_input()) is not None:
+        msg = UserMessage(msg) if isinstance(msg, str) else msg
+        text = msg.text
+        if not text.strip() and not msg.images:
             continue
         with _interrupt_cancels_run(session):
             try:
-                if not await session.commands.dispatch(session, text):
-                    await session.send(text)
+                if msg.images or not await session.commands.dispatch(session, text):
+                    await session.send(build_content(text, msg.images))
             except QuitSession:
                 return

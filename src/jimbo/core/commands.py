@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 if TYPE_CHECKING:
     from .session import AgentSession
 
+NAME_RE = re.compile(r"[A-Za-z][\w-]*")
 # "/name args"; the name must not contain "/" so pasted paths like "/Users/x/y" still go to the model.
-COMMAND_RE = re.compile(r"/([A-Za-z][\w-]*)(?:\s+(.*))?", re.S)
+COMMAND_RE = re.compile(rf"/({NAME_RE.pattern})(?:\s+(.*))?", re.S)
 
 Handler = Callable[["AgentSession", str], Awaitable[str | None]]
 
@@ -91,7 +92,7 @@ def load_markdown_commands(registry: CommandRegistry, dirs: list[Path]) -> None:
     for d in dirs:
         for path in sorted(d.glob("*.md")) if d.is_dir() else []:
             name = path.stem
-            if name in builtin or not COMMAND_RE.fullmatch("/" + name):
+            if name in builtin or not NAME_RE.fullmatch(name):
                 continue
             meta, body = parse_frontmatter(path.read_text("utf-8"))
 

@@ -1,12 +1,16 @@
 """Inline terminal UI: Rich for output (streaming markdown), prompt_toolkit for input."""
 
+import re
+import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.completion import Completer, Completion, merge_completers
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+from prompt_toolkit.keys import Keys
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
@@ -14,12 +18,24 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.text import Text
+from pydantic_ai.messages import BinaryContent
 
 from ..core.approval import ApprovalDecision, ApprovalRequest
+from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
+from ..tools.search import list_files
+from .clipboard import clipboard_png
 
 HISTORY_FILE = Path.home() / ".jimbo_history"
 Ask = Callable[[str], Awaitable[str]]
+# Terminals that report modified keys (kitty/CSI-u, xterm modifyOtherKeys) send Shift+Enter as a distinct
+# sequence; treat it like Alt+Enter. Terminals that send a bare Enter for Shift+Enter can't be helped.
+for _seq in ("\x1b[13;2u", "\x1b[27;2;13~"):
+    ANSI_SEQUENCES[_seq] = (Keys.Escape, Keys.ControlM)
+
+PASTE_COLLAPSE_LINES = 10  # pastes longer than this become a [pasted #n: m lines] placeholder
+PASTE_RE = re.compile(r"\[pasted #(\d+): \d+ lines\]")
+IMAGE_RE = re.compile(r"\[image #(\d+)\]")
 
 
 def _clip(s: str, n: int = 100) -> str:
@@ -42,6 +58,34 @@ class SlashCompleter(Completer):
                 yield Completion("/" + name, start_position=-len(t), display_meta=help)
 
 
+class FileCompleter(Completer):
+    """Completes `@path` mentions with workspace files (the core inlines them on send)."""
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self._files: list[str] = []
+        self._loaded = 0.0
+
+    def _list(self) -> list[str]:
+        if time.monotonic() - self._loaded > 5:
+            try:
+                self._files = list_files(self.workspace, self.workspace)
+            except OSError:
+                self._files = []
+            self._loaded = time.monotonic()
+        return self._files
+
+    def get_completions(self, document, complete_event):
+        m = re.search(r"(?<![\w@])@([^\s@]*)$", document.text_before_cursor)
+        if not m:
+            return
+        want = m.group(1).lower()
+        hits = [f for f in self._list() if want in f.lower()]
+        hits.sort(key=lambda f: (not f.lower().startswith(want), len(f)))
+        for f in hits[:50]:
+            yield Completion("@" + f, start_position=-len(m.group(0)))
+
+
 def _history() -> History:
     try:
         return FileHistory(str(HISTORY_FILE))
@@ -50,18 +94,30 @@ def _history() -> History:
 
 
 class TuiFrontend:
-    def __init__(self, console: Console | None = None, ask: Ask | None = None) -> None:
+    def __init__(self, console: Console | None = None, ask: Ask | None = None,
+                 workspace: Path | None = None) -> None:
         """`console` and `ask` (a one-line prompt function) can be injected for tests."""
         self.console = console or Console()
         kb = KeyBindings()
+        self._pastes: dict[int, str] = {}
+        self._images: dict[int, BinaryContent] = {}
 
-        @kb.add("escape", "enter")  # Alt+Enter inserts a newline; plain Enter submits
+        @kb.add("escape", "enter")  # Shift+Enter / Alt+Enter insert a newline; plain Enter submits
         def _(event) -> None:
             event.current_buffer.insert_text("\n")
+
+        @kb.add(Keys.BracketedPaste)  # newlines in a paste must not submit; long pastes collapse
+        def _(event) -> None:
+            event.current_buffer.insert_text(self.collapse_paste(event.data))
+
+        @kb.add("c-v")  # image from the clipboard (Cmd+V pastes text via the terminal)
+        def _(event) -> None:
+            event.app.create_background_task(self._paste_image(event.current_buffer))
 
         self._session: PromptSession | None = None
         self._kb = kb
         self.completer = SlashCompleter()
+        self.file_completer = FileCompleter(workspace or Path.cwd())
         self._ask = ask
         self._buf = ""
         self._live: Live | None = None
@@ -72,7 +128,8 @@ class TuiFrontend:
     def _prompt_session(self) -> PromptSession:
         if self._session is None:
             self._session = PromptSession(history=_history(), key_bindings=self._kb,
-                                          completer=self.completer, complete_while_typing=True)
+                                          completer=merge_completers([self.completer, self.file_completer]),
+                                          complete_while_typing=True)
         return self._session
 
     async def _prompt(self, message: str) -> str:
@@ -80,7 +137,40 @@ class TuiFrontend:
             return await self._ask(message)
         return await self._prompt_session().prompt_async(message)
 
-    async def next_user_input(self) -> str | None:
+    def collapse_paste(self, text: str) -> str:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        n = text.count("\n") + 1
+        if n <= PASTE_COLLAPSE_LINES:
+            return text
+        i = max(self._pastes, default=0) + 1
+        self._pastes[i] = text
+        return f"[pasted #{i}: {n} lines]"
+
+    async def _paste_image(self, buffer) -> None:
+        data = await clipboard_png()
+        if data is None:
+            self.console.print(Text("no image on the clipboard", style="dim yellow"))
+            return
+        if err := check_image("image/png", data):
+            self.console.print(Text(err, style="red"))
+            return
+        i = max(self._images, default=0) + 1
+        self._images[i] = BinaryContent(data, media_type="image/png")
+        buffer.insert_text(f"[image #{i}]")
+
+    def expand(self, text: str) -> str | UserMessage:
+        """Replace paste placeholders with their text and lift image chips out as attachments."""
+        text = PASTE_RE.sub(lambda m: self._pastes.get(int(m.group(1)), m.group(0)), text)
+        images = [self._images[i] for m in IMAGE_RE.finditer(text) if (i := int(m.group(1))) in self._images]
+        self._pastes.clear()
+        if not images:
+            self._images.clear()
+            return text
+        text = IMAGE_RE.sub("", text).strip()
+        self._images.clear()
+        return UserMessage(text, images)
+
+    async def next_user_input(self) -> str | UserMessage | None:
         while True:
             try:
                 text = await self._prompt("\n> ")
@@ -93,7 +183,7 @@ class TuiFrontend:
                 self.console.print("[dim](press Ctrl+C again or Ctrl+D to quit)[/dim]")
                 continue
             self._interrupted = False
-            return text
+            return self.expand(text)
 
     def _stop_live(self) -> None:
         if self._live is not None:

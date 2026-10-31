@@ -5,28 +5,10 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolRetu
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from jimbo.config import Settings
+from helpers import ScriptedFrontend, settings
 from jimbo.core.approval import ApprovalDecision
 from jimbo.tools.paths import PathEscape, resolve_in_workspace
 from jimbo.wiring import build_session
-
-
-def settings(tmp_path, **kw):
-    return Settings(workspace=tmp_path, user_dir=tmp_path / "user", **kw)
-
-
-class ScriptedFrontend:
-    def __init__(self, inputs=(), allow=True):
-        self.inputs, self.allow, self.events = list(inputs), allow, []
-
-    async def next_user_input(self):
-        return self.inputs.pop(0) if self.inputs else None
-
-    async def render(self, event):
-        self.events.append(event)
-
-    async def request_approval(self, req):
-        return ApprovalDecision(allow=self.allow)
 
 
 def test_path_escape(tmp_path):
@@ -152,69 +134,6 @@ async def test_streamed_text_keeps_first_chunk(tmp_path):
     await s.send("go")
     streamed = "".join(e.data["text"] for e in fe.events if e.kind == "assistant_text_delta")
     assert streamed == "Now let me"
-
-
-def outputs(fe):
-    return [e.data for e in fe.events if e.kind == "command_output"]
-
-
-async def test_builtin_commands(tmp_path):
-    fe = ScriptedFrontend()
-    s = build_session(settings(tmp_path), fe, model=TestModel())
-    reg = s.commands
-    assert not await reg.dispatch(s, "/Users/me/file.py is broken")  # paths are prompts, not commands
-    assert not await reg.dispatch(s, "hello")
-    assert await reg.dispatch(s, "/help")
-    assert "/clear" in outputs(fe)[-1]["text"]
-    assert await reg.dispatch(s, "/nope")
-    assert not outputs(fe)[-1]["ok"]
-    await s.send("hi")
-    assert s.history and s.total_usage.requests >= 1
-    await reg.dispatch(s, "/clear")
-    assert s.history == []
-    await reg.dispatch(s, "/model bogus")
-    assert not outputs(fe)[-1]["ok"] and "provider" in outputs(fe)[-1]["text"]
-    await reg.dispatch(s, "/approve yolo")
-    assert outputs(fe)[-1]["text"] == "approval: rules → yolo"
-    fe.allow = False
-    await s.deps.authorize("write_file", {}, "w")  # would raise if still asking
-    await reg.dispatch(s, "/approve default")
-    assert "ask" in outputs(fe)[-1]["text"]
-    await reg.dispatch(s, "/usage")
-    assert f"{s.total_usage.requests} requests" in outputs(fe)[-1]["text"]
-
-
-async def test_run_frontend_dispatches_and_quits(tmp_path):
-    from jimbo.core.runner import run_frontend
-    fe = ScriptedFrontend(["/help", "hi", "/quit", "never sent"])
-    s = build_session(settings(tmp_path), fe, model=TestModel())
-    await run_frontend(s, fe)
-    kinds = [e.kind for e in fe.events]
-    assert kinds[0] == "commands" and "command_output" in kinds
-    assert [e.data["text"] for e in fe.events if e.kind == "user_message"] == ["hi"]
-    assert fe.inputs == ["never sent"]
-
-
-async def test_markdown_commands(tmp_path):
-    cmds = tmp_path / ".jimbo" / "commands"
-    cmds.mkdir(parents=True)
-    (cmds / "fix.md").write_text("---\ndescription: fix an issue\n---\nPlease fix $ARGUMENTS now.\n")
-    (cmds / "review.md").write_text("Review the code.")
-    (cmds / "help.md").write_text("shadowing a builtin is ignored")
-    seen = []
-
-    async def stream(messages, info):
-        seen.append(messages[-1].parts[-1].content)
-        yield "ok"
-
-    fe = ScriptedFrontend()
-    s = build_session(settings(tmp_path), fe, model=FunctionModel(stream_function=stream))
-    assert {"name": "fix", "help": "fix an issue"} in s.commands.describe()
-    await s.commands.dispatch(s, "/fix the login bug")
-    await s.commands.dispatch(s, "/review src/a.py")
-    await s.commands.dispatch(s, "/help")
-    assert seen == ["Please fix the login bug now.\n", "Review the code.\n\nsrc/a.py"]
-    assert "shadowing" not in outputs(fe)[-1]["text"]
 
 
 async def test_cancel_keeps_partial_turn_and_session_usable(tmp_path):

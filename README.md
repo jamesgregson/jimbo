@@ -15,7 +15,10 @@ The `web` UI serves a local page (URL with a one-time token is printed and opene
 `JIMBO_WEB_HOST`, `JIMBO_WEB_PORT`, `JIMBO_WEB_OPEN_BROWSER=false` to change). Approvals appear as a
 dialog with the diff. Keep the host on localhost: the page can approve file writes.
 
-The `tui` UI: Enter submits, Alt+Enter inserts a newline, Ctrl+D (or Ctrl+C twice) quits.
+The `tui` UI: Enter submits, Shift+Enter (or Alt+Enter) inserts a newline, Ctrl+D (or Ctrl+C twice) quits. Pastes over 10 lines
+collapse to `[pasted #1: 240 lines]` (expanded on submit), `@path` completes workspace files and inlines them
+for the model, and Ctrl+V attaches a clipboard image (`pngpaste` or `osascript`). The web UI accepts pasted or
+dropped images. Set `vision = false` for text-only models to drop images with a warning.
 
 Ctrl+C while the agent is working interrupts the run (the partial turn is kept); at the prompt it
 quits as before. The web UI's Send button becomes Stop while a run is in flight.
@@ -25,10 +28,29 @@ quits as before. The web UI's Send button becomes Stop while a run is in flight.
 `/help`, `/clear`, `/model <provider>:<name>`, `/usage` (tokens and context fill),
 `/approve [yolo|default]`, `/quit`. Tab completes them in the `tui` and `web` UIs.
 
-Custom commands are markdown files in `~/.jimbo/commands/` or `<workspace>/.jimbo/commands/`:
-`fix.md` becomes `/fix`, its body is sent as the prompt with `$ARGUMENTS` replaced by whatever follows
-the command (or appended if there is no placeholder). Optional frontmatter `description:` sets the
-help text. Built-in commands can't be overridden.
+Custom commands are markdown files in `~/.jimbo/commands/` (yours, every project) or
+`<workspace>/.jimbo/commands/` (shared with the repo; wins on a name clash). The file name is the
+command name, so `fix-issue.md` becomes `/fix-issue`. For example:
+
+```markdown
+---
+description: investigate and fix a bug, with a regression test
+---
+Fix this bug: $ARGUMENTS
+
+1. Find the relevant code with grep/glob and read it before changing anything.
+2. Write a failing test that reproduces the bug, and run it to confirm it fails.
+3. Make the smallest fix that makes the test pass.
+4. Run the full test suite and report what you changed and why.
+```
+
+Then `/fix-issue login fails when the email has uppercase letters` sends that prompt with `$ARGUMENTS`
+replaced by everything after the command name. Without a `$ARGUMENTS` placeholder, the arguments are
+appended after a blank line, so a file containing just `Review the uncommitted changes for bugs.`
+works as `/review` or `/review focus on error handling`. The optional `description:` is what `/help`
+and tab completion show (otherwise the file path). The command runs as a normal turn: the expanded
+prompt appears as your message and the model can use tools as usual. Built-in commands can't be
+overridden, and names must start with a letter and contain only letters, digits, `-` and `_`.
 
 Context fill is measured against `JIMBO_CONTEXT_WINDOW` (defaults to `JIMBO_NUM_CTX`); set it to the
 real window for non-ollama models.

@@ -12,13 +12,13 @@ def _plain(st: Settings) -> Frontend:
 def _tui(st: Settings) -> Frontend:
     from .tui import TuiFrontend  # imported lazily so `plain` doesn't need rich/prompt_toolkit
 
-    return TuiFrontend()
+    return TuiFrontend(workspace=st.workspace)
 
 
 def _web(st: Settings) -> Frontend:
     from .web import WebFrontend  # lazy: needs aiohttp
 
-    return WebFrontend(st.web_host, st.web_port, st.web_open_browser)
+    return WebFrontend(st.web_host, st.web_port, st.web_open_browser, st.workspace)
 
 
 FRONTENDS: dict[str, Callable[[Settings], Frontend]] = {"plain": _plain, "tui": _tui, "web": _web}

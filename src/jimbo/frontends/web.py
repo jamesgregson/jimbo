@@ -1,12 +1,15 @@
 """Browser frontend: a local aiohttp server speaking JSON over one WebSocket.
 
 Server -> client: {"type": "event", "event": Event}, {"type": "approval", "request": ApprovalRequest},
-                  {"type": "approval_closed", "id": str}
-Client -> server: {"type": "send", "text": str}, {"type": "approve", "id": str, "decision": "yes|no|always"},
-                  {"type": "cancel"}
+                  {"type": "approval_closed", "id": str}, {"type": "files", "prefix": str, "files": [str]}
+Client -> server: {"type": "send", "text": str, "images"?: [{"media_type": str, "data": base64}]},
+                  {"type": "approve", "id": str, "decision": "yes|no|always"},
+                  {"type": "cancel"}, {"type": "complete", "prefix": str}  (workspace files for @path)
 """
 
 import asyncio
+import base64
+import binascii
 import hmac
 import json
 import secrets
@@ -16,19 +19,25 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from aiohttp import WSMsgType, web
+from pydantic_ai.messages import BinaryContent
 
 from ..core.approval import ApprovalDecision, ApprovalRequest
+from ..core.attachments import MAX_IMAGE_BYTES, MAX_IMAGES, UserMessage, check_image
 from ..core.events import Event
+from ..tools.search import list_files
 
 STATIC = Path(__file__).parent / "web_static"
 MAX_REPLAY = 5000
+MAX_WS_MESSAGE = MAX_IMAGES * (MAX_IMAGE_BYTES * 4 // 3 + 1024) + 1_000_000  # base64 images plus text
 
 
 class WebFrontend:
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
+                 workspace: Path | None = None) -> None:
+        self.workspace = workspace or Path.cwd()
         self.host, self.port, self.open_browser = host, port, open_browser
         self.token = secrets.token_urlsafe(16)  # the socket can approve file writes: require it
-        self._inputs: asyncio.Queue[str] = asyncio.Queue()
+        self._inputs: asyncio.Queue[str | UserMessage] = asyncio.Queue()
         self._clients: set[web.WebSocketResponse] = set()
         self._history: list[dict] = []
         self._pending: dict[str, tuple[ApprovalRequest, asyncio.Future[ApprovalDecision]]] = {}
@@ -100,7 +109,7 @@ class WebFrontend:
     async def _ws(self, request: web.Request) -> web.StreamResponse:
         if not self._authorized(request):
             raise web.HTTPForbidden()
-        ws = web.WebSocketResponse(heartbeat=20)
+        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=MAX_WS_MESSAGE)
         await ws.prepare(request)
         for msg in self._history:
             await ws.send_json(msg)
@@ -110,19 +119,23 @@ class WebFrontend:
         try:
             async for m in ws:
                 if m.type == WSMsgType.TEXT:
-                    self._on_message(m.data)
+                    self._on_message(m.data, ws)
         finally:
             self._clients.discard(ws)
         return ws
 
-    def _on_message(self, raw: str) -> None:
+    def _on_message(self, raw: str, ws: web.WebSocketResponse | None = None) -> None:
         try:
             msg = json.loads(raw)
             kind = msg["type"]
         except (ValueError, KeyError, TypeError):
             return
-        if kind == "send" and isinstance(msg.get("text"), str) and msg["text"].strip():
-            self._inputs.put_nowait(msg["text"])
+        if kind == "send" and isinstance(msg.get("text"), str):
+            images = self._decode_images(msg.get("images"))
+            if msg["text"].strip() or images:
+                self._inputs.put_nowait(UserMessage(msg["text"], images) if images else msg["text"])
+        elif kind == "complete" and isinstance(msg.get("prefix"), str) and ws is not None:
+            asyncio.get_running_loop().create_task(self._send_files(ws, msg["prefix"]))
         elif kind == "cancel" and self._cancel:
             self._cancel()
         elif kind == "approve" and msg.get("id") in self._pending:
@@ -131,6 +144,32 @@ class WebFrontend:
             if not fut.done():
                 fut.set_result(ApprovalDecision(allow=d in ("yes", "always"),
                                                 remember="session" if d == "always" else "no"))
+
+    async def _send_files(self, ws: web.WebSocketResponse, prefix: str) -> None:
+        try:
+            files = await asyncio.to_thread(list_files, self.workspace, self.workspace)
+        except OSError:
+            files = []
+        want = prefix.lower()
+        hits = sorted((f for f in files if want in f.lower()), key=lambda f: (not f.lower().startswith(want), len(f)))
+        try:
+            await ws.send_json({"type": "files", "prefix": prefix, "files": hits[:50]})
+        except ConnectionError:
+            pass
+
+    @staticmethod
+    def _decode_images(raw) -> list[BinaryContent]:
+        """Valid images from a send message; malformed, oversized or surplus ones are dropped."""
+        out = []
+        for item in raw[:MAX_IMAGES] if isinstance(raw, list) else []:
+            try:
+                data = base64.b64decode(item["data"], validate=True)
+                media_type = item["media_type"]
+            except (KeyError, TypeError, ValueError, binascii.Error):
+                continue
+            if check_image(media_type, data) is None:
+                out.append(BinaryContent(data, media_type=media_type))
+        return out
 
     async def _broadcast(self, msg: dict) -> None:
         for ws in list(self._clients):

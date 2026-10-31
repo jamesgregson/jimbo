@@ -63,7 +63,7 @@ Also: user-defined commands as markdown files in `~/.jimbo/commands/` and `.jimb
   (pydantic-settings TOML source) so rules don't live in env vars.
 - Sandbox (macOS `sandbox-exec` profile limiting writes to workspace) as an optional follow-up.
 
-### Phase 3 — Paste: multiline, images, files
+### Phase 3 — Paste: multiline, images, files — done
 - `send()` accepts `str | list[UserContent]` (pydantic-ai `BinaryContent`/`ImageUrl`); event
   `user_message` gains `attachments` metadata (not bytes) for logs.
 - TUI: confirm prompt_toolkit bracketed paste keeps newlines without submitting; collapse pastes over N
@@ -93,6 +93,26 @@ Also: user-defined commands as markdown files in `~/.jimbo/commands/` and `.jimb
   (`name`, `description`); list name+description in instructions; `load_skill(name)` tool returns
   the body (read-only, works outside workspace). `/skills` lists them; `/<skill>` invokes directly
   through the command registry.
+
+### Phase 6b — Project index
+A compact, persistent per-file summary store so the agent can answer questions about files and skim the
+codebase when planning, without reading whole files.
+- **Layout:** `.jimbo/index/<relpath>.json` mirrors the workspace tree (O(1) lookup by path, atomic per-file
+  writes). `.jimbo/index/.gitignore` containing `*` keeps it a local, git-ignored cache.
+- **Entry:** `{v, path, sha256, size, mtime, lang, model, purpose, chunks:[{id, name, kind, start, end, sha, summary}]}`
+  — one "what is this for" sentence plus a 1–2 sentence summary per chunk.
+- **Hybrid summarizing:** deterministic chunking (Python `ast`, markdown headings, ~80-line windows otherwise) so line
+  ranges are exact; a tool-less pydantic-ai call per file writes the prose. Oversize files fall back to map-reduce.
+- **Separate model:** `Settings.index_model` (`"<provider>:<name>"`, default = follow the main model), also
+  `/index model [<provider>:<name>|default]`. User-level config only (add to `UNTRUSTED_KEYS`). Each entry records the
+  model that wrote it.
+- **Freshness:** lazy — `size+mtime`, then sha256, checked on lookup; `write_file`/`edit_file` mark paths dirty and a
+  background flush at run end refreshes them. No file watcher.
+- **Module/tools:** `core/index.py` `ProjectIndex` (reuses `list_files` and `resolve_in_workspace`); read-only tools
+  `index_lookup(path)` and `index_overview(path)` (the latter never calls a model); `/index build|status|clear|model`.
+- **Later:** per-chunk re-summarizing on edit, tree-sitter chunking, embeddings/semantic search, injecting a
+  top-level overview via Phase 6 dynamic instructions.
+- **Flag:** with a remote provider, indexing sends file contents to it; `/index build` should say which model it uses.
 
 ### Phase 7 — Compaction, then auto-compaction
 - `core/compaction.py`: `compact(history) -> history` — run the model with no tools on a summarize
