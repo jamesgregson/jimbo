@@ -1,5 +1,7 @@
 import asyncio
 import signal
+import time
+from collections.abc import Callable
 from contextlib import contextmanager
 
 from .attachments import UserMessage, build_content
@@ -8,12 +10,32 @@ from .interaction import Frontend
 from .session import AgentSession
 
 
+ESCALATE_WITHIN = 2.0  # seconds: a second Ctrl+C this soon after one that cancelled a run quits jimbo
+
+
+def make_sigint_handler(session: AgentSession, loop: asyncio.AbstractEventLoop, *,
+                        clock: Callable[[], float] = time.monotonic):
+    """Ctrl+C cancels the run in flight; with nothing running (or a second press right after a cancel
+    that did not take effect) it behaves as usual and raises KeyboardInterrupt, which quits jimbo."""
+    last_cancel = -ESCALATE_WITHIN
+
+    def handler(signum, frame):
+        nonlocal last_cancel
+        now = clock()
+        if session.is_running and now - last_cancel > ESCALATE_WITHIN:
+            last_cancel = now
+            loop.call_soon_threadsafe(session.cancel)
+        else:
+            signal.default_int_handler(signum, frame)
+
+    return handler
+
+
 @contextmanager
 def _interrupt_cancels_run(session: AgentSession):
-    """While a run is in flight, Ctrl+C (SIGINT) cancels it instead of quitting jimbo."""
     loop = asyncio.get_running_loop()
     try:
-        prev = signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(session.cancel))
+        prev = signal.signal(signal.SIGINT, make_sigint_handler(session, loop))
     except ValueError:  # not on the main thread
         yield
         return
