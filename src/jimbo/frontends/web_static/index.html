@@ -63,6 +63,12 @@
   .cmd { background: var(--tool); border: 1px solid var(--line); font: 12.5px/1.45 ui-monospace, Menlo, monospace;
          white-space: pre-wrap; }
   .cmd .head { color: var(--dim); }
+  #todos { position: fixed; top: 52px; right: 12px; width: 260px; max-height: 50vh; overflow: auto; z-index: 5;
+           background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; }
+  #todos[hidden] { display: none; }
+  #todos h2 { font-size: 12px; margin: 0 0 4px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+  #todos li { list-style: none; padding: 1px 0; } #todos ul { margin: 0; padding: 0; }
+  #todos .done { color: var(--dim); text-decoration: line-through; } #todos .in_progress { font-weight: 600; color: var(--accent); }
   #thumbs { display: flex; gap: 8px; padding: 8px 16px 0; background: var(--panel); flex-wrap: wrap; }
   #thumbs:empty { display: none; }
   .thumb { position: relative; } .thumb img { height: 56px; border-radius: 6px; border: 1px solid var(--line); display: block; }
@@ -90,6 +96,7 @@
 </head>
 <body>
 <header><h1>Jimbo</h1><span id="status" class="off">connecting…</span></header>
+<aside id="todos" hidden></aside>
 <div id="log"></div>
 <div id="hint"></div>
 <div id="thumbs"></div>
@@ -231,6 +238,11 @@ function onEvent(ev) {
     }
     case "context": lastCtx = d; break;
     case "commands": commands = d.commands; break;
+    case "todos": {
+      const box = $("#todos"), mark = { done: "☑", in_progress: "▶", pending: "☐" };
+      const ul = el("ul"); d.items.forEach((t) => ul.append(el("li", t.status, `${mark[t.status] || "☐"} ${t.content}`)));
+      box.replaceChildren(el("h2", null, "Todos"), ul); box.hidden = !d.items.length; break;
+    }
     case "command_output": {
       const box = add(el("div", "msg cmd" + (d.ok ? "" : " err")));
       box.append(el("div", "head", "/" + d.command), d.text); break;

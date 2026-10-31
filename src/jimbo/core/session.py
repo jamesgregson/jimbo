@@ -40,6 +40,7 @@ class AgentSession:
         self.total_usage = RunUsage()
         self._limits = UsageLimits(request_limit=request_limit)
         self._seq = 0
+        self._todos_sent: list = []
         self._task: asyncio.Task | None = None
 
     async def emit(self, kind: EventKind, **data) -> None:
@@ -47,6 +48,11 @@ class AgentSession:
         ev = Event(seq=self._seq, session_id=self.session_id, kind=kind, data=data)
         for s in self.sinks:
             await s.emit(ev)
+
+    async def _emit_todos(self) -> None:
+        if self.deps.todos != self._todos_sent:
+            self._todos_sent = list(self.deps.todos)
+            await self.emit("todos", items=[t.model_dump() for t in self.deps.todos])
 
     def cancel(self) -> bool:
         """Interrupt the in-flight run, if any. The partial turn is kept in history."""
@@ -107,6 +113,7 @@ class AgentSession:
                                     await self.emit("tool_result", id=ev.tool_call_id,
                                                     ok=ev.part.part_kind == "tool-return",
                                                     content=str(ev.part.content))
+                                    await self._emit_todos()
                 result = run.result
             assert result is not None
         except asyncio.CancelledError:

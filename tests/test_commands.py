@@ -103,7 +103,7 @@ async def test_help_lists_every_command(tmp_path):
     s, fe = make(tmp_path)
     await s.commands.dispatch(s, "/help")
     text = last(fe)["text"]
-    for name in ("approve", "clear", "help", "model", "quit", "usage"):
+    for name in ("approve", "clear", "help", "model", "quit", "todos", "usage"):
         assert f"/{name} — " in text
 
 
@@ -235,4 +235,4 @@ async def test_workspace_commands_override_user_commands(tmp_path):
 
 async def test_missing_command_dirs_are_fine(tmp_path):
     s, _ = make(tmp_path)  # neither user/commands nor .jimbo/commands exists
-    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "help", "model", "quit", "usage"}
+    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "help", "model", "quit", "todos", "usage"}

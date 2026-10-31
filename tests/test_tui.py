@@ -81,3 +81,12 @@ async def test_commands_completion_output_and_interrupt():
     await fe.render(ev(5, "run_finished", ok=False, cancelled=True))
     s = out.getvalue()
     assert "/help — list" in s and "(interrupted)" in s and "ctx 25%" in s
+
+
+async def test_todos_checklist():
+    fe, out = make()
+    await fe.render(ev(1, "todos", items=[{"content": "one", "status": "done"},
+                                          {"content": "two", "status": "in_progress"},
+                                          {"content": "three", "status": "pending"}]))
+    s = out.getvalue()
+    assert "✓ one" in s and "▸ two" in s and "○ three" in s

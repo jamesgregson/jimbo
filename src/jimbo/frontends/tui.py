@@ -222,6 +222,12 @@ class TuiFrontend:
                 self._usage = d
             case "context":
                 self._context = d
+            case "todos":
+                self._stop_live()
+                for t in d["items"]:
+                    mark, style = {"done": ("✓", "dim green"), "in_progress": ("▸", "bold yellow")}.get(
+                        t["status"], ("○", "dim"))
+                    c.print(Text(f"  {mark} {t['content']}", style=style))
             case "commands":
                 self.completer.commands = {c["name"]: c["help"] for c in d["commands"]}
             case "command_output":

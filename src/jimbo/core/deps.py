@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -6,6 +6,7 @@ from .approval import ApprovalGate, ToolCallInfo
 
 if TYPE_CHECKING:
     from ..tools.sandbox import Sandbox
+    from ..tools.todos import TodoItem
 
 
 class ToolDenied(Exception):
@@ -21,6 +22,7 @@ class Deps:
     sandbox: "Sandbox | None" = None
     shell_timeout: int = 120
     shell_timeout_max: int = 600
+    todos: "list[TodoItem]" = field(default_factory=list)
 
     async def authorize(self, tool: str, args: dict, summary: str, *, detail: str | None = None,
                         read_only: bool = False) -> None:

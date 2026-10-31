@@ -6,6 +6,7 @@ from .core.approval import ApprovalPolicy
 from .core.commands import CommandError, CommandRegistry, QuitSession
 from .core.session import AgentSession
 from .providers.registry import build_model
+from .tools.todos import format_todos
 
 
 def register_builtins(registry: CommandRegistry, settings: Settings,
@@ -21,6 +22,8 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     async def clear(session: AgentSession, args: str) -> str:
         session.history = []
         session.context_tokens = 0
+        session.deps.todos = []
+        await session._emit_todos()
         return "Conversation cleared."
 
     async def model(session: AgentSession, args: str) -> str:
@@ -52,6 +55,9 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
             raise CommandError("usage: /approve [yolo|default]")
         return "approval: " + " → ".join(chain["names"])
 
+    async def todos(session: AgentSession, args: str) -> str:
+        return format_todos(session.deps.todos)
+
     async def quit_(session: AgentSession, args: str) -> None:
         raise QuitSession
 
@@ -60,4 +66,5 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("model", "show or switch model: /model <provider>:<name>", model)
     registry.add("usage", "token usage and context fill for this session", usage)
     registry.add("approve", "show or set approval chain: /approve [yolo|default]", approve)
+    registry.add("todos", "show the agent's task list", todos)
     registry.add("quit", "exit jimbo", quit_)

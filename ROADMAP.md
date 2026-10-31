@@ -74,7 +74,7 @@ Also: user-defined commands as markdown files in `~/.jimbo/commands/` and `.jimb
   (size-capped), shown as thumbnails.
 - Guard: warn if the model isn't vision-capable (setting flag per provider/model).
 
-### Phase 4 — Todos
+### Phase 4 — Todos — done
 - `tools/todos.py`: `todo_write(items: list[{content, status: pending|in_progress|done}])` — replaces the
   whole list (simplest for small local models), read-only-approved. State lives on `Deps.todos`.
 - Emit `todos` event; TUI renders a compact checklist after each update, web a sidebar panel;

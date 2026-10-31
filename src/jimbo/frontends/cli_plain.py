@@ -34,6 +34,10 @@ class PlainFrontend:
                 print(f"\n[error] {d['type']}: {d['message']}", file=sys.stderr)
             case "approval_resolved":
                 print(f"[approval] {d['tool']}: {d['action']} by {d['decided_by']}", file=sys.stderr)
+            case "todos":
+                marks = {"done": "[x]", "in_progress": "[~]"}
+                print("[todos]", *(f"{marks.get(t['status'], '[ ]')} {t['content']}" for t in d["items"]),
+                      sep="\n  ", file=sys.stderr)
             case "command_output":
                 print(d["text"], file=sys.stdout if d["ok"] else sys.stderr)
             case "run_finished" if d.get("cancelled"):
