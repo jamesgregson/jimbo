@@ -121,6 +121,7 @@ class TuiFrontend:
         self._ask = ask
         self._buf = ""
         self._live: Live | None = None
+        self._spinner = None
         self._usage: dict | None = None
         self._context: dict | None = None
         self._interrupted = False
@@ -185,7 +186,19 @@ class TuiFrontend:
             self._interrupted = False
             return self.expand(text)
 
+    def _start_spinner(self) -> None:
+        """Show a spinner while the agent is working but nothing is streaming (model or tool wait)."""
+        if self._spinner is None and self._live is None and self.console.is_terminal:
+            self._spinner = self.console.status("[dim]working…[/dim]", spinner="dots")
+            self._spinner.start()
+
+    def _stop_spinner(self) -> None:
+        if self._spinner is not None:
+            self._spinner.stop()
+            self._spinner = None
+
     def _stop_live(self) -> None:
+        self._stop_spinner()
         if self._live is not None:
             self._live.stop()
             self._live = None
@@ -195,7 +208,10 @@ class TuiFrontend:
         d = event.data
         c = self.console
         match event.kind:
+            case "user_message":
+                self._start_spinner()
             case "assistant_text_delta":
+                self._stop_spinner()
                 self._buf += d["text"]
                 if self._live is None:
                     self._live = Live(console=c, auto_refresh=False, vertical_overflow="visible")
@@ -211,7 +227,9 @@ class TuiFrontend:
                     c.print(Text(f"  ✓ {_clip(first[0]) if first else ''}", style="dim green"))
                 else:
                     c.print(Text(f"  ✗ {_clip(d['content'], 300)}", style="red"))
+                self._start_spinner()  # the model is thinking again (or another tool is running)
             case "assistant_text":
+                self._stop_spinner()
                 if self._live is not None:
                     self._stop_live()
                 else:

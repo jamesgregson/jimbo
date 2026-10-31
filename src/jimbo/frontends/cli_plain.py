@@ -20,6 +20,8 @@ class PlainFrontend:
     async def render(self, event: Event) -> None:
         d = event.data
         match event.kind:
+            case "user_message":
+                print("[working…]", file=sys.stderr)
             case "assistant_text_delta":
                 self._streamed = True
                 print(d["text"], end="", flush=True)
