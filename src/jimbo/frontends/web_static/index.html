@@ -24,6 +24,11 @@
   header { padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
            display: flex; gap: 12px; align-items: center; }
   header h1 { font-size: 15px; margin: 0; }
+  #stats { font-size: 12px; color: var(--dim); padding: 4px 16px; border-bottom: 1px solid var(--border, #333);
+           display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  #stats .meter { width: 90px; height: 6px; border-radius: 3px; background: rgba(128,128,128,.3); overflow: hidden; }
+  #stats .meter i { display: block; height: 100%; width: 0; background: var(--accent); }
+  #stats .meter.hot i { background: var(--err); }
   #status { font-size: 12px; color: var(--dim); margin-left: auto; }
   #status.busy { color: var(--accent); }
   #status.busy::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 6px;
@@ -106,6 +111,7 @@
 </head>
 <body>
 <header><h1>Jimbo</h1><span id="status" class="off">connecting…</span></header>
+<div id="stats"><span id="st-ctx">context —</span><span class="meter" id="st-meter"><i></i></span><span id="st-turn"></span><span id="st-session"></span></div>
 <aside id="todos" hidden></aside>
 <div id="log"></div>
 <div id="thinking"><span></span><span></span><span></span> working…</div>
@@ -123,6 +129,15 @@ const log = $("#log"), input = $("#input"), sendBtn = $("#send"), statusEl = $("
 const token = new URLSearchParams(location.search).get("token") || "";
 let ws, running = false, seg = null, segText = "", cards = new Map(), pendingId = null;
 let commands = [], lastCtx = null;
+const fmtN = (n) => n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
+function showStats(d) {
+  const pct = d.window ? Math.round(100 * d.tokens / d.window) : null;
+  $("#st-ctx").textContent = `context ${fmtN(d.tokens)}` + (d.window ? ` / ${fmtN(d.window)} (${pct}%)` : "");
+  const m = $("#st-meter"); m.hidden = pct == null; m.classList.toggle("hot", pct != null && pct >= 80);
+  m.firstChild.style.width = Math.min(pct || 0, 100) + "%";
+  $("#st-turn").textContent = `prompt: ${fmtN(d.turn.input_tokens)} in · ${fmtN(d.turn.output_tokens)} out`;
+  $("#st-session").textContent = `session: ${fmtN(d.session.input_tokens)} in · ${fmtN(d.session.output_tokens)} out · ${d.session.requests} req`;
+}
 
 function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
 function setRunning(v) {
@@ -244,17 +259,16 @@ function onEvent(ev) {
     case "approval_resolved":
       if (d.decided_by !== "user") add(el("div", "note", `approval ${d.tool}: ${d.action} (${d.decided_by})`)); break;
     case "usage": {
-      let s = `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`;
-      if (lastCtx && lastCtx.window) s += ` · context ${Math.round(100 * lastCtx.tokens / lastCtx.window)}%`;
-      add(el("div", "note", s)); break;
+      add(el("div", "note", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`)); break;
     }
-    case "context": lastCtx = d; break;
+    case "context": lastCtx = d; showStats(d); break;
     case "commands": commands = d.commands; break;
     case "todos": {
       const box = $("#todos"), mark = { done: "☑", in_progress: "▶", pending: "☐" };
       const ul = el("ul"); d.items.forEach((t) => ul.append(el("li", t.status, `${mark[t.status] || "☐"} ${t.content}`)));
       box.replaceChildren(el("h2", null, "Todos"), ul); box.hidden = !d.items.length; break;
     }
+    case "compaction": seg = null; add(el("div", "note", `compacted history: ${d.messages_before} → ${d.messages_after} messages`)); break;
     case "command_output": {
       const box = add(el("div", "msg cmd" + (d.ok ? "" : " err")));
       box.append(el("div", "head", "/" + d.command), d.text); break;

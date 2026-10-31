@@ -1,6 +1,8 @@
 import platform
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
 
 from .config import Settings
@@ -36,6 +38,12 @@ def project_context(ctx: RunContext[Deps]) -> str:
     return "\n\n".join(parts)
 
 
+async def compact_midrun(ctx: RunContext[Deps], messages: list[ModelMessage]) -> list[ModelMessage]:
+    """History processor: long tool loops compact between model requests, not only between turns."""
+    hook = ctx.deps.midrun_compact
+    return await hook(messages) if hook else messages
+
+
 def build_agent(settings: Settings, model: Model) -> Agent[Deps, str]:
     return Agent(
         model,
@@ -43,4 +51,5 @@ def build_agent(settings: Settings, model: Model) -> Agent[Deps, str]:
         instructions=[SYSTEM_PROMPT.format(os=platform.system()), project_context],
         tools=[*FS_TOOLS, *SEARCH_TOOLS, shell, *TODO_TOOLS, *SKILL_TOOLS],
         retries=settings.tool_retries,
+        capabilities=[ProcessHistory(compact_midrun)],
     )

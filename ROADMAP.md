@@ -114,7 +114,7 @@ codebase when planning, without reading whole files.
   top-level overview via Phase 6 dynamic instructions.
 - **Flag:** with a remote provider, indexing sends file contents to it; `/index build` should say which model it uses.
 
-### Phase 7 — Compaction, then auto-compaction
+### Phase 7 — Compaction, then auto-compaction — done
 - `core/compaction.py`: `compact(history) -> history` — run the model with no tools on a summarize
   prompt (goal, decisions, files touched, open todos), return `[summary as UserPromptPart, ack]` plus
   the last K messages kept verbatim; never split a tool-call/tool-return pair.

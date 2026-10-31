@@ -1,6 +1,8 @@
 """Built-in slash commands. They live outside core because they rebuild agents and policies."""
 
 from .agent import build_agent
+from pydantic_ai.usage import RunUsage
+
 from .config import Settings
 from .core.approval import ApprovalPolicy
 from .core.commands import CommandError, CommandRegistry, QuitSession
@@ -23,9 +25,20 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     async def clear(session: AgentSession, args: str) -> str:
         session.history = []
         session.context_tokens = 0
+        session.turn_usage = RunUsage()
         session.deps.todos = []
         await session._emit_todos()
+        await session.emit_context()
         return "Conversation cleared."
+
+    async def compact_(session: AgentSession, args: str) -> str:
+        if session.is_running:
+            raise CommandError("a run is in progress; wait for it or cancel first")
+        try:
+            result = await session.compact(args)
+        except Exception as e:
+            raise CommandError(f"compaction failed: {e}") from None
+        return result or "Nothing to compact."
 
     async def model(session: AgentSession, args: str) -> str:
         if not args:
@@ -67,6 +80,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
 
     registry.add("help", "list commands", help_)
     registry.add("clear", "forget the conversation so far", clear)
+    registry.add("compact", "summarize older history to free context: /compact [focus]", compact_)
     registry.add("model", "show or switch model: /model <provider>:<name>", model)
     registry.add("usage", "token usage and context fill for this session", usage)
     registry.add("approve", "show or set approval chain: /approve [yolo|default]", approve)

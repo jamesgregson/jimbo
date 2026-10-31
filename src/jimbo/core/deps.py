@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from .approval import ApprovalGate, ToolCallInfo
 
@@ -26,6 +27,8 @@ class Deps:
     todos: "list[TodoItem]" = field(default_factory=list)
     project_instructions: str = ""
     skills: "dict[str, Skill]" = field(default_factory=dict)
+    # Set by the session: compacts a message list mid-run when the context is nearly full.
+    midrun_compact: "Callable[[list[Any]], Awaitable[list[Any]]] | None" = None
 
     def read_roots(self) -> list[Path]:
         """Directories outside the workspace that read-only file tools may access: loaded skills' folders."""

@@ -172,6 +172,13 @@ async def test_context_event(tmp_path):
     await s.send("hi")
     ctx = [e.data for e in fe.events if e.kind == "context"]
     assert ctx and ctx[-1]["window"] == 1000 and ctx[-1]["tokens"] == s.context_tokens > 0
+    last = ctx[-1]
+    assert last["turn"]["input_tokens"] > 0 and last["turn"]["requests"] >= 1
+    assert last["session"] == last["turn"]  # first prompt: session == turn
+    await s.send("again")
+    last = [e.data for e in fe.events if e.kind == "context"][-1]
+    assert last["session"]["requests"] > last["turn"]["requests"]
+    assert last["session"]["input_tokens"] > last["turn"]["input_tokens"]
 
 
 async def test_sigint_cancels_run_not_jimbo(tmp_path):

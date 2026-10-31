@@ -76,11 +76,13 @@ async def test_commands_completion_output_and_interrupt():
     assert got == ["/help"]
     assert not list(fe.completer.get_completions(Document("/help me"), None))
     await fe.render(ev(2, "command_output", command="help", ok=True, text="/help — list"))
-    await fe.render(ev(3, "context", tokens=250, window=1000))
+    await fe.render(ev(3, "context", tokens=250, window=1000,
+                             turn={"requests": 1, "input_tokens": 200, "output_tokens": 50},
+                             session={"requests": 3, "input_tokens": 1500, "output_tokens": 90}))
     await fe.render(ev(4, "usage", requests=1, input_tokens=200, output_tokens=50))
     await fe.render(ev(5, "run_finished", ok=False, cancelled=True))
     s = out.getvalue()
-    assert "/help — list" in s and "(interrupted)" in s and "ctx 25%" in s
+    assert "/help — list" in s and "(interrupted)" in s and "ctx 250/1.0k (25%)" in s and "session 1.5k in 90 out" in s and fe._stats
 
 
 async def test_todos_checklist():

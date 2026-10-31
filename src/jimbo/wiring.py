@@ -59,7 +59,8 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     session = AgentSession(agent, deps, [FrontendSink(frontend), *(extra_sinks or [])],
                            request_limit=settings.request_limit,
                            context_window=settings.context_window or settings.num_ctx,
-                           vision=settings.vision)
+                           vision=settings.vision, compact_threshold=settings.compact_threshold,
+                           compact_keep=settings.compact_keep)
     register_builtins(session.commands, settings, available)
     load_markdown_commands(session.commands, [settings.user_dir / "commands",
                                               deps.workspace / ".jimbo" / "commands"])

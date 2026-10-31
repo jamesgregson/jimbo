@@ -18,6 +18,7 @@ from pydantic_ai.usage import RunUsage
 
 from .attachments import build_content, expand_mentions, image_meta
 from .commands import CommandRegistry
+from .compaction import compact as compact_history
 from .deps import Deps
 from .events import Event, EventKind, EventSink
 
@@ -27,7 +28,8 @@ class AgentSession:
 
     def __init__(self, agent: Agent[Deps, str], deps: Deps, sinks: list[EventSink],
                  *, request_limit: int = 50, session_id: str | None = None,
-                 context_window: int | None = None, vision: bool = True) -> None:
+                 context_window: int | None = None, vision: bool = True,
+                 compact_threshold: float = 0.8, compact_keep: int = 6) -> None:
         self.agent = agent
         self.deps = deps
         self.sinks = sinks
@@ -36,8 +38,12 @@ class AgentSession:
         self.commands = CommandRegistry()
         self.context_window = context_window
         self.vision = vision  # False: images are dropped with a warning instead of sent to the model
+        self.compact_threshold = compact_threshold  # 0 disables auto-compaction
+        self.compact_keep = compact_keep
+        self.deps.midrun_compact = self._compact_midrun
         self.context_tokens = 0  # size of the last model request + response
-        self.total_usage = RunUsage()
+        self.total_usage = RunUsage()  # whole session; updated live during a run
+        self.turn_usage = RunUsage()  # the current (or most recent) prompt
         self._limits = UsageLimits(request_limit=request_limit)
         self._seq = 0
         self._todos_sent: list = []
@@ -48,6 +54,13 @@ class AgentSession:
         ev = Event(seq=self._seq, session_id=self.session_id, kind=kind, data=data)
         for s in self.sinks:
             await s.emit(ev)
+
+    async def emit_context(self) -> None:
+        """Live stats: working-context size, plus token usage for the current prompt and the session."""
+        def u(x: RunUsage) -> dict:
+            return {"requests": x.requests, "input_tokens": x.input_tokens, "output_tokens": x.output_tokens}
+        await self.emit("context", tokens=self.context_tokens, window=self.context_window,
+                        turn=u(self.turn_usage), session=u(self.total_usage))
 
     async def _emit_todos(self) -> None:
         if self.deps.todos != self._todos_sent:
@@ -61,12 +74,57 @@ class AgentSession:
         self._task.cancel()
         return True
 
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def _needs_compaction(self) -> bool:
+        return bool(self.compact_threshold and self.context_window
+                    and self.context_tokens / self.context_window > self.compact_threshold)
+
+    async def _apply_compaction(self, messages: list[ModelMessage], *, focus: str = "",
+                                allow_empty: bool = True) -> list[ModelMessage] | None:
+        from ..tools.todos import format_todos
+        todos = format_todos(self.deps.todos) if self.deps.todos else ""
+        new = await compact_history(self.agent.model, messages, keep=self.compact_keep, focus=focus,
+                                    todos=todos, allow_empty=allow_empty)
+        if new is not None:
+            before = self.context_tokens
+            self.context_tokens = 0  # unknown until the next model request reports it
+            await self.emit("compaction", messages_before=len(messages), messages_after=len(new),
+                            tokens_before=before)
+            await self.emit_context()
+        return new
+
+    async def _compact_midrun(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        if not self._needs_compaction():
+            return messages
+        try:
+            return await self._apply_compaction(messages, allow_empty=False) or messages
+        except Exception as e:  # compaction is best effort; the run continues with the full history
+            await self.emit("error", type=type(e).__name__, message=f"auto-compaction failed: {e}")
+            return messages
+
+    async def compact(self, focus: str = "") -> str | None:
+        """Summarize older history now. Returns a status line, or None if there was nothing to compact."""
+        new = await self._apply_compaction(self.history, focus=focus)
+        if new is None:
+            return None
+        n = len(self.history)
+        self.history = new
+        return f"Compacted {n} messages into {len(new)}."
+
     async def send(self, content: str | list[UserContent]) -> str | None:
         """Run one turn. Returns the final text, or None if the run failed or was cancelled.
 
         `content` is text, or a list mixing text and `BinaryContent` images. `@path` mentions in the
         text are replaced by the file contents for the model; the user_message event keeps the original.
         """
+        if self._needs_compaction():  # between turns: summarize before the new prompt is added
+            try:
+                await self.compact()
+            except Exception as e:
+                await self.emit("error", type=type(e).__name__, message=f"auto-compaction failed: {e}")
         self._task = asyncio.create_task(self._run(content))  # own task so cancel() can't hit the caller
         try:
             return await self._task
@@ -88,6 +146,8 @@ class AgentSession:
             await self.emit("command_output", command="attach", ok=False, text=warning)
         prompt = build_content(sent, images)
         run = None
+        base = self.total_usage
+        self.turn_usage = RunUsage()
         try:
             async with self.agent.iter(prompt, deps=self.deps, message_history=self.history,
                                        usage_limits=self._limits) as run:
@@ -103,7 +163,9 @@ class AgentSession:
                     elif Agent.is_call_tools_node(node):
                         u = node.model_response.usage
                         self.context_tokens = u.input_tokens + u.output_tokens
-                        await self.emit("context", tokens=self.context_tokens, window=self.context_window)
+                        self.turn_usage = run.usage
+                        self.total_usage = base + run.usage
+                        await self.emit_context()
                         async with node.stream(run.ctx) as stream:
                             async for ev in stream:
                                 if isinstance(ev, FunctionToolCallEvent):
@@ -119,7 +181,8 @@ class AgentSession:
         except asyncio.CancelledError:
             if run is not None:  # keep what happened so far; repair closes out unanswered tool calls
                 self.history = repair_messages(run.all_messages())
-                self.total_usage = self.total_usage + run.usage
+                self.turn_usage, self.total_usage = run.usage, base + run.usage
+            await self.emit_context()
             await self.emit("run_finished", ok=False, cancelled=True)
             return None
         except Exception as e:  # surfaced to the UI/log; the session stays usable
@@ -127,10 +190,11 @@ class AgentSession:
             await self.emit("run_finished", ok=False)
             return None
         self.history = result.all_messages()
-        u = result.usage
-        self.total_usage = self.total_usage + u
+        u = self.turn_usage = result.usage
+        self.total_usage = base + u
         await self.emit("assistant_text", text=result.output)
         await self.emit("usage", requests=u.requests, input_tokens=u.input_tokens,
                         output_tokens=u.output_tokens)
+        await self.emit_context()
         await self.emit("run_finished", ok=True)
         return result.output

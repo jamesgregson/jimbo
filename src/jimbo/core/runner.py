@@ -26,6 +26,7 @@ def _interrupt_cancels_run(session: AgentSession):
 async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
     """Pump user input into the session: slash commands go to the registry, the rest to the model."""
     await session.emit("commands", commands=session.commands.describe())
+    await session.emit_context()
     if bind := getattr(frontend, "bind_cancel", None):  # frontends with their own stop control
         bind(session.cancel)
     while (msg := await frontend.next_user_input()) is not None:

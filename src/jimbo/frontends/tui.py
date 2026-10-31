@@ -23,6 +23,7 @@ from pydantic_ai.messages import BinaryContent
 from ..core.approval import ApprovalDecision, ApprovalRequest
 from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
+from ..core.stats import format_stats
 from ..tools.search import list_files
 from .clipboard import clipboard_png
 
@@ -123,14 +124,15 @@ class TuiFrontend:
         self._live: Live | None = None
         self._spinner = None
         self._usage: dict | None = None
-        self._context: dict | None = None
+        self._stats = ""  # latest context/usage line, shown in the prompt toolbar and the working spinner
         self._interrupted = False
 
     def _prompt_session(self) -> PromptSession:
         if self._session is None:
             self._session = PromptSession(history=_history(), key_bindings=self._kb,
                                           completer=merge_completers([self.completer, self.file_completer]),
-                                          complete_while_typing=True)
+                                          complete_while_typing=True,
+                                          bottom_toolbar=lambda: self._stats or None)
         return self._session
 
     async def _prompt(self, message: str) -> str:
@@ -189,8 +191,11 @@ class TuiFrontend:
     def _start_spinner(self) -> None:
         """Show a spinner while the agent is working but nothing is streaming (model or tool wait)."""
         if self._spinner is None and self._live is None and self.console.is_terminal:
-            self._spinner = self.console.status("[dim]working…[/dim]", spinner="dots")
+            self._spinner = self.console.status(self._working_text(), spinner="dots")
             self._spinner.start()
+
+    def _working_text(self) -> Text:
+        return Text(f"working… {self._stats}", style="dim")
 
     def _stop_spinner(self) -> None:
         if self._spinner is not None:
@@ -239,7 +244,9 @@ class TuiFrontend:
             case "usage":
                 self._usage = d
             case "context":
-                self._context = d
+                self._stats = format_stats(d)
+                if self._spinner is not None:
+                    self._spinner.update(self._working_text())
             case "todos":
                 self._stop_live()
                 for t in d["items"]:
@@ -248,6 +255,10 @@ class TuiFrontend:
                     c.print(Text(f"  {mark} {t['content']}", style=style))
             case "commands":
                 self.completer.commands = {c["name"]: c["help"] for c in d["commands"]}
+            case "compaction":
+                self._stop_live()
+                c.print(Text(f"  compacted history: {d['messages_before']} → {d['messages_after']} messages",
+                             style="dim"))
             case "command_output":
                 c.print(Text(d["text"], style="" if d["ok"] else "red"))
             case "error":
@@ -259,10 +270,7 @@ class TuiFrontend:
                     c.print(Text("(interrupted)", style="dim yellow"))
                 if self._usage:
                     u, self._usage = self._usage, None
-                    line = f"{u['requests']} req · {u['input_tokens']} in · {u['output_tokens']} out"
-                    if (ctx := self._context) and ctx.get("window"):
-                        line += f" · ctx {100 * ctx['tokens'] / ctx['window']:.0f}%"
-                    c.print(Rule(line, style="dim", align="right"))
+                    c.print(Rule(self._stats or f"{u['requests']} req · {u['input_tokens']} in · {u['output_tokens']} out", style="dim", align="right"))
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         self._stop_live()

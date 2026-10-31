@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     api_key: str = "unused"
     num_ctx: int | None = 90000  # best-effort; /v1 may ignore it, prefer baking into the Modelfile
     context_window: int | None = None  # tokens; falls back to num_ctx. Used for /usage and compaction
+    compact_threshold: float = 0.8  # context fill ratio that triggers auto-compaction; 0 disables
+    compact_keep: int = 6  # recent messages kept verbatim when compacting
     vision: bool = True  # False for text-only models: pasted images are dropped with a warning
     temperature: float | None = None
     request_timeout: float = 600.0

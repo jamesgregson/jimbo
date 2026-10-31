@@ -1,7 +1,8 @@
 # Jimbo Coding Agent
 
 A simple coding agent on Pydantic AI. The core (`jimbo.core`) is headless: it emits `Event`s and
-asks for approvals through a `Frontend` protocol, so UIs are swappable.
+asks for approvals through a `Frontend` protocol, so UIs are swappable. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for how it fits together.
 
     uv sync
     uv run jimbo "summarize this repo"          # one-shot

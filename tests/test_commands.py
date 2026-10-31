@@ -237,4 +237,4 @@ async def test_workspace_commands_override_user_commands(tmp_path):
 
 async def test_missing_command_dirs_are_fine(tmp_path):
     s, _ = make(tmp_path)  # neither user/commands nor .jimbo/commands exists
-    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "help", "model", "quit", "skills", "todos", "usage"}
+    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "compact", "help", "model", "quit", "skills", "todos", "usage"}

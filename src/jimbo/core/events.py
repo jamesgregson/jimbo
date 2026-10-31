@@ -22,6 +22,7 @@ EventKind = Literal[
     "run_finished",
     "commands",
     "command_output",
+    "compaction",
 ]
 
 
