@@ -2,7 +2,7 @@
 
 ## Context
 
-Jimbo is at "milestone 1" (~1.2k lines): a headless `AgentSession` (pydantic-ai 2.63 `agent.iter`) emits
+Jimbo (~3.4k lines of source) has finished phases 0-9b below; a headless `AgentSession` (pydantic-ai 2.63 `agent.iter`) emits
 `Event`s to sinks, tools go through an `ApprovalGate` policy chain, and three frontends (plain/tui/web)
 implement the `Frontend` protocol. The goal is to grow it into a usable daily coding agent: slash
 commands, paste, steering, skills, compaction, planning, todos, plus the gaps found while reading the code.
@@ -16,7 +16,7 @@ commands, paste, steering, skills, compaction, planning, todos, plus the gaps fo
 - `wiring.py` `build_session()` — composition root; new subsystems are wired here.
 - Tests: `tests/test_core.py` `ScriptedFrontend` + `FunctionModel`/`TestModel` pattern.
 
-### What's missing (found in the code)
+### Original gaps (historical; phases 0-9b closed all but those listed under Phase 6b and Phase 10)
 | Area | Gap |
 |---|---|
 | Run control | `send()` is awaited inline; no cancel/interrupt (Ctrl+C mid-run kills the process in TUI/plain), no input while a run is in flight |
@@ -94,7 +94,7 @@ Also: user-defined commands as markdown files in `~/.jimbo/commands/` and `.jimb
   the body (read-only, works outside workspace). `/skills` lists them; `/<skill>` invokes directly
   through the command registry.
 
-### Phase 6b — Project index
+### Phase 6b — Project index (not started)
 A compact, persistent per-file summary store so the agent can answer questions about files and skim the
 codebase when planning, without reading whole files.
 - **Layout:** `.jimbo/index/<relpath>.json` mirrors the workspace tree (O(1) lookup by path, atomic per-file

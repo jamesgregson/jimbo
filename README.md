@@ -1,258 +1,128 @@
-# Jimbo Coding Agent
+# Jimbo
 
-A simple coding agent on Pydantic AI. The core (`jimbo.core`) is headless: it emits `Event`s and
-asks for approvals through a `Frontend` protocol, so UIs are swappable. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for how it fits together.
+A small coding agent for your terminal. It reads and edits files, searches code and runs shell commands
+in your project, and asks before doing anything risky. Use it with a local model through Ollama, or with
+any OpenAI-compatible service.
 
-    uv sync
-    uv run jimbo "summarize this repo"          # one-shot
-    uv run jimbo                                # interactive (plain UI)
-    uv run jimbo --model <provider>:<model> --yolo
-    uv run jimbo --ui tui                       # rich inline UI (streaming markdown)
+## Quick start
 
-    uv run jimbo --ui web                       # browser UI on http://127.0.0.1:8765
+You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
-The `web` UI serves a local page (URL with a one-time token is printed and opened; set
-`JIMBO_WEB_HOST`, `JIMBO_WEB_PORT`, `JIMBO_WEB_OPEN_BROWSER=false` to change). Approvals appear as a
-dialog with the diff. Keep the host on localhost: the page can approve file writes.
-
-The `tui` UI: Enter submits, Shift+Enter (or Alt+Enter) inserts a newline, Ctrl+D (or Ctrl+C twice) quits. Pastes over 10 lines
-collapse to `[pasted #1: 240 lines]` (expanded on submit), `@path` completes workspace files and inlines them
-for the model, and Ctrl+V attaches a clipboard image (`pngpaste` or `osascript`). The web UI accepts pasted or
-dropped images. Set `vision = false` for text-only models to drop images with a warning.
-
-Ctrl+C while the agent is working interrupts the run (the partial turn is kept); at the prompt it
-quits as before. The web UI's Send button becomes Stop while a run is in flight.
-
-### Slash commands
-
-`/help`, `/clear`, `/model <provider>:<name>`, `/usage` (tokens and context fill),
-`/approve [yolo|default]`, `/quit`. Tab completes them in the `tui` and `web` UIs.
-
-Custom commands are markdown files in `~/.jimbo/commands/` (yours, every project) or
-`<workspace>/.jimbo/commands/` (shared with the repo; wins on a name clash). The file name is the
-command name, so `fix-issue.md` becomes `/fix-issue`. For example:
-
-```markdown
----
-description: investigate and fix a bug, with a regression test
----
-Fix this bug: $ARGUMENTS
-
-1. Find the relevant code with grep/glob and read it before changing anything.
-2. Write a failing test that reproduces the bug, and run it to confirm it fails.
-3. Make the smallest fix that makes the test pass.
-4. Run the full test suite and report what you changed and why.
-```
-
-Then `/fix-issue login fails when the email has uppercase letters` sends that prompt with `$ARGUMENTS`
-replaced by everything after the command name. Without a `$ARGUMENTS` placeholder, the arguments are
-appended after a blank line, so a file containing just `Review the uncommitted changes for bugs.`
-works as `/review` or `/review focus on error handling`. The optional `description:` is what `/help`
-and tab completion show (otherwise the file path). The command runs as a normal turn: the expanded
-prompt appears as your message and the model can use tools as usual. Built-in commands can't be
-overridden, and names must start with a letter and contain only letters, digits, `-` and `_`.
-
-Context fill is measured against `JIMBO_CONTEXT_WINDOW` (defaults to `JIMBO_NUM_CTX`); set it to the
-real window for non-ollama models.
-
-Each session is logged as JSONL events to `~/.jimbo/sessions/<session_id>.jsonl`
-(`JIMBO_LOG_DIR` to move it, `JIMBO_LOG_SESSIONS=false` to disable).
-
-Config via `JIMBO_*` env vars or `config.toml` (see [Configure](#configure)). See [Providers](#providers)
-for model setup.
-
-### Tools and approvals
-
-Tools: `read_file`, `list_dir`, `glob`, `grep` (read-only, never ask; search honours `.gitignore` in git
-repos), `write_file`, `edit_file` and `shell` (ask unless a rule allows them). `shell` runs bash in the
-workspace root, non-interactively, with a timeout (`shell_timeout`, default 120s; the model may request
-up to `shell_timeout_max`). Ctrl+C kills the running command along with the run.
-
-Approval rules skip the prompt for calls you trust, or refuse ones you never want:
-
-```toml
-# ~/.jimbo/config.toml
-approval_allow = ["shell:git status*", "shell:git diff*", "shell:uv run pytest*", "write_file:docs/*"]
-approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:.env*"]
-```
-
-A rule is `tool` or `tool:<glob>`, matched against the call's first argument (the command or path).
-Deny wins, and applies even with `--yolo`. A shell allow rule never matches a compound command
-(pipes, `;`, `&&`, redirects, `$...`), so `shell:git status*` can't approve `git status; rm -rf ~`.
-Deny rules are best effort (`bash -c "sudo …"` slips past them); the sandbox is the real boundary.
-
-### Sandbox (macOS)
-
-On macOS, `shell` commands run under `sandbox-exec`: they can read anything but write only to the
-workspace, temp dirs, `~/.cache` and `~/Library/Caches`. Settings: `sandbox = "auto"` (default: use it
-when available), `"on"` (refuse to start without it), `"off"`; `sandbox_writable = ["~/other"]` adds
-paths; `sandbox_network = false` blocks outbound network. Approval prompts say whether a command is
-sandboxed. Note: git in a workspace that is a subdirectory of a repo can't write the repo's `.git`
-unless you add it to `sandbox_writable`. If jimbo itself runs inside a sandbox, `auto` falls back
-to unsandboxed (macOS doesn't allow nesting).
-
-Status: milestone 1 (provider, session/events, approval policy chain, plain + tui + web frontends,
-file, search and shell tools, approval rules, macOS sandbox, run interruption, slash commands).
-See [ROADMAP.md](ROADMAP.md) for what's next.
-
-## Setup
-
-### Prerequisites
-
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) for dependency management
-- A model endpoint from one of the [providers](#providers) below
-
-### Install
+**1. Install.** This puts a `jimbo` command on your PATH, so you can use it in any project.
 
 ```bash
 git clone git@github.com:jamesgregson/jimbo.git && cd jimbo
-uv sync                  # creates .venv and installs runtime + dev dependencies
+uv tool install --editable .
 ```
 
-### Configure
+If your shell can't find `jimbo` afterwards, run `uv tool update-shell` and open a new terminal.
 
-Settings live in `src/jimbo/config.py`. Precedence, highest first: CLI flags, `JIMBO_*` environment
-variables (e.g. `JIMBO_MODEL`, `JIMBO_API_KEY`), `<workspace>/.jimbo/config.toml`,
-`~/.jimbo/config.toml`, defaults. TOML keys are the setting names without the prefix
-(`model = "openrouter:..."`, `shell_timeout = 300`). Local `.env` files are git-ignored; do not commit
-secrets.
+**2. Choose a model.** Jimbo has no usable default, so you need to pick one. Choose a model that supports
+tool calling.
 
-A workspace config comes with whatever repo you cloned, so it can't loosen security: `model`,
-`api_key`, base URLs, `providers`, `model_aliases`, `models`, `tasks`, `web_host`, `approval`,
-`approval_allow` and the `sandbox*` settings are ignored
-there (with a warning) and only read from `~/.jimbo/config.toml`. Its `approval_deny` rules are added
-to yours.
-
-### Secrets on macOS (Keychain)
-
-Store API keys in your keychain rather than in plaintext files:
+Local, with [Ollama](https://ollama.com):
 
 ```bash
-# follow interactive prompt to set secret value, add -U to update
-security add-generic-password -a "$USER" -s "OPENROUTER_API_KEY" -w
+ollama pull llama3.1:8b
+mkdir -p ~/.jimbo && echo 'model = "ollama:llama3.1:8b"' >> ~/.jimbo/config.toml
 ```
 
-Then point the provider at it with `api_key_cmd` (see [API keys](#api-keys)), or read it into the
-environment when launching:
+This small model is good for checking your setup, but it's unreliable with tools. Use a larger one for real
+work.
+
+Or hosted, with [OpenRouter](https://openrouter.ai):
 
 ```bash
-OPENROUTER_API_KEY="$(security find-generic-password -a "$USER" -s OPENROUTER_API_KEY -w)" uv run jimbo
+export OPENROUTER_API_KEY=sk-or-...       # add this to your shell profile to keep it
+mkdir -p ~/.jimbo && echo 'model = "openrouter:z-ai/glm-5.3-flash"' >> ~/.jimbo/config.toml
 ```
 
-## Providers
+**3. Run it** from the project you want to work on:
 
-The model is selected as `<provider>:<model name>`, via `--model` or `JIMBO_MODEL`. All providers
-speak the OpenAI-compatible chat API and share `JIMBO_TEMPERATURE` and `JIMBO_REQUEST_TIMEOUT`. Each
-provider has its own endpoint and credentials. Adapters are registered in `src/jimbo/providers/registry.py`.
+```bash
+cd ~/my-project
+jimbo "summarize this repo"     # do one task and exit
+jimbo --ui tui                  # interactive session (recommended)
+```
 
-| Provider     | Base URL setting             | Default base URL               | API key  | `num_ctx` |
-|--------------|------------------------------|--------------------------------|----------|-----------|
-| `ollama`     | `JIMBO_OLLAMA_BASE_URL`      | `http://localhost:11434/v1`    | not used | sent      |
-| `openai`     | `JIMBO_OPENAI_BASE_URL`      | none, must be set              | `OPENAI_API_KEY` or `JIMBO_API_KEY` | sent      |
-| `openrouter` | `JIMBO_OPENROUTER_BASE_URL`  | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY`, required | not sent  |
+Using Ollama for real work? Do [this one extra step](#give-ollama-more-context) first. For OpenAI, LM
+Studio or a private endpoint, see [Providers and API keys](docs/reference.md#providers-and-api-keys).
 
-### API keys
+## Using jimbo
 
-Credentials belong to a provider, so several providers can be configured at once and a key is only
-ever sent to its own endpoint. Define providers in `~/.jimbo/config.toml`; a built-in name overrides that
-provider, any other name adds a new OpenAI-compatible endpoint (`provider:model` then uses it):
+| Command | What it does |
+|---------|--------------|
+| `jimbo "task"` | do one task and exit |
+| `jimbo` | interactive session, plain text |
+| `jimbo --ui tui` | interactive, with markdown, `@file` completion and image paste |
+| `jimbo --ui web` | interactive, in your browser |
+| `jimbo --resume [id]` | continue a saved session (the latest if you give no id) |
+| `jimbo --model <provider>:<name>` | use a different model for this run |
+| `jimbo --workspace <dir>` | work on another directory |
+
+In a session, `/help` lists the commands. The ones you'll want first are `/clear` to start over, `/model`
+to switch models, `/plan` to get a read-only plan before any changes, and `/quit`. Ctrl+C stops the current
+run and keeps what it has done so far. In `tui` and `web` you can type while it works to steer it.
+
+### What it can do without asking
+
+Reading and searching files in your workspace happens without a prompt. Writing files and running shell
+commands ask first, showing you the diff or command. To skip the prompt for commands you trust, or always
+refuse others, add rules to `~/.jimbo/config.toml`:
 
 ```toml
-[providers.openrouter]
-api_key_cmd = ["security", "find-generic-password", "-a", "james", "-s", "OPENROUTER_API_KEY", "-w"]
-
-[providers.work]
-base_url = "https://llm.internal/v1"
-api_key_env = "WORK_LLM_KEY"        # or api_key_file = "~/.jimbo/keys/work" (must be chmod 600)
-require_key = true                  # fail at startup rather than send a dummy key
+approval_allow = ["shell:git status*", "shell:git diff*", "shell:uv run pytest*"]
+approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:.env*"]
 ```
 
-Use at most one of `api_key_env`, `api_key_file`, `api_key_cmd` (an argument list, run without a shell,
-10s timeout, once per process) or `api_key` (inline; discouraged, and jimbo warns if the file is readable
-by others). With none set, `openai` and `openrouter` fall back to `OPENAI_API_KEY` / `OPENROUTER_API_KEY`
-(`JIMBO_API_KEY` still works for `openai` only), and local providers send a dummy key. Keys never appear
-in `/models`, events or logs; `/models` shows where each one comes from.
+`--yolo` approves everything except what `approval_deny` blocks.
 
-### Models per task
+On macOS, shell commands also run in a sandbox that can only write to your workspace, temp directories and
+caches. **There is no sandbox on other platforms**, so read commands carefully before you approve them
+there. See [Approvals](docs/reference.md#approvals) and [Sandbox](docs/reference.md#sandbox-macos).
 
-The main model is one *task* among several. `compaction` and `shell_assess` can each use a different
-model; unset tasks use the main model. Give models short aliases, and choose per task:
+### Give Ollama more context
+
+Ollama ignores the context size jimbo requests, so models run at Ollama's default, often just 4096 tokens.
+That's too small for real work, even though jimbo's status line shows `90.0k`. Build a variant of your model
+with a larger context:
+
+```bash
+printf 'FROM llama3.1:8b\nPARAMETER num_ctx 32768\n' > Modelfile
+ollama create llama3.1-32k -f Modelfile
+```
+
+Then point `~/.jimbo/config.toml` at it, using the same size:
 
 ```toml
-[model_aliases]
-fast  = "ollama:qwen3:4b"
-smart = "openrouter:anthropic/claude-sonnet-5-5"
-
-[models]
-shell_assess = "fast"
-compaction   = "main"
+model = "ollama:llama3.1-32k"
+num_ctx = 32768
 ```
 
-`/models` shows what each task resolves to and why; `/models set <task> <alias|provider:name>` changes it
-for the session and `/models reset [task]` undoes it. A skill can ask for models in its frontmatter
-(`models: {shell_assess: smart}`); that lasts one turn and may only name your aliases, never define a
-model or endpoint.
+`ollama ps` shows the context a loaded model is really using.
 
-### Shell summary and risk assessment
+### Teach it about your project
 
-When a model is set for `shell_assess`, the approval prompt for a shell command shows a short summary and a
-risk level (low, medium, high, critical) written by that model. It is advice only: the command is treated
-as untrusted text, and fixed checks (`sudo`, `rm -rf`, `curl | sh`, force pushes, writes outside the
-workspace, ...) set a minimum risk the model cannot lower. If the model is slow or fails, the prompt
-appears without it.
+Put an `AGENTS.md` in your project root with your build commands and conventions, and jimbo will follow
+them. You can also add [custom slash commands](docs/reference.md#custom-commands) and
+[skills](docs/reference.md#instructions-and-skills).
 
-```toml
-[tasks.shell_assess]
-mode = "auto"   # off | auto (on once a model is set) | ask (use the main model if none) | always (also for allowed calls)
-timeout = 8     # seconds to wait before showing the prompt without it
-```
+## Troubleshooting
 
-With a remote model, the commands (not file contents) are sent to it.
+| You see | Fix |
+|---------|-----|
+| `jimbo: command not found` | Run `uv tool update-shell` and open a new terminal. |
+| `Failed to spawn: jimbo` | You used `uv run jimbo` outside the checkout. Install it as in step 1. |
+| `model '...' not found` | Run `ollama pull <name>`, or set `model` as in step 2. |
+| `provider openrouter has no API key configured` | Set `OPENROUTER_API_KEY` in this shell. |
+| The model ignores files or forgets instructions | Its context is probably too small: see [above](#give-ollama-more-context). |
+| The model describes tool calls but doesn't make them | Choose a model that supports tool calling. |
 
-### ollama
+## More
 
-Local models via [Ollama](https://ollama.com). This is the default provider.
+- [Reference](docs/reference.md): every setting, plus providers, approvals, the sandbox and customization
+- [Architecture](ARCHITECTURE.md): how the code fits together
+- [Roadmap](ROADMAP.md): status and what's next
 
-```bash
-ollama pull <tag>
-uv run jimbo --model ollama:<tag> "summarize this repo"
-```
-
-Context size is requested with `JIMBO_NUM_CTX` (default 90000), but Ollama's `/v1` endpoint may
-ignore it; bake it into the model's Modelfile instead.
-
-### openai
-
-OpenAI itself, or any other OpenAI-compatible server (LM Studio, vLLM, ...). The base URL has no
-default, so set it:
-
-```bash
-JIMBO_OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_API_KEY=sk-... \
-  uv run jimbo --model openai:<model> "summarize this repo"
-```
-
-`JIMBO_NUM_CTX` is sent as an extra body field, which hosted APIs may reject; set it empty if so.
-
-### openrouter
-
-[OpenRouter](https://openrouter.ai) hosted models. Model names include the upstream vendor:
-
-```bash
-export JIMBO_API_KEY="$(security find-generic-password -a "$USER" -s OPENROUTER_API_KEY -w)"
-uv run jimbo --model openrouter:z-ai/glm-5.3-flash "summarize this repo"
-```
-
-### Adding a provider
-
-Add an entry to `PROVIDERS` in `src/jimbo/providers/registry.py`. For an OpenAI-compatible
-endpoint, add a base URL setting to `config.py` and register
-`OpenAICompatProvider("<setting>", default_base_url=..., send_num_ctx=...)`. Other APIs need a
-class implementing `ProviderSpec` (`providers/base.py`).
-
-### Test
-
-```bash
-uv run pytest
-```
+To update, run `git pull` in the checkout, then `uv tool install --editable . --force` if dependencies
+changed. To work on jimbo itself, run `uv sync && uv run pytest`.

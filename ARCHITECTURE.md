@@ -4,7 +4,7 @@ Jimbo is a small coding agent built on [Pydantic AI](https://ai.pydantic.dev). T
 **headless core** that knows nothing about any UI: it takes user input, runs the model and tools, and
 emits a stream of JSON-serializable `Event`s. Frontends, loggers and tests are all just consumers of
 that stream. This document explains how the pieces fit together; see the [README](README.md) for usage
-and configuration.
+and the [reference](docs/reference.md) for configuration.
 
 ## Layout
 
@@ -27,6 +27,10 @@ src/jimbo/
     compaction.py      history summarization (/compact and auto-compaction)
     attachments.py     @path mentions and pasted images
     jsonl.py           JsonlSink: session log
+    models.py          ModelRouter: which model runs each task
+    llm_tasks.py       run_task: background model calls (None on failure/timeout)
+    assess.py          shell command summary and risk level for approval prompts
+    stats.py           token/context accounting helpers
     store.py           SessionStore: history + todos saved per turn (<id>.messages.json) for --resume
   tools/             what the model can call (all go through Deps.authorize)
     fs.py paths.py     read_file, list_dir, write_file, edit_file; workspace path confinement
@@ -87,7 +91,8 @@ Key properties:
 
 - **Bounded.** `request_limit` (default 50) caps model requests per turn via `UsageLimits`.
 - **Cancellable.** `send()` runs the turn in its own `asyncio.Task` so `cancel()` (Ctrl+C, or the web UI's
-  Stop button) cancels the run without cancelling the caller. On cancel, the partial turn is kept in
+  Stop button) cancels the run without cancelling the caller. In the runner's SIGINT handler a second
+  Ctrl+C within 2 seconds of one that cancelled a run escalates to quitting. On cancel, the partial turn is kept in
   history; `repair_messages` closes out tool calls that never got a result. Running shell commands are
   killed on the way out.
 - **Fail soft.** Any exception becomes an `error` event followed by `run_finished(ok=False)`; the session
@@ -227,7 +232,7 @@ Approvals are about intent; separate mechanisms limit what a call can physically
    (model-adjustable up to `shell_timeout_max`), the command runs in its own process group so the whole
    tree can be killed on timeout or interrupt, and output keeps only its head and tail when too long.
 4. **Config trust** ([config.py](src/jimbo/config.py)): a cloned repo's `.jimbo/config.toml` cannot set
-   `model`, `providers`, `model_aliases`, `models`, `tasks`, keys, URLs, `approval*`, or `sandbox*`; those are read only from `~/.jimbo/config.toml`. Its
+   `model`, `providers`, `model_aliases`, `models`, `tasks`, keys, URLs, `workspace`, `web_host`, `log_dir`, `user_dir`, `approval` / `approval_allow`, or `sandbox*`; those are read only from `~/.jimbo/config.toml`. Its
    `approval_deny` rules are added to the user's, never replacing them.
 
 ## Extensibility
