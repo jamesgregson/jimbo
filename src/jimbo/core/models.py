@@ -31,7 +31,7 @@ class ModelRouter:
     1. skill/agent scopes (alias names only: they may pick among the user's models, never define one)
     2. session overrides (`/models set`)
     3. `[models]` in the user's config
-    4. the main model
+    4. the main model (the required `main` alias)
     Built models are cached by spec, so tasks sharing a model share a client.
     """
 
@@ -39,7 +39,10 @@ class ModelRouter:
                  *, main_model: Model | None = None) -> None:
         self.settings = settings
         self._builder = builder
-        self._main_spec = settings.model
+        self._main_spec = settings.model_aliases.get(MAIN, "")
+        if not self._main_spec and main_model is None:
+            raise ValueError('no main model: set main = "<provider>:<name>" under [model_aliases] '
+                             "in ~/.jimbo/config.toml")
         self._main_session = False
         self._injected = main_model  # a ready-made main model (tests); dropped by set_main
         self._cache: dict[str, Model] = {}
@@ -74,10 +77,6 @@ class ModelRouter:
         spec, via = self._expand(found[0])
         return Resolution(task, spec, found[1], via)
 
-    def is_configured(self, task: str) -> bool:
-        """True when something other than the main-model fallback chose this task's model."""
-        return task == MAIN or self._lookup(task) is not None
-
     def _build(self, spec: str) -> Model:
         if spec == self._main_spec and self._injected is not None:
             return self._injected
@@ -99,7 +98,7 @@ class ModelRouter:
         model = self._builder(spec, self.settings)
         self._cache[spec] = model
         self._main_spec, self._main_session, self._injected = spec, True, None
-        self.settings.model = spec
+        self.settings.model_aliases[MAIN] = spec
         return model
 
     def explain_value(self, value: str) -> str:

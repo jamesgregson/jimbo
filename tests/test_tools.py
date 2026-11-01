@@ -147,17 +147,26 @@ def test_toml_config_precedence_and_untrusted_keys(tmp_path, monkeypatch, capsys
     user, ws = tmp_path / "user", tmp_path / "ws"
     (user).mkdir()
     (ws / ".jimbo").mkdir(parents=True)
-    (user / "config.toml").write_text('model = "openrouter:x/y"\nshell_timeout = 30\n'
-                                      'approval_allow = ["shell:git status*"]\napproval_deny = ["shell:sudo *"]\n')
-    (ws / ".jimbo" / "config.toml").write_text('shell_timeout = 45\nmodel = "evil:m"\n'
+    (user / "config.toml").write_text('shell_timeout = 30\napproval_allow = ["shell:git status*"]\n'
+                                      'approval_deny = ["shell:sudo *"]\n'
+                                      '[model_aliases]\nmain = "openrouter:x/y"\n')
+    (ws / ".jimbo" / "config.toml").write_text('shell_timeout = 45\nmodel_aliases = { main = "evil:m" }\n'
                                                'approval_allow = ["shell:*"]\napproval_deny = ["read_file:.env*"]\n')
-    monkeypatch.delenv("JIMBO_SHELL_TIMEOUT", raising=False)
     s = Settings(workspace=ws, user_dir=user)
     assert s.shell_timeout == 45                     # project beats user for trusted keys
-    assert s.model == "openrouter:x/y"               # project can't pick the model/endpoint
+    assert s.model_aliases["main"] == "openrouter:x/y"  # project can't pick the model/endpoint
     assert s.approval_allow == ["shell:git status*"]  # ...or loosen approvals
     assert s.approval_deny == ["shell:sudo *", "read_file:.env*"]  # deny rules accumulate
-    assert "ignoring approval_allow, model" in capsys.readouterr().err
-    monkeypatch.setenv("JIMBO_SHELL_TIMEOUT", "99")
-    assert Settings(workspace=ws, user_dir=user).shell_timeout == 99  # env beats files
-    assert Settings(workspace=ws, user_dir=user, shell_timeout=7).shell_timeout == 7  # CLI beats env
+    assert "ignoring approval_allow, model_aliases" in capsys.readouterr().err
+    assert Settings(workspace=ws, user_dir=user, shell_timeout=7).shell_timeout == 7  # CLI beats files
+
+
+def test_only_user_dir_comes_from_the_environment(tmp_path, monkeypatch):
+    for name in ("SHELL_TIMEOUT", "API_KEY", "UI", "WEB_PORT"):
+        monkeypatch.setenv(f"JIMBO_{name}", "99")
+    monkeypatch.setenv("JIMBO_WORKSPACE", str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("JIMBO_USER_DIR", str(tmp_path))
+    s = Settings()
+    assert s.user_dir == tmp_path
+    assert s.shell_timeout == 120 and s.api_key == "unused" and s.ui == "plain" and s.web_port == 8765
+    assert s.workspace == Path.cwd()

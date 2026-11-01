@@ -65,12 +65,11 @@ class Recording(ScriptedFrontend):
         return ApprovalDecision(allow=self.allow)
 
 
-def build(tmp_path, command, assessor, *, fe=None, models=True, **kw):
+def build(tmp_path, command, assessor, *, fe=None, **kw):
     fe = fe or Recording()
-    kw.setdefault("model_aliases", {"fast": "t:assess"})
-    if models:
-        kw.setdefault("models", {"shell_assess": "fast"})
-    s = build_session(settings(tmp_path, model="t:main", **kw), fe, model=shell_agent(command),
+    kw.setdefault("model_aliases", {"main": "t:main", "fast": "t:assess"})
+    kw.setdefault("models", {"shell_assess": "fast"})
+    s = build_session(settings(tmp_path, **kw), fe, model=shell_agent(command),
                       model_builder=lambda spec, st: assessor.model())
     return s, fe
 
@@ -91,13 +90,6 @@ async def test_assessment_shown_when_asking(tmp_path):
     assert "<<<COMMAND\nls\nCOMMAND>>>" in a.prompts[0]
 
 
-async def test_off_by_default_without_a_model(tmp_path):
-    a = Assessor()
-    s, fe = build(tmp_path, "ls", a, models=False)
-    await s.send("go")
-    assert a.calls == 0 and fe.requests[0].assessment is None
-
-
 async def test_mode_off_even_with_model(tmp_path):
     a = Assessor()
     s, fe = build(tmp_path, "ls", a, tasks={"shell_assess": {"mode": "off"}})
@@ -105,10 +97,10 @@ async def test_mode_off_even_with_model(tmp_path):
     assert a.calls == 0 and fe.requests[0].assessment is None
 
 
-async def test_mode_ask_without_explicit_model_uses_main(tmp_path):
+async def test_on_by_default_using_main(tmp_path):
     a = Assessor(risk="medium")
     fe = Recording()
-    s = build_session(settings(tmp_path, model="t:main", tasks={"shell_assess": {"mode": "ask"}}), fe,
+    s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}), fe,
                       model=a.model(), model_builder=lambda spec, st: TestModel())
     await s.deps.authorize("shell", {"command": "ls"}, "run: ls")
     assert a.calls == 1 and fe.requests[0].assessment["risk"] == "medium"
@@ -133,7 +125,7 @@ async def test_always_mode_also_describes_allowed_calls(tmp_path):
 async def test_not_run_for_non_shell_tools(tmp_path):
     a = Assessor()
     fe = Recording()
-    s = build_session(settings(tmp_path, model="t:main", models={"shell_assess": "t:assess"}), fe,
+    s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}, models={"shell_assess": "t:assess"}), fe,
                       model=TestModel(), model_builder=lambda spec, st: a.model())
     await s.deps.authorize("write_file", {"path": "x"}, "write x")
     assert a.calls == 0 and fe.requests[0].assessment is None
@@ -204,7 +196,7 @@ async def test_compaction_uses_its_own_model(tmp_path):
         return FunctionModel(run)
 
     fe = ScriptedFrontend()
-    s = build_session(settings(tmp_path, model="t:main", models={"compaction": "t:cheap"}), fe,
+    s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}, models={"compaction": "t:cheap"}), fe,
                       model=TestModel(), model_builder=builder)
     for i in range(4):
         await s.send(f"message {i}")
@@ -222,7 +214,7 @@ async def test_skill_models_apply_for_one_turn(tmp_path):
         seen.append(s.deps.models.explain("shell_assess"))
         return "ok"
 
-    s = build_session(settings(tmp_path, model="t:main", model_aliases={"strong": "t:big"}), ScriptedFrontend(),
+    s = build_session(settings(tmp_path, model_aliases={"main": "t:main", "strong": "t:big"}), ScriptedFrontend(),
                       model=tool_agent("load_skill", {"name": "careful"}, then),
                       model_builder=lambda spec, st: TestModel())
     assert (await s.send("go")) == "ok"
@@ -234,7 +226,7 @@ async def test_skill_with_unknown_alias_still_loads(tmp_path):
     skill = tmp_path / ".jimbo" / "skills" / "careful"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: careful\nmodels:\n  shell_assess: t:raw-spec\n---\nTake care.\n")
-    s = build_session(settings(tmp_path, model="t:main"), ScriptedFrontend(),
+    s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}), ScriptedFrontend(),
                       model=tool_agent("load_skill", {"name": "careful"}, lambda r: str(r.content)),
                       model_builder=lambda spec, st: TestModel())
     out = await s.send("go")

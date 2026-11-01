@@ -55,7 +55,3 @@ def build_model_from_spec(spec: str, settings: Settings) -> Model:
     except KeyError:
         raise ValueError(f"provider {provider!r}: unknown type {cfg.type!r}; known: {sorted(ADAPTERS)}") from None
     return adapter.build_model(name, provider, cfg, settings)
-
-
-def build_model(settings: Settings) -> Model:
-    return build_model_from_spec(settings.model, settings)

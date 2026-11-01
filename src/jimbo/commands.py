@@ -43,13 +43,15 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
         return result or "Nothing to compact."
 
     async def model(session: AgentSession, args: str) -> str:
+        router = session.deps.models
         if not args:
-            return f"model: {settings.model}"
+            return f"model: {router.explain('main').spec}"
+        spec = router.explain_value(args)
         try:
-            session.agent = build_agent(settings, session.deps.models.set_main(args))
+            session.agent = build_agent(settings, router.set_main(spec))
         except ValueError as e:
             raise CommandError(str(e)) from None
-        return f"model: {args}"
+        return f"model: {spec}"
 
     async def models(session: AgentSession, args: str) -> str:
         router = session.deps.models
@@ -59,7 +61,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
                 case []:
                     return describe_models(session)
                 case ["set", "main", value]:
-                    return await model(session, router.explain_value(value))
+                    return await model(session, value)
                 case ["set", task, value]:
                     r = router.set_override(task, value)
                     return f"{task}: {r.spec}" + (f" [{r.via}]" if r.via else "")
@@ -77,10 +79,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
         router = session.deps.models
         rows = [f"  {r.task:<14}{r.spec}" + (f" [{r.via}]" if r.via else "") + f"  ({r.source})"
                 for r in router.describe()]
-        mode = settings.task("shell_assess").mode
-        if mode == "auto":
-            mode = "on" if router.is_configured("shell_assess") else "off (set a model to enable)"
-        rows.append(f"shell_assess mode: {mode}")
+        rows.append(f"shell_assess mode: {settings.task('shell_assess').mode}")
         aliases = [f"  {k} = {v}" for k, v in settings.model_aliases.items()]
         provs = [f"  {n:<12}{c.base_url or 'default url'}  key: {describe_key_source(c)}"
                  for n, c in all_providers(settings).items()]
@@ -137,7 +136,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("help", "list commands", help_)
     registry.add("clear", "forget the conversation so far", clear)
     registry.add("compact", "summarize older history to free context: /compact [focus]", compact_)
-    registry.add("model", "show or switch model: /model <provider>:<name>", model)
+    registry.add("model", "show or switch model: /model <alias|provider:name>", model)
     registry.add("models", "which model runs each task: /models [set <task> <alias|spec> | reset [task]]", models)
     registry.add("usage", "token usage and context fill for this session", usage)
     registry.add("approve", "show or set approval chain: /approve [yolo|default]", approve)

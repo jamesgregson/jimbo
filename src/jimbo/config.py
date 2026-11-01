@@ -5,9 +5,12 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
-from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource
 
 from .tools.sandbox import SandboxMode
+
+# The only setting read from the environment: tests use it to stay away from the real ~/.jimbo.
+USER_DIR_ENV = "JIMBO_USER_DIR"
 
 # A cloned repo's .jimbo/config.toml must not be able to loosen approvals, the sandbox, or where
 # code and credentials are sent. These keys are only read from ~/.jimbo/config.toml (or env/CLI).
@@ -69,20 +72,16 @@ class TaskConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # off: never. auto: only when a model was chosen for the task. ask: when the user is about to be
-    # asked. always: for every call, including ones a policy already allowed.
-    mode: Literal["off", "auto", "ask", "always"] = "auto"
+    # off: never. ask: when the user is about to be asked. always: for every call, including ones a
+    # policy already allowed.
+    mode: Literal["off", "ask", "always"] = "ask"
     timeout: float = 8.0  # seconds to wait for the model before carrying on without its answer
 
 
 class Settings(BaseSettings):
-    """Runtime configuration. Precedence: CLI flags > JIMBO_* env vars > <workspace>/.jimbo/config.toml >
+    """Runtime configuration. Precedence: CLI flags > USER_DIR_ENV > <workspace>/.jimbo/config.toml >
     ~/.jimbo/config.toml > defaults."""
 
-    model_config = SettingsConfigDict(env_prefix="JIMBO_")
-
-    # "<provider>:<model name>", e.g. "ollama:coder-qwen3.8-27b:latest"
-    model: str = "ollama:coder-qwen3.6-27b:latest"
     ollama_base_url: str = "http://localhost:11434/v1"
     openai_base_url: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -90,9 +89,10 @@ class Settings(BaseSettings):
     # Endpoints and credentials by provider name. Built-ins (ollama, openai, openrouter) can be
     # overridden here; any other name defines a new OpenAI-compatible endpoint.
     providers: dict[str, ProviderConfig] = {}
-    # Short names for model specs, e.g. fast = "ollama:qwen3:4b". Skills and agents may only pick aliases.
+    # Short names for "<provider>:<model name>" specs, e.g. fast = "ollama:qwen3:4b". `main` is required: it
+    # is the model you talk to and the default for every other task. Skills and agents may only pick aliases.
     model_aliases: dict[str, str] = {}
-    # Which model runs each task (an alias, "main", or a raw "<provider>:<name>"); unset tasks use `model`.
+    # Which model runs each task (an alias or a raw "<provider>:<name>"); unset tasks use `main`.
     models: dict[str, str] = {}
     tasks: dict[str, TaskConfig] = {}
     num_ctx: int | None = 90000  # best-effort; /v1 may ignore it, prefer baking into the Modelfile
@@ -130,21 +130,21 @@ class Settings(BaseSettings):
                                    env_settings: PydanticBaseSettingsSource,
                                    dotenv_settings: PydanticBaseSettingsSource,
                                    file_secret_settings: PydanticBaseSettingsSource):
-        def pick(name: str, default: Path) -> Path:
-            return Path(init_settings.init_kwargs.get(name) or os.environ.get(f"JIMBO_{name.upper()}") or default)
-
-        user_path = pick("user_dir", Path.home() / ".jimbo") / "config.toml"
+        init = init_settings.init_kwargs
+        env = {"user_dir": v} if (v := os.environ.get(USER_DIR_ENV)) else {}
+        user_path = Path(init.get("user_dir") or env.get("user_dir") or Path.home() / ".jimbo") / "config.toml"
         user = _read_toml(user_path)
+        if "model" in user:
+            raise ValueError(f'{user_path}: `model` was replaced by main = "..." under [model_aliases]')
         _warn_loose_permissions(user_path, user)
-        project = _read_toml(pick("workspace", Path.cwd()) / ".jimbo" / "config.toml")
+        project = _read_toml(Path(init.get("workspace") or Path.cwd()) / ".jimbo" / "config.toml")
         if ignored := sorted(UNTRUSTED_KEYS & project.keys()):
             print(f"jimbo: ignoring {', '.join(ignored)} in workspace .jimbo/config.toml "
                   "(set them in ~/.jimbo/config.toml)", file=sys.stderr)
         merged = {**user, **{k: v for k, v in project.items() if k not in UNTRUSTED_KEYS}}
         if deny := [*user.get("approval_deny", []), *project.get("approval_deny", [])]:
             merged["approval_deny"] = deny  # project deny rules add to the user's, never replace them
-        toml = InitSettingsSource(settings_cls, merged)
-        return init_settings, env_settings, dotenv_settings, toml, file_secret_settings
+        return init_settings, InitSettingsSource(settings_cls, env), InitSettingsSource(settings_cls, merged)
 
     def task(self, name: str) -> TaskConfig:
         return self.tasks.get(name) or TaskConfig()

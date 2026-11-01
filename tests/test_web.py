@@ -18,6 +18,35 @@ async def client():
     await c.close()
 
 
+async def test_taken_port_moves_to_the_next_free_one(capsys):
+    first = WebFrontend(port=0, open_browser=False)
+    await first.start()
+    taken = first._runner.addresses[0][1]
+    first.port = taken
+    capsys.readouterr()
+    second = WebFrontend(port=taken, open_browser=False)
+    await second.start()
+    try:
+        assert second.port > taken and second._runner.addresses[0][1] == second.port
+        assert f"http://127.0.0.1:{second.port}/?token={second.token}" in capsys.readouterr().out
+    finally:
+        await second.stop()
+        await first.stop()
+
+
+async def test_no_free_port_is_a_clean_exit(monkeypatch):
+    monkeypatch.setattr("jimbo.frontends.web.PORT_ATTEMPTS", 1)
+    first = WebFrontend(port=0, open_browser=False)
+    await first.start()
+    second = WebFrontend(port=first._runner.addresses[0][1], open_browser=False)
+    try:
+        with pytest.raises(SystemExit, match="no free port"):
+            await second.start()
+    finally:
+        await second.stop()
+        await first.stop()
+
+
 def ws_url(c, token=None):
     return f"/ws?token={c.fe.token if token is None else token}"
 

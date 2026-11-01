@@ -38,9 +38,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                                **({"assessment": req.assessment} if req.assessment else {}))
         return await frontend.request_approval(req)
 
-    def assess_mode() -> str:
-        mode = settings.task(ASSESS_TASK).mode
-        return ("ask" if router.is_configured(ASSESS_TASK) else "off") if mode == "auto" else mode
+    assess_mode = settings.task(ASSESS_TASK).mode
 
     async def assess(call) -> None:
         """Attach a model-written summary and risk to a shell call; never blocks the call on failure."""
@@ -53,7 +51,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         call.assessment = a.model_dump() if a else None
 
     async def assess_asked(call) -> None:
-        if assess_mode() in ("ask", "always"):
+        if assess_mode != "off":
             await assess(call)
 
     available: dict[str, ApprovalPolicy] = {
@@ -65,7 +63,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     policies = [available["plan"], *(available[n] for n in settings.approval)]
 
     async def observe(call, v):
-        if v.action == "allow" and call.assessment is None and assess_mode() == "always":
+        if v.action == "allow" and call.assessment is None and assess_mode == "always":
             await assess(call)  # also describe calls a policy allowed without asking
         await holder["s"].emit("approval_resolved", tool=call.tool, action=v.action,
                                decided_by=v.decided_by, reason=v.reason,

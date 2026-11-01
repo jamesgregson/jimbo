@@ -17,14 +17,14 @@ uv tool install --editable .
 
 If your shell can't find `jimbo` afterwards, run `uv tool update-shell` and open a new terminal.
 
-**2. Choose a model.** Jimbo has no usable default, so you need to pick one. Choose a model that supports
-tool calling.
+**2. Choose a model.** Jimbo won't start until you set a `main` model. Choose one that supports tool calling.
+Everything else jimbo uses a model for runs on `main` too, unless you say otherwise.
 
 Local, with [Ollama](https://ollama.com):
 
 ```bash
 ollama pull llama3.1:8b
-mkdir -p ~/.jimbo && echo 'model = "ollama:llama3.1:8b"' >> ~/.jimbo/config.toml
+mkdir -p ~/.jimbo && printf '[model_aliases]\nmain = "ollama:llama3.1:8b"\n' > ~/.jimbo/config.toml
 ```
 
 This small model is good for checking your setup, but it's unreliable with tools. Use a larger one for real
@@ -34,7 +34,7 @@ Or hosted, with [OpenRouter](https://openrouter.ai):
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...       # add this to your shell profile to keep it
-mkdir -p ~/.jimbo && echo 'model = "openrouter:z-ai/glm-5.3-flash"' >> ~/.jimbo/config.toml
+mkdir -p ~/.jimbo && printf '[model_aliases]\nmain = "openrouter:z-ai/glm-5.3-flash"\n' > ~/.jimbo/config.toml
 ```
 
 **3. Run it** from the project you want to work on:
@@ -57,7 +57,7 @@ Studio or a private endpoint, see [Providers and API keys](docs/reference.md#pro
 | `jimbo --ui tui` | interactive, with markdown, `@file` completion and image paste |
 | `jimbo --ui web` | interactive, in your browser |
 | `jimbo --resume [id]` | continue a saved session (the latest if you give no id) |
-| `jimbo --model <provider>:<name>` | use a different model for this run |
+| `jimbo --model <alias or provider:name>` | use a different main model for this run |
 | `jimbo --workspace <dir>` | work on another directory |
 
 In a session, `/help` lists the commands. The ones you'll want first are `/clear` to start over, `/model`
@@ -95,8 +95,10 @@ ollama create llama3.1-32k -f Modelfile
 Then point `~/.jimbo/config.toml` at it, using the same size:
 
 ```toml
-model = "ollama:llama3.1-32k"
 num_ctx = 32768
+
+[model_aliases]
+main = "ollama:llama3.1-32k"
 ```
 
 `ollama ps` shows the context a loaded model is really using.
@@ -113,7 +115,8 @@ them. You can also add [custom slash commands](docs/reference.md#custom-commands
 |---------|-----|
 | `jimbo: command not found` | Run `uv tool update-shell` and open a new terminal. |
 | `Failed to spawn: jimbo` | You used `uv run jimbo` outside the checkout. Install it as in step 1. |
-| `model '...' not found` | Run `ollama pull <name>`, or set `model` as in step 2. |
+| `no main model` | Set `main` as in step 2. |
+| `model '...' not found` | Run `ollama pull <name>`, or change `main`. |
 | `provider openrouter has no API key configured` | Set `OPENROUTER_API_KEY` in this shell. |
 | The model ignores files or forgets instructions | Its context is probably too small: see [above](#give-ollama-more-context). |
 | The model describes tool calls but doesn't make them | Choose a model that supports tool calling. |

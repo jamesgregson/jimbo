@@ -10,6 +10,7 @@ Client -> server: {"type": "send", "text": str, "images"?: [{"media_type": str, 
 import asyncio
 import base64
 import binascii
+import errno
 import hmac
 import json
 import secrets
@@ -28,6 +29,7 @@ from ..tools.search import list_files
 
 STATIC = Path(__file__).parent / "web_static"
 MAX_REPLAY = 5000
+PORT_ATTEMPTS = 20  # how many ports from the configured one to try
 MAX_WS_MESSAGE = MAX_IMAGES * (MAX_IMAGE_BYTES * 4 // 3 + 1024) + 1_000_000  # base64 images plus text
 
 
@@ -87,10 +89,23 @@ class WebFrontend:
     async def start(self) -> None:
         self._runner = web.AppRunner(self.build_app())
         await self._runner.setup()
-        await web.TCPSite(self._runner, self.host, self.port).start()
+        await self._bind()
         print(f"jimbo web UI: {self.url}", flush=True)
         if self.open_browser:
             webbrowser.open(self.url)
+
+    async def _bind(self) -> None:
+        """Serve on the configured port, or the next free one if another session has it."""
+        for port in range(self.port, self.port + PORT_ATTEMPTS):
+            try:
+                await web.TCPSite(self._runner, self.host, port).start()
+            except OSError as e:
+                if e.errno != errno.EADDRINUSE:
+                    raise
+            else:
+                self.port = port
+                return
+        raise SystemExit(f"jimbo: no free port in {self.port}-{self.port + PORT_ATTEMPTS - 1}")
 
     async def stop(self) -> None:
         for ws in list(self._clients):

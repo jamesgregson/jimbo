@@ -232,7 +232,7 @@ Approvals are about intent; separate mechanisms limit what a call can physically
    (model-adjustable up to `shell_timeout_max`), the command runs in its own process group so the whole
    tree can be killed on timeout or interrupt, and output keeps only its head and tail when too long.
 4. **Config trust** ([config.py](src/jimbo/config.py)): a cloned repo's `.jimbo/config.toml` cannot set
-   `model`, `providers`, `model_aliases`, `models`, `tasks`, keys, URLs, `workspace`, `web_host`, `log_dir`, `user_dir`, `approval` / `approval_allow`, or `sandbox*`; those are read only from `~/.jimbo/config.toml`. Its
+   `providers`, `model_aliases`, `models`, `tasks`, keys, URLs, `workspace`, `web_host`, `log_dir`, `user_dir`, `approval` / `approval_allow`, or `sandbox*`; those are read only from `~/.jimbo/config.toml`. Its
    `approval_deny` rules are added to the user's, never replacing them.
 
 ## Extensibility
@@ -252,7 +252,7 @@ Approvals are about intent; separate mechanisms limit what a call can physically
   history.
 - **Model routing**: [core/models.py](src/jimbo/core/models.py) `ModelRouter` maps a task name (`main`,
   `shell_assess`, `compaction`, ...) to a model: skill scope (aliases only) > `/models set` > `[models]` >
-  main. It lives on `Deps.models`; background calls go through
+  the required `main` alias. It lives on `Deps.models`; background calls go through
   [core/llm_tasks.py](src/jimbo/core/llm_tasks.py) `run_task`, which returns None on failure or timeout.
 - **Shell assessment**: [core/assess.py](src/jimbo/core/assess.py). `AskUser` calls an assess hook just
   before prompting, so only calls that need a human cost a model request (mode `always` also covers allowed

@@ -18,7 +18,7 @@ SECRET = "sk-sentinel-123"
 @pytest.fixture(autouse=True)
 def clean(monkeypatch):
     credentials.clear_cache()
-    for v in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "JIMBO_API_KEY", "MY_KEY"):
+    for v in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "MY_KEY"):
         monkeypatch.delenv(v, raising=False)
 
 
@@ -179,7 +179,7 @@ timeout = 3
     s = Settings(workspace=tmp_path, user_dir=tmp_path / "user")
     assert s.models == {"shell_assess": "fast"} and s.providers["work"].api_key_env == "MY_KEY"
     assert s.task("shell_assess").mode == "ask" and s.task("shell_assess").timeout == 3
-    assert s.task("other").mode == "auto"
+    assert s.task("other").mode == "ask"
 
 
 def test_loose_permissions_warning_for_inline_key(tmp_path, capsys):
@@ -202,8 +202,26 @@ def make_router(**kw):
         built.append(spec)
         return TestModel(custom_output_text=spec)
 
-    s = Settings(model="p:main", model_aliases={"fast": "p:small", "smart": "p:big"}, **kw)
+    s = Settings(model_aliases={"main": "p:main", "fast": "p:small", "smart": "p:big"}, **kw)
     return ModelRouter(s, builder), built, s
+
+
+@pytest.mark.parametrize("aliases", [{}, {"fast": "p:small"}, {"main": ""}])
+def test_main_alias_is_required(aliases):
+    with pytest.raises(ValueError, match="no main model"):
+        ModelRouter(Settings(model_aliases=aliases), lambda spec, s: TestModel())
+
+
+def test_old_model_key_is_rejected(tmp_path):
+    write_toml(tmp_path / "user" / "config.toml", 'model = "ollama:x"\n')
+    with pytest.raises(ValueError, match="replaced by main"):
+        Settings(workspace=tmp_path, user_dir=tmp_path / "user")
+
+
+def test_tasks_default_to_main():
+    r, _, _ = make_router()
+    for task in ("shell_assess", "compaction"):
+        assert (r.explain(task).spec, r.explain(task).source) == ("p:main", "main")
 
 
 def test_resolution_order():
@@ -245,18 +263,18 @@ def test_failed_set_main_changes_nothing():
             raise ValueError("unknown provider")
         return TestModel()
 
-    s = Settings(model="p:main")
+    s = Settings(model_aliases={"main": "p:main"})
     r = ModelRouter(s, builder)
     with pytest.raises(ValueError):
         r.set_main("bad:x")
-    assert r.explain("main").spec == "p:main" and s.model == "p:main"
+    assert r.explain("main").spec == "p:main" and s.model_aliases["main"] == "p:main"
     r.set_main("p:other")
-    assert s.model == "p:other" and r.explain("compaction").spec == "p:other"
+    assert s.model_aliases["main"] == "p:other" and r.explain("compaction").spec == "p:other"
 
 
 def test_injected_main_model_is_used_until_switched():
     injected = TestModel()
-    r = ModelRouter(Settings(model="p:main"), lambda spec, s: TestModel(), main_model=injected)
+    r = ModelRouter(Settings(model_aliases={"main": "p:main"}), lambda spec, s: TestModel(), main_model=injected)
     assert r.resolve("main") is injected and r.resolve("compaction") is injected
     r.set_main("p:other")
     assert r.resolve("main") is not injected
@@ -264,10 +282,10 @@ def test_injected_main_model_is_used_until_switched():
 
 # -- /models ----------------------------------------------------------------------------------------
 
-def session(tmp_path, **kw):
+def session(tmp_path, *, model_aliases={}, **kw):
     fe = ScriptedFrontend()
-    s = build_session(settings(tmp_path, model="ollama:big", **kw), fe, model=TestModel(),
-                      model_builder=lambda spec, st: TestModel())
+    s = build_session(settings(tmp_path, model_aliases={"main": "ollama:big", **model_aliases}, **kw), fe,
+                      model=TestModel(), model_builder=lambda spec, st: TestModel())
     return s, fe
 
 
@@ -280,13 +298,12 @@ async def test_models_command(tmp_path):
                     providers={"work": ProviderConfig(base_url="http://w/v1", api_key=SECRET)})
     await s.commands.dispatch(s, "/models")
     out = last_text(fe)
-    assert "shell_assess  ollama:big  (main)" in out and "shell_assess mode: off" in out
-    assert "fast = ollama:small" in out and "work" in out and "key: inline" in out
+    assert "shell_assess  ollama:big  (main)" in out and "shell_assess mode: ask" in out
+    assert "main = ollama:big" in out and "fast = ollama:small" in out
+    assert "work" in out and "key: inline" in out
     assert SECRET not in out
     await s.commands.dispatch(s, "/models set shell_assess fast")
     assert last_text(fe) == "shell_assess: ollama:small [fast]"
-    await s.commands.dispatch(s, "/models")
-    assert "shell_assess mode: on" in last_text(fe)
     await s.commands.dispatch(s, "/models reset shell_assess")
     assert last_text(fe) == "shell_assess: ollama:big"
     await s.commands.dispatch(s, "/models bogus")
@@ -299,10 +316,19 @@ async def test_models_set_rejects_bad_spec_and_switches_main(tmp_path):
             raise ValueError("unknown provider 'nope'")
         return TestModel()
 
-    s = build_session(settings(tmp_path, model="ollama:big", model_aliases={"smart": "ollama:huge"}),
+    s = build_session(settings(tmp_path, model_aliases={"main": "ollama:big", "smart": "ollama:huge"}),
                       ScriptedFrontend(), model=TestModel(), model_builder=builder)
     fe = s.sinks[0]._f
     await s.commands.dispatch(s, "/models set shell_assess nope:x")
     assert not next(e for e in reversed(fe.events) if e.kind == "command_output").data["ok"]
     await s.commands.dispatch(s, "/models set main smart")
     assert s.deps.models.explain("main").spec == "ollama:huge"
+
+
+async def test_model_command_accepts_aliases(tmp_path):
+    s, fe = session(tmp_path, model_aliases={"fast": "ollama:small"})
+    await s.commands.dispatch(s, "/model fast")
+    assert last_text(fe) == "model: ollama:small"
+    await s.commands.dispatch(s, "/model")
+    assert last_text(fe) == "model: ollama:small"
+    assert s.deps.models.explain("compaction").spec == "ollama:small"

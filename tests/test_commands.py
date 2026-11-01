@@ -17,7 +17,7 @@ def last(fe):
 
 
 def make(tmp_path, fake=None, **kw):
-    """`fake` is the stand-in model object; `model=` in kw is the model *setting*."""
+    """`fake` is the stand-in model object."""
     fe = ScriptedFrontend()
     return build_session(settings(tmp_path, **kw), fe, model=fake or TestModel()), fe
 
@@ -118,7 +118,7 @@ async def test_clear(tmp_path):
 
 async def test_model_show_switch_and_reject(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-    s, fe = make(tmp_path, model="ollama:first")
+    s, fe = make(tmp_path, model_aliases={"main": "ollama:first"})
     await s.commands.dispatch(s, "/model")
     assert last(fe)["text"] == "model: ollama:first"
     before = s.agent

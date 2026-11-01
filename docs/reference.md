@@ -19,12 +19,10 @@ Look things up here. To get started, see the [README](../README.md).
 Settings are read from these sources, highest priority first:
 
 1. CLI flags
-2. `JIMBO_*` environment variables, such as `JIMBO_MODEL` or `JIMBO_WEB_PORT`
+2. `JIMBO_USER_DIR`, which replaces `~/.jimbo`. It's the only environment variable jimbo reads
 3. `<workspace>/.jimbo/config.toml`
 4. `~/.jimbo/config.toml` (jimbo doesn't create this file; make it yourself)
 5. Defaults
-
-TOML keys are the setting names without the `JIMBO_` prefix.
 
 A workspace config arrives with whatever repo you cloned, so it can't loosen security. These keys are
 ignored there, with a warning, and only read from `~/.jimbo/config.toml`: `model`, `api_key`, the
@@ -39,7 +37,6 @@ before the `[tables]`.
 
 ```toml
 # ---- Model ------------------------------------------------------------------------------------
-model = "ollama:llama3.1:8b"  # "<provider>:<name>". Sample value; set this yourself
 ui = "plain"                  # plain | tui | web
 temperature = 0.2             # sample value; unset by default (the provider's default is used)
 request_timeout = 600         # seconds to wait for a model response
@@ -72,15 +69,16 @@ sandbox_network = true        # false blocks outbound network from shell command
 
 # ---- Web UI -----------------------------------------------------------------------------------
 web_host = "127.0.0.1"        # keep on localhost: the page can approve file writes
-web_port = 8765
+web_port = 8765               # tried first; if it's taken, jimbo uses the next free port
 web_open_browser = true
 
 # ---- Sessions ---------------------------------------------------------------------------------
 log_sessions = true           # false also disables --resume
 log_dir = "/Users/you/.jimbo/sessions"   # default is ~/.jimbo/sessions; write it absolute, "~" isn't expanded
 
-# ---- Model aliases and per-task models (empty by default; sample values) ----------------------
+# ---- Model aliases and per-task models (sample values; `main` is required) ---------------------
 [model_aliases]
+main  = "ollama:llama3.1:8b"  # "<provider>:<name>"; there is no default, jimbo won't start without it
 fast  = "ollama:llama3.1:8b"
 smart = "openrouter:anthropic/claude-sonnet-5-5"
 
@@ -89,7 +87,7 @@ shell_assess = "fast"
 compaction   = "smart"
 
 [tasks.shell_assess]
-mode = "auto"                 # off | auto (on once a model is set) | ask | always
+mode = "ask"                  # off | ask | always
 timeout = 8                   # seconds before the prompt appears without the assessment
 
 # ---- Providers (none by default; sample values) -----------------------------------------------
@@ -102,8 +100,8 @@ send_num_ctx = false          # don't send options.num_ctx to this endpoint
 
 ## Providers and API keys
 
-Choose a model as `<provider>:<name>`, with `--model`, `JIMBO_MODEL`, `model` in the config, or `/model` in
-a session. Every provider speaks the OpenAI-compatible chat API.
+Set the main model as `main = "<provider>:<name>"` under `[model_aliases]`. `--model` overrides it for one run
+and `/model` for the session; both also take an alias. Every provider speaks the OpenAI-compatible chat API.
 
 | Provider | Default endpoint | API key |
 |----------|------------------|---------|
@@ -117,8 +115,10 @@ compaction.
 **OpenAI:** turn off the Ollama-style context option, which hosted APIs may reject:
 
 ```toml
-model = "openai:<model>"
 context_window = 128000
+
+[model_aliases]
+main = "openai:<model>"
 
 [providers.openai]
 send_num_ctx = false
@@ -145,8 +145,8 @@ logs. `/models` shows where each key comes from. Set at most one source per prov
 | `api_key` | `"sk-..."` | inline; discouraged, and jimbo warns if the file is readable by others |
 
 With none set, `openai` and `openrouter` use the environment variables above, and other providers send a
-dummy key. `fallback_key_envs = ["MY_KEY"]` adds more variables to try. `JIMBO_API_KEY` is a legacy option
-that works for `openai` only.
+dummy key. `fallback_key_envs = ["MY_KEY"]` adds more variables to try. The top-level `api_key` setting is a legacy
+option that works for `openai` only.
 
 To keep a key in the macOS Keychain, store it (this prompts for the value; add `-U` to update it):
 
@@ -168,11 +168,12 @@ api_key_cmd = ["security", "find-generic-password", "-a", "you", "-s", "OPENROUT
 ## Models per task
 
 Besides the main conversation, jimbo uses a model for two background tasks: `compaction` and
-`shell_assess`. Each can run on a different model, and unset tasks use the main one. In the config, a task
-takes an alias, `main`, or a `<provider>:<name>`:
+`shell_assess`. Both use `main` unless you choose otherwise. In the config, a task takes an alias, `main`, or a
+`<provider>:<name>`:
 
 ```toml
 [model_aliases]
+main = "openrouter:z-ai/glm-5.3-flash"
 fast = "ollama:llama3.1:8b"
 
 [models]
@@ -186,14 +187,14 @@ changes one, and `/models reset [task]` undoes that.
 A skill can ask for models in its frontmatter (`models: {shell_assess: smart}`). This lasts one turn and may
 only name your aliases, never define a model or endpoint.
 
-**Shell risk assessment:** when `shell_assess` has a model, shell approval prompts show a short summary and
-a risk level (low, medium, high or critical). It's advice only. The command is treated as untrusted text,
-and fixed checks (`sudo`, `rm -rf`, `curl | sh`, force pushes, writes outside the workspace and so on) set a
-minimum risk the model can't lower. If the model is slow or fails, the prompt appears without it. With a
-remote model, commands are sent to it, but file contents are not.
+**Shell risk assessment:** shell approval prompts show a short summary and a risk level (low, medium, high or
+critical), written by the `shell_assess` model, which is `main` by default. It's advice only. The command is
+treated as untrusted text, and fixed checks (`sudo`, `rm -rf`, `curl | sh`, force pushes, writes outside the
+workspace and so on) set a minimum risk the model can't lower. If the model is slow or fails, the prompt
+appears without it. With a remote model, commands are sent to it, but file contents are not.
 
-`[tasks.shell_assess]` sets `timeout` and `mode`: `off`, `auto` (on once a model is set), `ask` (fall back to
-the main model) or `always` (also for calls that are already allowed).
+`[tasks.shell_assess]` sets `timeout` and `mode`: `off`, `ask` (the default) or `always` (also for calls that
+are already allowed).
 
 ## Approvals
 
@@ -237,7 +238,8 @@ doesn't allow nesting.
 - **`tui`:** Enter submits, Shift+Enter or Alt+Enter inserts a newline, and Ctrl+D quits. Pastes over 10 lines
   collapse to `[pasted #1: 240 lines]` and expand on submit. `@path` completes workspace files and inlines
   them for the model. Ctrl+V attaches a clipboard image (needs `pngpaste` or `osascript`).
-- **`web`:** serves `http://127.0.0.1:8765` and prints and opens a URL with a one-time token. It accepts
+- **`web`:** serves on port 8765, or the next free port if that's taken, then opens the page and prints its
+  URL in the terminal, so you can get back to it if you close the tab. The URL carries a token. It accepts
   pasted or dropped images, shows approvals as a dialog with the diff, and turns Send into Stop during a
   run. Keep the host on localhost: the page can approve file writes.
 
