@@ -1,6 +1,7 @@
 """Built-in slash commands. They live outside core because they rebuild agents and policies."""
 
 from .agent import build_agent
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.usage import RunUsage
 
 from .config import Settings
@@ -28,7 +29,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
         session.context_tokens = 0
         session.turn_usage = RunUsage()
         session.deps.todos = []
-        session.persist()
+        session.new_session()  # the cleared conversation stays resumable
         await session._emit_todos()
         await session.emit_context()
         return "Conversation cleared."
@@ -123,12 +124,33 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
         if session.store is None:
             raise CommandError("session saving is disabled (log_sessions = false)")
         if not args:
-            rows = [f"{i}  {session.store.summary(i)}" for i in session.store.ids()[:15] if i != session.session_id]
-            return "Recent sessions (/resume <id>):\n" + "\n".join(rows) if rows else "No saved sessions."
+            store = session.store
+            rows = [f"{i}  {store.saved_at(i)}  {store.summary(i)}" for i in store.recent()[:15]
+                    if i != session.session_id]
+            return "Recent sessions here (/resume <id>):\n" + "\n".join(rows) if rows else "No saved sessions here."
         try:
             return await session.resume(args)
         except ValueError as e:
             raise CommandError(str(e)) from None
+
+    async def diff(session: AgentSession, args: str) -> str:
+        return session.deps.checkpoints.diff(session.deps.workspace) or "No file changes to show."
+
+    async def undo(session: AgentSession, args: str) -> str:
+        if session.is_running:
+            raise CommandError("a run is in progress; wait for it or cancel first")
+        restored = session.deps.checkpoints.undo()
+        if not restored:
+            return "Nothing to undo."
+        names = ", ".join(p.relative_to(session.deps.workspace).as_posix() for p in restored)
+        session.history = [*session.history, ModelRequest(parts=[UserPromptPart(
+            f"I undid your latest file changes, so these are back as they were: {names}")]),
+            ModelResponse(parts=[TextPart("Understood.")])]  # otherwise the model trusts its memory of them
+        session.persist()
+        return f"Restored {names}. Shell commands aren't undone."
+
+    async def output(session: AgentSession, args: str) -> str:
+        return session.last_output or "No shell output yet."
 
     async def quit_(session: AgentSession, args: str) -> None:
         raise QuitSession
@@ -144,6 +166,9 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("todos", "show the agent's task list", todos)
     registry.add("skills", "list available skills", skills)
     registry.add("resume", "list saved sessions, or load one: /resume [id]", resume)
+    registry.add("diff", "show the file changes from the latest turn that made any", diff)
+    registry.add("undo", "restore the files changed by the latest turn that changed any", undo)
+    registry.add("output", "show the latest shell command's full output", output)
     registry.add("quit", "exit jimbo", quit_)
 
 

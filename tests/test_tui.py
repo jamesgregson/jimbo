@@ -151,3 +151,30 @@ async def test_approval_shows_risk_assessment():
     text = out.getvalue()
     assert "HIGH" in text and "Deletes the build directory." in text
     assert "forced or recursive delete" in text and "assessed by ollama:small" in text
+
+
+async def test_toolbar_shows_model_and_modes():
+    f = TuiFrontend(console=Console(file=StringIO()), ask=lambda m: None)
+    status = {"model": "p:m", "workspace": "/w", "mode": "normal", "yolo": False, "sandboxed": True}
+    await f.render(Event(seq=1, session_id="s", kind="status", data=status))
+    assert f._toolbar() == "p:m · "
+    await f.render(Event(seq=2, session_id="s", kind="status", data={**status, "mode": "plan", "yolo": True}))
+    assert "[PLAN]" in f._toolbar() and "[YOLO]" in f._toolbar()
+    assert f.console.file.getvalue().count("jimbo · p:m") == 1  # the banner prints once
+
+
+async def test_shell_output_is_shown_with_a_failing_exit_in_view():
+    f = TuiFrontend(console=Console(file=StringIO(), width=100), ask=lambda m: None)
+    await f.render(Event(seq=1, session_id="s", kind="tool_result",
+                         data={"id": "1", "tool": "shell", "ok": True, "content": "exit code 1\nFAILED test_x"}))
+    out = f.console.file.getvalue()
+    assert "exit code 1" in out and "FAILED test_x" in out
+
+
+async def test_sentence_at_approval_denies_with_it_as_the_reason():
+    async def ask(message):
+        return "actually keep the dist folder"
+
+    f = TuiFrontend(console=Console(file=StringIO(), width=100), ask=ask)
+    d = await f.request_approval(ApprovalRequest(id="1", tool="shell", summary="run", always="this exact command"))
+    assert not d.allow and d.note == "actually keep the dist folder"

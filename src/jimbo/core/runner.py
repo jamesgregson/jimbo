@@ -75,6 +75,7 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
     (the line-based one, whose approval prompts share stdin) are read only between runs.
     """
     await session.emit("commands", commands=session.commands.describe())
+    await session.emit_status(initial=True)
     await session.emit_context()
     if bind := getattr(frontend, "bind_cancel", None):  # frontends with their own stop control
         bind(session.cancel)

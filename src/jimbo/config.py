@@ -16,7 +16,8 @@ USER_DIR_ENV = "JIMBO_USER_DIR"
 # code and credentials are sent. These keys are only read from ~/.jimbo/config.toml (or env/CLI).
 UNTRUSTED_KEYS = {"model", "api_key", "ollama_base_url", "openai_base_url", "openrouter_base_url",
                   "workspace", "web_host", "approval", "approval_allow", "sandbox", "sandbox_writable",
-                  "sandbox_network", "log_dir", "user_dir", "providers", "model_aliases", "models", "tasks"}
+                  "sandbox_network", "log_dir", "user_dir", "providers", "model_aliases", "models", "tasks",
+                  "secret_files"}
 
 
 def _read_toml(path: Path) -> dict:
@@ -52,7 +53,7 @@ class ProviderConfig(BaseModel):
     api_key_cmd: list[str] | None = None  # argv (no shell) whose stdout is the key, e.g. a keychain lookup
     fallback_key_envs: list[str] = []  # env vars tried when no explicit source is set
     require_key: bool = False  # fail at build time instead of sending the dummy "unused" key
-    send_num_ctx: bool = True  # Ollama-style options.num_ctx in the request body
+    send_num_ctx: bool = False  # Ollama-style options.num_ctx in the request body; other APIs may reject it
 
     @model_validator(mode="after")
     def _one_source(self) -> "ProviderConfig":
@@ -104,7 +105,7 @@ class Settings(BaseSettings):
     request_timeout: float = 600.0
 
     workspace: Path = Path.cwd()
-    ui: str = "plain"
+    ui: str = "auto"  # auto: tui for an interactive session in a terminal, otherwise plain
     web_host: str = "127.0.0.1"
     web_port: int = 8765
     web_open_browser: bool = True
@@ -113,6 +114,9 @@ class Settings(BaseSettings):
     # "tool" or "tool:<glob on first arg>", e.g. "shell:git status*", "read_file:.env*". Deny wins.
     approval_allow: list[str] = []
     approval_deny: list[str] = []
+    # File names the model can't read or grep, even with --yolo. Shell can still reach them, with approval.
+    secret_files: list[str] = [".env", ".env.local", ".env.*.local", ".env.development", ".env.production",
+                               ".env.staging", ".env.test", "*.pem", "*.key", "id_rsa", "id_ed25519"]
     request_limit: int = 50
     log_sessions: bool = True
     log_dir: Path = Path.home() / ".jimbo" / "sessions"

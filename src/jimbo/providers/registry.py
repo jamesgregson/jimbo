@@ -12,10 +12,10 @@ def builtin_providers(settings: Settings) -> dict[str, ProviderConfig]:
     """The always-available providers. The legacy `*_base_url` / `api_key` settings feed these."""
     legacy_key = SecretStr(settings.api_key) if settings.api_key not in ("", "unused") else None
     return {
-        "ollama": ProviderConfig(base_url=settings.ollama_base_url),
+        "ollama": ProviderConfig(base_url=settings.ollama_base_url, send_num_ctx=True),
         "openai": ProviderConfig(base_url=settings.openai_base_url, api_key=legacy_key,
-                                 fallback_key_envs=["OPENAI_API_KEY"]),
-        "openrouter": ProviderConfig(base_url=settings.openrouter_base_url, send_num_ctx=False,
+                                 fallback_key_envs=["OPENAI_API_KEY"], require_key=True),
+        "openrouter": ProviderConfig(base_url=settings.openrouter_base_url,
                                      fallback_key_envs=["OPENROUTER_API_KEY"], require_key=True),
     }
 

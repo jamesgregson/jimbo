@@ -32,6 +32,7 @@ src/jimbo/
     assess.py          shell command summary and risk level for approval prompts
     stats.py           token/context accounting helpers
     store.py           SessionStore: history + todos saved per turn (<id>.messages.json) for --resume
+    checkpoints.py     Checkpoints: files as each turn found them, for /diff and /undo
   tools/             what the model can call (all go through Deps.authorize)
     fs.py paths.py     read_file, list_dir, write_file, edit_file; workspace path confinement
     search.py          glob, grep
@@ -39,8 +40,8 @@ src/jimbo/
     sandbox.py         macOS sandbox-exec wrapper for shell
     todos.py skills.py todo_write, load_skill
     plan.py            exit_plan (plan mode only)
-  providers/         model selection: "<provider>:<name>" -> Pydantic AI Model
-  frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page)
+  providers/         model selection: "<provider>:<name>" -> Pydantic AI Model; startup checks (preflight.py)
+  frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page), json
 ```
 
 The dependency direction is strict: `core` imports nothing from `frontends`; frontends depend only on
@@ -96,7 +97,7 @@ Key properties:
   history; `repair_messages` closes out tool calls that never got a result. Running shell commands are
   killed on the way out.
 - **Fail soft.** Any exception becomes an `error` event followed by `run_finished(ok=False)`; the session
-  stays usable.
+  stays usable and, as with a cancel, the partial turn is kept, because its file changes really happened.
 - **Tool errors are model feedback.** Tools raise `ModelRetry` for bad arguments, path escapes and
   denials. The model sees the message and can adjust, up to `tool_retries` times. The system prompt tells
   it not to repeat a denied call.
@@ -152,6 +153,7 @@ as usual.
 | `compaction` | older history was replaced by a summary |
 | `command_output`, `commands` | slash command results; the command list for completion |
 | `error`, `run_finished` | failure; end of turn (`ok`, `cancelled`) |
+| `status` | model, workspace, plan/yolo mode and sandbox: sent at startup and when they change |
 
 Events carry a sequence number, timestamp and session id, and must stay JSON-serializable. That is what
 lets the same stream drive a terminal renderer, a websocket to the browser, and the JSONL session log
@@ -166,11 +168,13 @@ A frontend implements three methods of the `Frontend` protocol
 - `render(event)` displays an event; it must not block the run.
 - `request_approval(req)` asks the human to allow or deny a tool call.
 
-Three are included, chosen by `--ui` and created lazily by
-[frontends/registry.py](src/jimbo/frontends/registry.py) so `plain` needs no optional dependencies:
+Four are included, chosen by `--ui` and created lazily by
+[frontends/registry.py](src/jimbo/frontends/registry.py). `ui = "auto"` means `tui` for an interactive session
+in a terminal and `plain` otherwise:
 
 - **plain**: line-oriented stdin/stdout.
 - **tui**: inline rich UI with streaming markdown, `@path` completion, paste collapsing, clipboard images.
+- **json**: one JSON event per line on stdout, for scripts. Calls that need a human are denied.
 - **web**: a local aiohttp server and single-page UI; approvals appear as a dialog with the diff. The URL
   carries a one-time token because the page can approve file writes, so keep it on localhost.
 
@@ -199,7 +203,7 @@ The default chain is:
 | `plan` (`PlanMode`) | always first; in plan mode denies non-read-only calls and asks the user to approve `exit_plan` |
 | `rules` (`PatternRules`) | `approval_deny` first, then `approval_allow`; a match decides, otherwise `ask` |
 | `readonly` (`ReadOnlyAllow`) | allow calls flagged `read_only` (read, list, glob, grep, todos, load_skill) |
-| `remembered` (`RememberedDecisions`) | allow tools the user chose "always allow this session" for |
+| `remembered` (`RememberedDecisions`) | allow what the user chose "always" for: one exact shell command, or a whole other tool |
 | `ask` (`AskUser`) | terminal policy: ask the frontend; honors "remember for session" |
 
 `--yolo` (or `/approve yolo`) swaps the chain for `rules` then `yolo`, so **deny rules still apply** when
@@ -209,6 +213,10 @@ objects behind a protocol, a smarter one (for example an LLM-based guard) can be
 Details worth knowing:
 
 - Rules look like `tool` or `tool:<glob>`, matched against the call's first argument (command or path).
+  Paths are normalized first, and deny rules also match the file name. `secret_files` become deny rules on
+  `read_file`, and `grep` skips those files.
+- Frontends read an answer with `parse_answer`: only exact answers approve, anything else denies and is passed
+  to the model as the reason.
 - **Shell allow rules never match compound commands.** Anything with pipes, `;`, `&&`, redirects,
   backticks or `$(...)` is not auto-approved, so `shell:git status*` cannot approve `git status; rm -rf ~`.
   Deny rules are checked against each segment of a compound command. They are best effort, not a
@@ -232,7 +240,7 @@ Approvals are about intent; separate mechanisms limit what a call can physically
    (model-adjustable up to `shell_timeout_max`), the command runs in its own process group so the whole
    tree can be killed on timeout or interrupt, and output keeps only its head and tail when too long.
 4. **Config trust** ([config.py](src/jimbo/config.py)): a cloned repo's `.jimbo/config.toml` cannot set
-   `providers`, `model_aliases`, `models`, `tasks`, keys, URLs, `workspace`, `web_host`, `log_dir`, `user_dir`, `approval` / `approval_allow`, or `sandbox*`; those are read only from `~/.jimbo/config.toml`. Its
+   `providers`, `model_aliases`, `models`, `tasks`, `secret_files`, keys, URLs, `workspace`, `web_host`, `log_dir`, `user_dir`, `approval` / `approval_allow`, or `sandbox*`; those are read only from `~/.jimbo/config.toml`. Its
    `approval_deny` rules are added to the user's, never replacing them.
 
 ## Extensibility

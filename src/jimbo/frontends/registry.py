@@ -2,6 +2,7 @@ from typing import Callable
 
 from ..config import Settings
 from ..core.interaction import Frontend
+from .cli_json import JsonFrontend
 from .cli_plain import PlainFrontend
 
 
@@ -21,7 +22,16 @@ def _web(st: Settings) -> Frontend:
     return WebFrontend(st.web_host, st.web_port, st.web_open_browser, st.workspace)
 
 
-FRONTENDS: dict[str, Callable[[Settings], Frontend]] = {"plain": _plain, "tui": _tui, "web": _web}
+def _json(st: Settings) -> Frontend:
+    return JsonFrontend()
+
+
+FRONTENDS: dict[str, Callable[[Settings], Frontend]] = {"plain": _plain, "tui": _tui, "web": _web, "json": _json}
+
+
+def pick_ui(prompt: str | None, stdin_tty: bool, stdout_tty: bool) -> str:
+    """What `ui = "auto"` means: the full UI for a person at a terminal, and plain for one-shot tasks and pipes."""
+    return "tui" if stdin_tty and stdout_tty and not prompt else "plain"
 
 
 def build_frontend(settings: Settings) -> Frontend:

@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from .approval import ApprovalGate, ToolCallInfo
+from .checkpoints import Checkpoints
 
 if TYPE_CHECKING:
     from .models import ModelRouter
@@ -30,6 +32,8 @@ class Deps:
     mode: Literal["normal", "plan"] = "normal"
     project_instructions: str = ""
     skills: "dict[str, Skill]" = field(default_factory=dict)
+    secret_files: list[str] = field(default_factory=list)  # file-name globs the model must not read
+    checkpoints: Checkpoints = field(default_factory=Checkpoints)
     # Set by the session: compacts a message list mid-run when the context is nearly full.
     midrun_compact: "Callable[[list[Any]], Awaitable[list[Any]]] | None" = None
     # Set by the session: appends queued steering messages to the request about to be sent.
@@ -38,6 +42,9 @@ class Deps:
     def read_roots(self) -> list[Path]:
         """Directories outside the workspace that read-only file tools may access: loaded skills' folders."""
         return [s.path.parent for s in self.skills.values()]
+
+    def is_secret(self, path: str) -> bool:
+        return any(fnmatchcase(Path(path).name, p) for p in self.secret_files)
 
     async def authorize(self, tool: str, args: dict, summary: str, *, detail: str | None = None,
                         read_only: bool = False) -> None:

@@ -5,10 +5,12 @@ import sys
 from pathlib import Path
 
 from .config import Settings
+from .core.commands import QuitSession
 from .core.jsonl import JsonlSink
 from .core.models import MAIN
 from .core.runner import run_frontend
-from .frontends.registry import build_frontend
+from .frontends.registry import build_frontend, pick_ui
+from .providers.preflight import inspect_model
 from .wiring import build_session
 
 
@@ -17,12 +19,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="jimbo", description="A simple coding agent")
     ap.add_argument("prompt", nargs="?", help="one-shot task; omit for an interactive session")
     ap.add_argument("--model", help="main model for this run: an alias or <provider>:<name>")
-    ap.add_argument("--workspace", type=Path)
-    ap.add_argument("--ui")
+    ap.add_argument("--workspace", type=Path, help="directory to work on (default: the current one)")
+    ap.add_argument("--ui", help="tui, plain, web, or json for scripts (default: tui in a terminal, else plain)")
     ap.add_argument("--yolo", action="store_true", help="auto-approve everything")
     ap.add_argument("--resume", nargs="?", const="", metavar="ID",
                     help="continue a saved session (the most recent if no id/prefix is given)")
     args = ap.parse_args()
+    if args.resume and not args.prompt and len(args.resume.split()) > 1:  # jimbo --resume "fix the tests"
+        args.prompt, args.resume = args.resume, ""
 
     overrides = {k: v for k, v in {"workspace": args.workspace, "ui": args.ui}.items() if v}
     sink = None
@@ -32,6 +36,10 @@ def main() -> None:
             settings.model_aliases[MAIN] = settings.model_aliases.get(args.model, args.model)
         if args.yolo:
             settings.approval = ["rules", "yolo"]  # deny rules still apply
+        if settings.ui == "auto":
+            settings.ui = pick_ui(args.prompt, sys.stdin.isatty(), sys.stdout.isatty())
+        if settings.ui in ("plain", "json") and not sys.stdin.isatty():  # cat log | jimbo "explain this"
+            args.prompt = "\n\n".join(filter(None, [args.prompt, sys.stdin.read().strip()])) or None
         frontend = build_frontend(settings)
         sink = JsonlSink(settings.log_dir) if settings.log_sessions else None
         session = build_session(settings, frontend, [sink] if sink else None)
@@ -40,7 +48,29 @@ def main() -> None:
             sink.close()
         raise SystemExit(f"jimbo: {e}") from None
 
+    async def preflight() -> None:
+        facts = await inspect_model(settings.model_aliases[MAIN], settings)
+        if facts.problem:
+            raise SystemExit(f"jimbo: {facts.problem}")
+        for note in facts.notes:
+            print(f"jimbo: {note}", file=sys.stderr)
+        if facts.context and settings.context_window is None:
+            session.context_window = facts.context
+        if facts.vision is False:
+            session.vision = False
+
+    async def one_shot(prompt: str) -> None:
+        await session.emit_status(initial=True)
+        try:
+            if not await session.commands.dispatch(session, prompt):
+                await session.send(prompt)
+        except QuitSession:
+            pass
+        if session.failed:
+            raise SystemExit(1)
+
     async def go() -> None:
+        await preflight()
         start = getattr(frontend, "start", None)
         if start:
             await start()
@@ -49,15 +79,17 @@ def main() -> None:
                 if session.store is None:
                     raise SystemExit("jimbo: --resume needs log_sessions = true")
                 try:
-                    ids = session.store.ids()
-                    print(await session.resume(args.resume or (ids[0] if ids else "")), file=sys.stderr)
+                    recent = session.store.recent()
+                    if not args.resume and not recent:
+                        raise ValueError(f"no saved sessions for {session.deps.workspace}")
+                    print(await session.resume(args.resume or recent[0]), file=sys.stderr)
                 except ValueError as e:
                     raise SystemExit(f"jimbo: {e}") from None
             if args.prompt and hasattr(frontend, "submit"):
                 frontend.submit(args.prompt)  # server frontends stay up after the first prompt
                 await run_frontend(session, frontend)
             elif args.prompt:
-                await session.send(args.prompt)
+                await one_shot(args.prompt)
             else:
                 await run_frontend(session, frontend)
         finally:
@@ -67,7 +99,8 @@ def main() -> None:
     try:
         asyncio.run(go())
     except KeyboardInterrupt:
-        pass
+        if args.prompt:
+            raise SystemExit(130) from None
     finally:
         if sink:
             sink.close()

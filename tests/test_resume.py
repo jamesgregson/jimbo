@@ -73,3 +73,38 @@ def test_store_resolve_ambiguous(tmp_path):
     with pytest.raises(ValueError, match="ambiguous"):
         st.resolve("abc")
     assert st.resolve("abc2") == "abc2"
+
+
+async def test_clear_keeps_the_old_session_resumable(tmp_path):
+    s, fe, sink = make(tmp_path, ["hello", "/clear", "after"])
+    first = s.session_id
+    await run_frontend(s, fe)
+    sink.close()
+    assert s.session_id != first
+    assert s.store.load(first).history and first in s.store.ids()
+
+
+async def test_clear_alone_leaves_latest_session_alone(tmp_path):
+    s, fe, sink = make(tmp_path, ["hello", "/clear"])
+    first = s.session_id
+    await run_frontend(s, fe)
+    sink.close()
+    assert s.store.recent() == [first]
+
+
+def test_recent_only_lists_this_workspace(tmp_path):
+    here, there = SessionStore(tmp_path, tmp_path / "a"), SessionStore(tmp_path, tmp_path / "b")
+    here.save("one", [], [])
+    there.save("two", [], [])
+    assert here.recent() == ["one"] and there.recent() == ["two"]
+    assert sorted(here.ids()) == ["one", "two"]
+    assert here.workspace_of("two") == str(tmp_path / "b")
+
+
+async def test_resuming_another_projects_session_says_so(tmp_path):
+    s1, fe1, sink1 = make(tmp_path, ["hello"])
+    await run_frontend(s1, fe1)
+    sink1.close()
+    s2, _, _ = make(tmp_path, [])
+    s2.store.workspace = tmp_path / "elsewhere"
+    assert "It started in" in await s2.resume(s1.session_id)

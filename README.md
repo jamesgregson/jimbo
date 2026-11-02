@@ -28,7 +28,7 @@ mkdir -p ~/.jimbo && printf '[model_aliases]\nmain = "ollama:llama3.1:8b"\n' > ~
 ```
 
 This small model is good for checking your setup, but it's unreliable with tools. Use a larger one for real
-work.
+work. Jimbo checks at startup that Ollama is running, has the model, and that the model supports tools.
 
 Or hosted, with [OpenRouter](https://openrouter.ai):
 
@@ -42,7 +42,7 @@ mkdir -p ~/.jimbo && printf '[model_aliases]\nmain = "openrouter:z-ai/glm-5.3-fl
 ```bash
 cd ~/my-project
 jimbo "summarize this repo"     # do one task and exit
-jimbo --ui tui                  # interactive session (recommended)
+jimbo                           # interactive session
 ```
 
 Using Ollama for real work? Do [this one extra step](#give-ollama-more-context) first. For OpenAI, LM
@@ -53,26 +53,33 @@ Studio or a private endpoint, see [Providers and API keys](docs/reference.md#pro
 | Command | What it does |
 |---------|--------------|
 | `jimbo "task"` | do one task and exit |
-| `jimbo` | interactive session, plain text |
-| `jimbo --ui tui` | interactive, with markdown, `@file` completion and image paste |
+| `jimbo` | interactive, with markdown, `@file` completion and image paste |
+| `jimbo --ui plain` | interactive, plain text |
 | `jimbo --ui web` | interactive, in your browser |
-| `jimbo --resume [id]` | continue a saved session (the latest if you give no id) |
+| `cat log \| jimbo "explain this"` | add piped text to the task |
+| `jimbo --ui json "task"` | for scripts: one line of JSON per event |
+| `jimbo --resume [id]` | continue a saved session (this project's latest if you give no id) |
 | `jimbo --model <alias or provider:name>` | use a different main model for this run |
 | `jimbo --workspace <dir>` | work on another directory |
 
 In a session, `/help` lists the commands. The ones you'll want first are `/clear` to start over, `/model`
-to switch models, `/plan` to get a read-only plan before any changes, and `/quit`. Ctrl+C stops the current
-run and keeps what it has done so far. In `tui` and `web` you can type while it works to steer it.
+to switch models, `/plan` to get a read-only plan before any changes, `/diff` and `/undo` for the latest
+file changes, `/output` for a command's full output, and `/quit`. Ctrl+C stops the current run and keeps what
+it has done so far. In `tui` and `web` you can type while it works to steer it.
+
+One-shot tasks exit with a non-zero code if the run fails, so they work in scripts.
 
 ### What it can do without asking
 
-Reading and searching files in your workspace happens without a prompt. Writing files and running shell
-commands ask first, showing you the diff or command. To skip the prompt for commands you trust, or always
-refuse others, add rules to `~/.jimbo/config.toml`:
+Reading and searching files in your workspace happens without a prompt, except secrets like `.env` and
+`*.pem`, which the model can't read at all (see [`secret_files`](docs/reference.md#approvals)). Writing files
+and running shell commands ask first, showing you the diff or command. Answer `y`, `n` or `a`: anything else
+counts as no, and the model gets your text as the reason. To skip the prompt for commands you trust, or
+always refuse others, add rules to `~/.jimbo/config.toml`:
 
 ```toml
 approval_allow = ["shell:git status*", "shell:git diff*", "shell:uv run pytest*"]
-approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:.env*"]
+approval_deny  = ["shell:sudo *", "shell:rm -rf*"]
 ```
 
 `--yolo` approves everything except what `approval_deny` blocks.
@@ -84,19 +91,17 @@ there. See [Approvals](docs/reference.md#approvals) and [Sandbox](docs/reference
 ### Give Ollama more context
 
 Ollama ignores the context size jimbo requests, so models run at Ollama's default, often just 4096 tokens.
-That's too small for real work, even though jimbo's status line shows `90.0k`. Build a variant of your model
-with a larger context:
+That's too small for real work, and jimbo warns you at startup. Build a variant of your model with a larger
+context:
 
 ```bash
 printf 'FROM llama3.1:8b\nPARAMETER num_ctx 32768\n' > Modelfile
 ollama create llama3.1-32k -f Modelfile
 ```
 
-Then point `~/.jimbo/config.toml` at it, using the same size:
+Then point `~/.jimbo/config.toml` at it. Jimbo reads the size from the model:
 
 ```toml
-num_ctx = 32768
-
 [model_aliases]
 main = "ollama:llama3.1-32k"
 ```
@@ -114,9 +119,10 @@ them. You can also add [custom slash commands](docs/reference.md#custom-commands
 | You see | Fix |
 |---------|-----|
 | `jimbo: command not found` | Run `uv tool update-shell` and open a new terminal. |
+| `can't reach Ollama` | Start it with `ollama serve`, or open the Ollama app. |
+| `doesn't support tool calling` | Choose another model. |
 | `Failed to spawn: jimbo` | You used `uv run jimbo` outside the checkout. Install it as in step 1. |
 | `no main model` | Set `main` as in step 2. |
-| `model '...' not found` | Run `ollama pull <name>`, or change `main`. |
 | `provider openrouter has no API key configured` | Set `OPENROUTER_API_KEY` in this shell. |
 | The model ignores files or forgets instructions | Its context is probably too small: see [above](#give-ollama-more-context). |
 | The model describes tool calls but doesn't make them | Choose a model that supports tool calling. |
@@ -125,7 +131,6 @@ them. You can also add [custom slash commands](docs/reference.md#custom-commands
 
 - [Reference](docs/reference.md): every setting, plus providers, approvals, the sandbox and customization
 - [Architecture](ARCHITECTURE.md): how the code fits together
-- [Roadmap](ROADMAP.md): status and what's next
 
 To update, run `git pull` in the checkout, then `uv tool install --editable . --force` if dependencies
 changed. To work on jimbo itself, run `uv sync && uv run pytest`.

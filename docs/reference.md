@@ -37,7 +37,7 @@ before the `[tables]`.
 
 ```toml
 # ---- Model ------------------------------------------------------------------------------------
-ui = "plain"                  # plain | tui | web
+ui = "auto"                   # auto (tui in a terminal, otherwise plain) | tui | plain | web | json
 temperature = 0.2             # sample value; unset by default (the provider's default is used)
 request_timeout = 600         # seconds to wait for a model response
 request_limit = 50            # max model requests per turn
@@ -45,10 +45,10 @@ tool_retries = 3              # how often the model may retry a failed or denied
 
 # ---- Context and compaction -------------------------------------------------------------------
 num_ctx = 90000               # context size sent to the model; Ollama's /v1 endpoint ignores it
-context_window = 128000       # sample value; your model's real window. Default: num_ctx
+context_window = 128000       # sample value; your model's real window. Default: what the server reports, else num_ctx
 compact_threshold = 0.8       # auto-summarize history past this context fill; 0 disables
 compact_keep = 6              # recent messages kept verbatim when compacting
-vision = true                 # false for text-only models: images are dropped with a warning
+vision = true                 # false for text-only models: images are dropped with a warning. Ollama reports this itself
 
 # ---- Endpoints for built-in providers (or use [providers.*] below) ----------------------------
 ollama_base_url = "http://localhost:11434/v1"
@@ -59,6 +59,7 @@ openrouter_base_url = "https://openrouter.ai/api/v1"
 approval_allow = []           # see Approvals
 approval_deny = []
 approval = ["rules", "readonly", "remembered", "ask"]   # policy chain; rarely worth changing
+secret_files = [".env", ".env.local", "*.pem", "*.key", "id_rsa"]   # shortened here; see Approvals
 
 # ---- Shell and sandbox ------------------------------------------------------------------------
 shell_timeout = 120           # seconds, per command
@@ -95,7 +96,7 @@ timeout = 8                   # seconds before the prompt appears without the as
 base_url = "https://llm.internal/v1"
 api_key_env = "WORK_LLM_KEY"
 require_key = true            # fail at startup rather than send a dummy key
-send_num_ctx = false          # don't send options.num_ctx to this endpoint
+send_num_ctx = true           # send Ollama-style options.num_ctx; off except for the ollama provider
 ```
 
 ## Providers and API keys
@@ -109,19 +110,18 @@ and `/model` for the session; both also take an alias. Every provider speaks the
 | `openai` | OpenAI's API | `OPENAI_API_KEY` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY`, required |
 
-For hosted models, set `context_window` to the model's real size, because it drives `/usage` and automatic
-compaction.
+At startup jimbo checks the main model against its server: it stops if the server is unreachable, rejects
+your key, or (with Ollama) doesn't have the model or the model can't call tools. It also takes the context
+size from the server where it can (Ollama and OpenRouter). Otherwise set `context_window` to the model's real
+size, because it drives `/usage` and automatic compaction. These checks don't run again after `/model`.
 
-**OpenAI:** turn off the Ollama-style context option, which hosted APIs may reject:
+**OpenAI:**
 
 ```toml
 context_window = 128000
 
 [model_aliases]
 main = "openai:<model>"
-
-[providers.openai]
-send_num_ctx = false
 ```
 
 **Your own endpoint:** a new name under `[providers.*]` adds an OpenAI-compatible endpoint, for LM Studio,
@@ -131,7 +131,6 @@ provider instead.
 ```toml
 [providers.lmstudio]
 base_url = "http://localhost:1234/v1"
-send_num_ctx = false
 ```
 
 **Keys:** a key is only ever sent to its own provider's endpoint, and never appears in `/models`, events or
@@ -144,8 +143,8 @@ logs. `/models` shows where each key comes from. Set at most one source per prov
 | `api_key_cmd` | `["pass", "show", "work"]` | run without a shell, 10s timeout, once per process |
 | `api_key` | `"sk-..."` | inline; discouraged, and jimbo warns if the file is readable by others |
 
-With none set, `openai` and `openrouter` use the environment variables above, and other providers send a
-dummy key. `fallback_key_envs = ["MY_KEY"]` adds more variables to try. The top-level `api_key` setting is a legacy
+With none set, `openai` and `openrouter` use the environment variables above and refuse to start without
+them, and other providers send a dummy key unless `require_key = true`. `fallback_key_envs = ["MY_KEY"]` adds more variables to try. The top-level `api_key` setting is a legacy
 option that works for `openai` only.
 
 To keep a key in the macOS Keychain, store it (this prompts for the value; add `-U` to update it):
@@ -199,20 +198,30 @@ are already allowed).
 ## Approvals
 
 Reading and searching never ask. `write_file`, `edit_file` and `shell` ask first, unless a rule allows them.
-At a prompt you can allow a call for the rest of the session, or deny it and give a reason the model will
-see.
+
+At a prompt, answer `y`, `n` or `a`. Only those exact answers (or `yes`, `no`, `always`) count: anything else
+denies the call and gives your text to the model as the reason, so a half-typed sentence can't approve
+anything. `a` (always) allows that exact shell command for the rest of the session, or the whole tool for
+`write_file` and `edit_file`. In `json` mode, or when stdin is closed, calls that need a prompt are denied.
 
 A rule is `tool` or `tool:<glob>`, matched against the call's first argument (the command or path):
 
 ```toml
 approval_allow = ["shell:git status*", "shell:uv run pytest*", "write_file:docs/*"]
-approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:.env*"]
+approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:secrets/*"]
 ```
 
 - Deny wins, and applies even with `--yolo`.
+- Paths are matched relative to the workspace, however the model spelled them. Deny rules also match the file
+  name, so `read_file:*.sql` covers `db/dump.sql`.
 - An allow rule never matches a compound shell command (pipes, `;`, `&&`, redirects, `$...`), so
   `shell:git status*` can't approve `git status; rm -rf ~`.
 - Deny rules are best effort: `bash -c "sudo …"` slips past them. The sandbox is the real boundary.
+
+`secret_files` lists file names the model can't read or `grep`, even with `--yolo`. The default covers `.env`
+and its usual variants (not `.env.example`), `*.pem`, `*.key`, `id_rsa` and `id_ed25519`. Set it in
+`~/.jimbo/config.toml` to change it; a workspace config can't. It doesn't stop a shell command you approve,
+or an `@path` you type yourself.
 
 ## Sandbox (macOS)
 
@@ -231,13 +240,16 @@ doesn't allow nesting.
 
 ## Interfaces
 
-- **All:** Ctrl+C during a run stops it and keeps the partial turn. A second Ctrl+C within 2 seconds, or one
-  at the prompt, quits. Set `vision = false` for text-only models.
+- **All:** Ctrl+C during a run stops it and keeps the partial turn. In `plain`, a second Ctrl+C within 2 seconds,
+  or one at the prompt, quits. In `tui`, press it twice at the prompt, or Ctrl+D. The current model and any plan
+  or yolo mode are shown in the `tui` toolbar and at the top of the `web` page. `tui` and `plain` show the end of
+  each shell command's output, and `/output` shows all of it. Calls that skip the prompt still show their diff.
 - **Steering (`tui`, `web`):** type while the agent works and your message reaches the model at its next
   step. Slash commands are refused mid-run.
 - **`tui`:** Enter submits, Shift+Enter or Alt+Enter inserts a newline, and Ctrl+D quits. Pastes over 10 lines
   collapse to `[pasted #1: 240 lines]` and expand on submit. `@path` completes workspace files and inlines
   them for the model. Ctrl+V attaches a clipboard image (needs `pngpaste` or `osascript`).
+- **`json`:** for scripts. Every event is a line of JSON on stdout, and calls that need a prompt are denied.
 - **`web`:** serves on port 8765, or the next free port if that's taken, then opens the page and prints its
   URL in the terminal, so you can get back to it if you close the tab. The URL carries a token. It accepts
   pasted or dropped images, shows approvals as a dialog with the diff, and turns Send into Stop during a
@@ -257,7 +269,10 @@ doesn't allow nesting.
 | `/plan [on\|off]` | read-only mode: the agent presents a plan for you to approve |
 | `/todos` | show the agent's task list |
 | `/skills` | list available skills |
-| `/resume [id]` | list saved sessions, or load one |
+| `/resume [id]` | list this project's saved sessions, or load one by id |
+| `/diff` | show the file changes from the latest turn that made any |
+| `/undo` | restore the files that turn changed; repeat to go further back |
+| `/output` | show the latest shell command's full output |
 | `/quit` | exit |
 
 Tab completes commands in `tui` and `web`. Every skill and custom command is also a `/name` command.
@@ -301,8 +316,11 @@ The model sees each name and description, and loads the body when it needs it.
 ## Sessions and context
 
 Each session is logged to `~/.jimbo/sessions/<session_id>.jsonl`, and its history is saved after every turn
-so `--resume` can continue it. Change the location with `log_dir`, or turn logging off with
-`log_sessions = false`, which also disables resume.
+so `--resume` can continue it. `--resume` with no id takes the latest session from the current project, and
+an id loads any session. `/clear` starts a new session, so the old one stays resumable. Change the location
+with `log_dir`, or turn logging off with `log_sessions = false`, which also disables resume.
+
+`/undo` only covers `write_file` and `edit_file`, not shell commands, and only for the current run of jimbo.
 
 Context fill is measured against `context_window`, which defaults to `num_ctx`. When it passes
 `compact_threshold`, older history is summarized automatically, keeping the last `compact_keep` messages.

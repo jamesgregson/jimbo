@@ -3,6 +3,7 @@
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
@@ -23,8 +24,9 @@ class SavedSession:
 
 
 class SessionStore:
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, workspace: Path | None = None) -> None:
         self.directory = directory
+        self.workspace = workspace
 
     def _state(self, sid: str) -> Path:
         return self.directory / f"{sid}.messages.json"
@@ -32,17 +34,36 @@ class SessionStore:
     def _log(self, sid: str) -> Path:
         return self.directory / f"{sid}.jsonl"
 
+    def _meta(self, sid: str) -> Path:
+        return self.directory / f"{sid}.meta.json"  # small, so listings needn't parse whole histories
+
     def save(self, sid: str, history: list[ModelMessage], todos: list[dict]) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         payload = {"history": json.loads(ModelMessagesTypeAdapter.dump_json(history)), "todos": todos}
         tmp = self._state(sid).with_suffix(".tmp")
         tmp.write_text(json.dumps(payload), "utf-8")
         os.replace(tmp, self._state(sid))  # a crash mid-write never leaves a truncated state file
+        if self.workspace and not self._meta(sid).exists():
+            self._meta(sid).write_text(json.dumps({"workspace": str(self.workspace)}), "utf-8")
+
+    def workspace_of(self, sid: str) -> str | None:
+        """Where a session started. None for one saved before this was recorded."""
+        try:
+            return json.loads(self._meta(sid).read_text("utf-8"))["workspace"]
+        except (OSError, ValueError, KeyError):
+            return None
 
     def ids(self) -> list[str]:
         """Resumable session ids, most recently saved first."""
         files = sorted(self.directory.glob("*.messages.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         return [p.name.removesuffix(".messages.json") for p in files]
+
+    def recent(self) -> list[str]:
+        """The sessions started in this workspace, most recently saved first."""
+        return [i for i in self.ids() if self.workspace is None or self.workspace_of(i) == str(self.workspace)]
+
+    def saved_at(self, sid: str) -> str:
+        return datetime.fromtimestamp(self._state(sid).stat().st_mtime).strftime("%b %d %H:%M")
 
     def resolve(self, prefix: str) -> str:
         """A full id, or a unique prefix of one. Raises ValueError otherwise."""

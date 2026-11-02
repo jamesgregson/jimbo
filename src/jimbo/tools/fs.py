@@ -68,6 +68,7 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
         raise ModelRetry(f"{path!r} is not valid UTF-8 text") from None
     if p.is_dir():
         raise ModelRetry(f"{path!r} is a directory")
+    ctx.deps.checkpoints.record(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, "utf-8")
     return f"wrote {len(content)} chars to {path}"
@@ -92,6 +93,7 @@ async def edit_file(ctx: RunContext[Deps], path: str, old: str, new: str, replac
         raise ModelRetry(str(e)) from e
     except UnicodeDecodeError:
         raise ModelRetry(f"{path!r} is not valid UTF-8 text") from None
+    ctx.deps.checkpoints.record(p)
     p.write_text(updated, "utf-8")
     return f"edited {path} ({n if replace_all else 1} replacement(s))"
 

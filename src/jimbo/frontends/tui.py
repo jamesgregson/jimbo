@@ -22,10 +22,10 @@ from rich.syntax import Syntax
 from rich.text import Text
 from pydantic_ai.messages import BinaryContent
 
-from ..core.approval import ApprovalDecision, ApprovalRequest
+from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
 from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
-from ..core.stats import format_stats
+from ..core.stats import format_stats, output_preview
 from ..tools.search import list_files
 from .clipboard import clipboard_png
 
@@ -161,6 +161,7 @@ class TuiFrontend:
         self._streamed = False
         self._usage: dict | None = None
         self._stats = ""  # latest context/usage line, shown in the prompt toolbar and the working spinner
+        self._status: dict | None = None  # model and modes, shown in the prompt toolbar
         self._interrupted = False
 
     def _prompt_session(self) -> PromptSession:
@@ -175,8 +176,16 @@ class TuiFrontend:
         """Called by run_frontend: Ctrl+C / Esc during a run stop it."""
         self._cancel = cancel
 
+    def _state(self) -> str:
+        d = self._status
+        if not d:
+            return ""
+        flags = "".join(f" [{f}]" for f, on in (("PLAN", d["mode"] == "plan"), ("YOLO", d["yolo"])) if on)
+        return f"{d['model']}{flags} · "
+
     def _toolbar(self) -> str | None:
-        return (f"working… {self._stats}  (Esc stops · type to steer)" if self._running else self._stats) or None
+        stats = self._state() + self._stats
+        return (f"working… {stats}  (Esc stops · type to steer)" if self._running else stats) or None
 
     def _message(self) -> str:
         if self._question:
@@ -284,6 +293,12 @@ class TuiFrontend:
         d = event.data
         c = self.console
         match event.kind:
+            case "status":
+                if self._status is None:
+                    sandbox = "sandboxed" if d["sandboxed"] else "NOT sandboxed"
+                    c.print(Text(f"jimbo · {d['model']} · {d['workspace']} · {sandbox}", style="dim"))
+                self._status = d
+                self._invalidate()
             case "user_message":
                 if d.get("steer"):
                     self._stop_live()
@@ -301,7 +316,11 @@ class TuiFrontend:
             case "tool_result":
                 if d["ok"]:
                     first = d["content"].strip().splitlines()[:1]
-                    c.print(Text(f"  ✓ {_clip(first[0]) if first else ''}", style="dim green"))
+                    failed = d.get("tool") == "shell" and first != ["exit code 0"]
+                    c.print(Text(f"  ✓ {_clip(first[0]) if first else ''}", style="yellow" if failed else "dim green"))
+                    if d.get("tool") == "shell":
+                        for line in output_preview(d["content"]):
+                            c.print(Text(f"    {line}", style="dim"))
                 else:
                     c.print(Text(f"  ✗ {_clip(d['content'], 300)}", style="red"))
             case "assistant_text":
@@ -311,6 +330,8 @@ class TuiFrontend:
                     c.print(Markdown(d["text"]))
             case "approval_resolved" if d["decided_by"] != "user":
                 c.print(Text(f"  approval: {d['tool']} → {d['action']} ({d['decided_by']})", style="dim"))
+                if d.get("detail"):
+                    c.print(Syntax(d["detail"], "diff", theme="ansi_dark"))
             case "usage":
                 self._usage = d
             case "context":
@@ -325,7 +346,7 @@ class TuiFrontend:
                 self.completer.commands = {c["name"]: c["help"] for c in d["commands"]}
             case "compaction":
                 self._stop_live()
-                c.print(Text(f"  compacted history: {d['messages_before']} → {d['messages_after']} messages",
+                c.print(Text(f"  compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens",
                              style="dim"))
             case "command_output":
                 c.print(Text(d["text"], style="" if d["ok"] else "red"))
@@ -358,11 +379,9 @@ class TuiFrontend:
             body.append(Syntax(req.detail, "diff", theme="ansi_dark") if is_diff else Text(req.detail))
         self.console.print(Panel(Group(*body), title=f"Approve {req.tool}", border_style="yellow"))
         try:
-            ans = (await self._ask_line("[y]es / [n]o / [a]lways this session? ")).strip().lower()
-            if ans.startswith("a"):
-                return ApprovalDecision(allow=True, remember="session")
-            if ans.startswith("y"):
-                return ApprovalDecision(allow=True)
+            answer = parse_answer(await self._ask_line(f"[y]es / [n]o / [a]lways ({req.always})? "))
+            if answer:
+                return answer
             note = (await self._ask_line("Why? (optional, enter to skip) ")).strip()
         except (EOFError, KeyboardInterrupt):
             return ApprovalDecision(allow=False, note="no answer")

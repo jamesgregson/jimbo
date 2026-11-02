@@ -130,7 +130,7 @@ async def grep(ctx: RunContext[Deps], pattern: str, path: str = ".", glob: str |
     except re.error as e:
         raise ModelRetry(f"invalid regex: {e}") from None
     root = ctx.deps.workspace
-    files = await asyncio.to_thread(list_files, root, base)
+    files = [f for f in await asyncio.to_thread(list_files, root, base) if not ctx.deps.is_secret(f)]
     if glob:
         frx = glob_to_regex(glob)
         files = [f for f in files if frx.fullmatch(f)]

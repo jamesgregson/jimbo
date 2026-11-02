@@ -67,6 +67,7 @@ class CommandRegistry:
         else:
             if out is not None:
                 await session.emit("command_output", command=name, ok=True, text=out)
+        await session.emit_status()
         return True
 
 

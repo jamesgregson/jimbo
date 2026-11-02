@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,14 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from helpers import ScriptedFrontend, settings
-from jimbo.core.approval import ApprovalDecision
+from jimbo.core.approval import (ApprovalDecision, ApprovalRequest, AskUser, RememberedDecisions, ToolCallInfo,
+                                 parse_answer)
+from jimbo.core.events import Event
+from jimbo.core.runner import run_frontend
+from jimbo.core.stats import output_preview
+from jimbo.frontends.cli_json import JsonFrontend
+from jimbo.frontends.cli_plain import PlainFrontend
+from jimbo.frontends.registry import pick_ui
 from jimbo.tools.paths import PathEscape, resolve_in_workspace
 from jimbo.wiring import build_session
 
@@ -216,3 +224,102 @@ async def test_shell_allowed_by_rule_without_asking(tmp_path):
     resolved = [e.data for e in fe.events if e.kind == "approval_resolved"]
     assert resolved == [{"tool": "shell", "action": "allow", "decided_by": "rules",
                          "reason": "allowed by rule 'shell:echo *'"}]
+
+
+# -- approval answers ---------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,allow,remember,note", [
+    ("y", True, "no", None), ("YES ", True, "no", None), ("a", True, "session", None), ("always", True, "session", None),
+    ("actually, no", False, "no", "actually, no"), ("add tests first", False, "no", "add tests first"),
+    ("yes but use rg", False, "no", "yes but use rg"), ("nope", False, "no", "nope"),
+])
+def test_only_exact_answers_approve(text, allow, remember, note):
+    d = parse_answer(text)
+    assert (d.allow, d.remember, d.note) == (allow, remember, note)
+
+
+@pytest.mark.parametrize("text", ["", "  ", "n", "No"])
+def test_plain_no_asks_why(text):
+    assert parse_answer(text) is None
+
+
+async def test_always_covers_one_shell_command_but_all_of_other_tools():
+    asked = []
+
+    async def ask(req):
+        asked.append(req)
+        return ApprovalDecision(allow=True, remember="session")
+
+    au = AskUser(ask, RememberedDecisions())
+
+    def call(tool, **args):
+        return ToolCallInfo(tool=tool, args=args, summary="", workspace=Path("."))
+
+    await au.evaluate(call("shell", command="git status"))
+    await au.evaluate(call("shell", command="git status"))
+    assert len(asked) == 1 and asked[0].always == "this exact command"
+    await au.evaluate(call("shell", command="rm -rf build"))
+    assert len(asked) == 2
+    await au.evaluate(call("edit_file", path="a"))
+    await au.evaluate(call("edit_file", path="b"))
+    assert len(asked) == 3 and asked[2].always == "edit_file this session"
+
+
+# -- failed runs ----------------------------------------------------------------------------------------------
+
+def failing_after_a_write():
+    async def stream(messages, info):
+        if sum(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
+            raise RuntimeError("provider exploded")
+        yield {0: DeltaToolCall(name="write_file", json_args=json.dumps({"path": "a.txt", "content": "A"}))}
+
+    return FunctionModel(stream_function=stream)
+
+
+async def test_failed_run_keeps_the_work_it_did(tmp_path):
+    s = build_session(settings(tmp_path), ScriptedFrontend(), model=failing_after_a_write())
+    assert await s.send("build it") is None and s.failed
+    assert (tmp_path / "a.txt").exists() and "a.txt" in repr(s.history)
+    with s.agent.override(model=TestModel(custom_output_text="carrying on")):
+        assert await s.send("continue") == "carrying on"
+
+
+# -- status ---------------------------------------------------------------------------------------------------
+
+async def test_status_reports_changes(tmp_path):
+    fe = ScriptedFrontend(["/plan", "/approve yolo"])
+    s = build_session(settings(tmp_path, model_aliases={"main": "t:m"}), fe, model=TestModel())
+    await run_frontend(s, fe)
+    states = [e.data for e in fe.events if e.kind == "status"]
+    assert [(d["mode"], d["yolo"]) for d in states] == [("normal", False), ("plan", False), ("plan", True)]
+    assert states[0]["model"] == "t:m" and states[0]["workspace"] == str(tmp_path.resolve())
+
+
+@pytest.mark.parametrize("prompt,stdin_tty,stdout_tty,ui", [
+    (None, True, True, "tui"), ("task", True, True, "plain"), (None, False, True, "plain"), (None, True, False, "plain"),
+])
+def test_auto_ui(prompt, stdin_tty, stdout_tty, ui):
+    assert pick_ui(prompt, stdin_tty, stdout_tty) == ui
+
+
+async def test_json_frontend_prints_events_and_denies(capsys):
+    fe = JsonFrontend()
+    await fe.render(Event(seq=1, session_id="s", kind="error", data={"message": "x"}))
+    assert json.loads(capsys.readouterr().out)["kind"] == "error"
+    d = await fe.request_approval(ApprovalRequest(id="1", tool="shell", summary="run"))
+    assert not d.allow and await fe.next_user_input() is None
+
+
+async def test_plain_closed_stdin_denies(monkeypatch):
+    def closed():
+        raise EOFError
+    monkeypatch.setattr("builtins.input", closed)
+    d = await PlainFrontend().request_approval(ApprovalRequest(id="1", tool="shell", summary="run"))
+    assert not d.allow and "stdin closed" in d.note
+
+
+def test_output_preview_keeps_the_end():
+    body = "\n".join(f"line{i}" for i in range(25))
+    shown = output_preview(f"exit code 0\n{body}")
+    assert shown[0].startswith("… 15 earlier lines") and shown[-1] == "line24" and len(shown) == 11
+    assert output_preview("exit code 0") == []

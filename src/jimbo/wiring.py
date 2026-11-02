@@ -56,7 +56,8 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
 
     available: dict[str, ApprovalPolicy] = {
         "plan": PlanMode(lambda: holder["s"].deps.mode == "plan", ask),
-        "rules": PatternRules(settings.approval_allow, settings.approval_deny),
+        "rules": PatternRules(settings.approval_allow,
+                              [*settings.approval_deny, *(f"read_file:{p}" for p in settings.secret_files)]),
         "readonly": ReadOnlyAllow(), "remembered": remembered, "yolo": Yolo(),
         "ask": AskUser(ask, remembered, assess_asked),
     }
@@ -65,15 +66,17 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     async def observe(call, v):
         if v.action == "allow" and call.assessment is None and assess_mode == "always":
             await assess(call)  # also describe calls a policy allowed without asking
+        unseen = v.action == "allow" and v.decided_by != "user" and call.tool in ("write_file", "edit_file")
         await holder["s"].emit("approval_resolved", tool=call.tool, action=v.action,
                                decided_by=v.decided_by, reason=v.reason,
-                               **({"assessment": call.assessment} if call.assessment else {}))
+                               **({"assessment": call.assessment} if call.assessment else {}),
+                               **({"detail": call.detail} if unseen else {}))  # no prompt showed this diff
 
     workspace = settings.workspace.resolve()
     sandbox = build_sandbox(settings.sandbox, workspace, settings.sandbox_writable, settings.sandbox_network)
     deps = Deps(workspace=workspace, gate=ApprovalGate(policies, observe), sandbox=sandbox,
                 shell_timeout=settings.shell_timeout, shell_timeout_max=settings.shell_timeout_max,
-                models=router)
+                models=router, secret_files=settings.secret_files)
     # Lowest to highest precedence. Also reads the cross-tool .agents/.claude skill folders; the user-level
     # ones are derived from user_dir's parent (the home dir by default).
     home = settings.user_dir.parent
@@ -89,7 +92,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                            vision=settings.vision, compact_threshold=settings.compact_threshold,
                            compact_keep=settings.compact_keep)
     if settings.log_sessions:
-        session.store = SessionStore(settings.log_dir)
+        session.store = SessionStore(settings.log_dir, workspace)
     session.replay_sink = FrontendSink(frontend)
     register_builtins(session.commands, settings, available)
     load_markdown_commands(session.commands, [settings.user_dir / "commands",

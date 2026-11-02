@@ -1,5 +1,8 @@
+import json
+
 import pytest
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from helpers import ScriptedFrontend, settings
@@ -238,4 +241,49 @@ async def test_workspace_commands_override_user_commands(tmp_path):
 
 async def test_missing_command_dirs_are_fine(tmp_path):
     s, _ = make(tmp_path)  # neither user/commands nor .jimbo/commands exists
-    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "compact", "help", "model", "models", "plan", "quit", "resume", "skills", "todos", "usage"}
+    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "compact", "diff", "help", "model", "models", "output", "plan", "quit", "resume", "skills", "todos", "undo", "usage"}
+
+
+# ---- undoing work ----
+
+def writer(path, content):
+    """A model that writes one file per turn, then answers."""
+    async def stream(messages, info):
+        if isinstance(messages[-1].parts[-1], ToolReturnPart):
+            yield "done"
+        else:
+            yield {0: DeltaToolCall(name="write_file", json_args=json.dumps({"path": path, "content": content}))}
+    return FunctionModel(stream_function=stream)
+
+
+async def test_diff_and_undo_restore_an_edit(tmp_path):
+    (tmp_path / "a.txt").write_text("old\n")
+    s, fe = make(tmp_path, writer("a.txt", "new\n"))
+    await s.send("change it")
+    await s.commands.dispatch(s, "/diff")
+    assert "-old" in last(fe)["text"] and "+new" in last(fe)["text"]
+    await s.commands.dispatch(s, "/undo")
+    assert "Restored a.txt" in last(fe)["text"] and (tmp_path / "a.txt").read_text() == "old\n"
+    assert "I undid your latest file changes" in repr(s.history)
+    await s.commands.dispatch(s, "/undo")
+    assert last(fe)["text"] == "Nothing to undo."
+
+
+async def test_undo_removes_a_new_file_and_goes_back_turn_by_turn(tmp_path):
+    s, fe = make(tmp_path, writer("new.txt", "one\n"))
+    await s.send("first")
+    with s.agent.override(model=writer("new.txt", "two\n")):
+        await s.send("second")
+    await s.commands.dispatch(s, "/undo")
+    assert (tmp_path / "new.txt").read_text() == "one\n"
+    await s.commands.dispatch(s, "/undo")
+    assert not (tmp_path / "new.txt").exists()
+
+
+async def test_output_shows_the_full_shell_result(tmp_path):
+    s, fe = make(tmp_path)
+    await s.commands.dispatch(s, "/output")
+    assert last(fe)["text"] == "No shell output yet."
+    s.last_output = "exit code 0\nall of it"
+    await s.commands.dispatch(s, "/output")
+    assert last(fe)["text"] == "exit code 0\nall of it"

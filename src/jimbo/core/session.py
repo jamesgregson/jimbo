@@ -48,6 +48,9 @@ class AgentSession:
         self.replay_sink: EventSink | None = None  # where resume() redraws past events (the frontend only)
         self.deps.midrun_compact = self._compact_midrun
         self.deps.midrun_steer = self._inject_steers
+        self.failed = False  # a run or command failed; one-shot mode turns this into the exit code
+        self.last_output: str | None = None  # the latest shell result in full, for /output
+        self._status_sent: dict | None = None
         self._steers: list[str | list[UserContent]] = []  # typed during a run, not yet seen by the model
         self.context_tokens = 0  # size of the last model request + response
         self.total_usage = RunUsage()  # whole session; updated live during a run
@@ -58,6 +61,8 @@ class AgentSession:
         self._task: asyncio.Task | None = None
 
     async def emit(self, kind: EventKind, **data) -> None:
+        if kind in ("run_finished", "command_output") and not data.get("ok", True):
+            self.failed = True
         self._seq += 1
         ev = Event(seq=self._seq, session_id=self.session_id, kind=kind, data=data)
         for s in self.sinks:
@@ -69,6 +74,16 @@ class AgentSession:
             return {"requests": x.requests, "input_tokens": x.input_tokens, "output_tokens": x.output_tokens}
         await self.emit("context", tokens=self.context_tokens, window=self.context_window,
                         turn=u(self.turn_usage), session=u(self.total_usage))
+
+    async def emit_status(self, *, initial: bool = False) -> None:
+        """Tell the UI what state it's in. After the initial call, only sent when something changed."""
+        d = self.deps
+        status = {"model": d.models.explain("main").spec if d.models else None, "workspace": str(d.workspace),
+                  "mode": d.mode, "yolo": any(p.name == "yolo" for p in d.gate.policies),
+                  "sandboxed": d.sandbox is not None}
+        if initial or self._status_sent not in (None, status):
+            self._status_sent = status
+            await self.emit("status", **status)
 
     async def _emit_todos(self) -> None:
         if self.deps.todos != self._todos_sent:
@@ -83,6 +98,11 @@ class AgentSession:
             self.store.save(self.session_id, self.history, [t.model_dump() for t in self.deps.todos])
         except OSError:
             pass
+
+    def new_session(self) -> None:
+        """Later turns save under a new id, so the conversation so far stays resumable."""
+        self.session_id = uuid.uuid4().hex[:12]
+        self._seq = 0
 
     async def resume(self, prefix: str) -> str:
         """Load a saved session into this one: history, todos and id (so the log keeps appending to the
@@ -104,7 +124,11 @@ class AgentSession:
                 if ev.kind in REPLAY_KINDS:
                     await self.replay_sink.emit(ev)
         await self.emit_context()
-        return f"Resumed session {saved.id} ({len(self.history)} messages)."
+        msg = f"Resumed session {saved.id} ({len(self.history)} messages)."
+        started = self.store.workspace_of(saved.id)
+        if started and self.store.workspace and started != str(self.store.workspace):
+            msg += f" It started in {started}, but you are in {self.store.workspace}."
+        return msg
 
     def cancel(self) -> bool:
         """Interrupt the in-flight run, if any. The partial turn is kept in history."""
@@ -175,7 +199,7 @@ class AgentSession:
             # rough estimate (~4 chars/token) until the next model request reports the real size
             self.context_tokens = len(render_transcript(new, return_limit=10**9)) // 4
             await self.emit("compaction", messages_before=len(messages), messages_after=len(new),
-                            tokens_before=before)
+                            tokens_before=before, tokens_after=self.context_tokens)
             await self.emit_context()
         return new
 
@@ -190,13 +214,18 @@ class AgentSession:
 
     async def compact(self, focus: str = "") -> str | None:
         """Summarize older history now. Returns a status line, or None if there was nothing to compact."""
+        before = self.context_tokens
         new = await self._apply_compaction(self.history, focus=focus)
         if new is None:
             return None
         n = len(self.history)
         self.history = new
         self.persist()
-        return f"Compacted {n} messages into {len(new)}."
+        line = f"Compacted {n} messages into {len(new)}"
+        if before:
+            saved = max(before - self.context_tokens, 0)
+            line += f"; context ~{before} → ~{self.context_tokens} tokens (saved ~{saved})"
+        return line + "."
 
     async def send(self, content: str | list[UserContent]) -> str | None:
         """Run one turn. Returns the final text, or None if the run failed or was cancelled.
@@ -221,6 +250,7 @@ class AgentSession:
     async def _run(self, content: str | list[UserContent]) -> str | None:
         _, prompt = await self._compose(content)
         run = None
+        self.deps.checkpoints.begin()
         base = self.total_usage
         self.turn_usage = RunUsage()
         try:
@@ -247,10 +277,13 @@ class AgentSession:
                                     await self.emit("tool_call", id=ev.part.tool_call_id,
                                                     tool=ev.part.tool_name, args=ev.part.args_as_dict())
                                 elif isinstance(ev, FunctionToolResultEvent):
-                                    await self.emit("tool_result", id=ev.tool_call_id,
+                                    await self.emit("tool_result", id=ev.tool_call_id, tool=ev.part.tool_name,
                                                     ok=ev.part.part_kind == "tool-return",
                                                     content=str(ev.part.content))
+                                    if ev.part.tool_name == "shell":
+                                        self.last_output = str(ev.part.content)
                                     await self._emit_todos()
+                                    await self.emit_status()
                 result = run.result
             assert result is not None
         except asyncio.CancelledError:
@@ -262,6 +295,9 @@ class AgentSession:
             await self.emit("run_finished", ok=False, cancelled=True)
             return None
         except Exception as e:  # surfaced to the UI/log; the session stays usable
+            if run is not None:  # the work is done, so the model must remember it, as when cancelled
+                self.history = repair_messages(run.all_messages())
+                self.turn_usage, self.total_usage = run.usage, base + run.usage
             await self.emit("error", type=type(e).__name__, message=str(e))
             await self._drop_steers()
             await self.emit("run_finished", ok=False)

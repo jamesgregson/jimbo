@@ -6,13 +6,19 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic_ai import ModelRetry
+from pydantic_ai.models.test import TestModel
 
+from helpers import ScriptedFrontend, settings
 from jimbo.config import Settings
 from jimbo.core.approval import ApprovalGate, PatternRules, ToolCallInfo, Yolo
 from jimbo.core.deps import Deps
+from jimbo.providers.credentials import CredentialError
+from jimbo.providers.registry import build_model_from_spec, provider_config
 from jimbo.tools import sandbox as sb
+from jimbo.tools.fs import read_file
 from jimbo.tools.search import glob, glob_to_regex, grep
 from jimbo.tools.shell import shell
+from jimbo.wiring import build_session
 
 
 def ctx(tmp_path, sandbox=None, **kw):
@@ -168,5 +174,61 @@ def test_only_user_dir_comes_from_the_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("JIMBO_USER_DIR", str(tmp_path))
     s = Settings()
     assert s.user_dir == tmp_path
-    assert s.shell_timeout == 120 and s.api_key == "unused" and s.ui == "plain" and s.web_port == 8765
+    assert s.shell_timeout == 120 and s.api_key == "unused" and s.ui == "auto" and s.web_port == 8765
     assert s.workspace == Path.cwd()
+
+
+@pytest.mark.parametrize("path", [".env", "./.env", "svc/.env", "svc/../.env", "/ws/.env"])
+async def test_deny_rule_covers_every_spelling_of_a_path(path):
+    rules = PatternRules([], ["read_file:.env*"])
+    call = ToolCallInfo(tool="read_file", args={"path": path}, summary="", workspace=Path("/ws"))
+    assert (await rules.evaluate(call)).action == "deny"
+
+
+async def test_allow_rule_is_not_matched_by_file_name_alone():
+    rules = PatternRules(["write_file:docs/*", "write_file:notes.md"], [])
+
+    async def action(path):
+        return (await rules.evaluate(ToolCallInfo(tool="write_file", args={"path": path}, summary="",
+                                                  workspace=Path("/ws")))).action
+
+    assert await action("./docs/a.md") == "allow" and await action("notes.md") == "allow"
+    assert await action("evil/notes.md") == "ask"
+
+
+def secret_session(tmp_path, yolo=False):
+    (tmp_path / ".env").write_text("TOKEN=hunter2\n")
+    (tmp_path / ".env.example").write_text("TOKEN=example\n")
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / ".env").write_text("TOKEN=swordfish\n")
+    return build_session(settings(tmp_path, approval=["rules", "yolo"] if yolo else ["rules", "readonly", "ask"]),
+                         ScriptedFrontend(), model=TestModel())
+
+
+async def test_secret_files_are_blocked_by_default_even_with_yolo(tmp_path):
+    s = secret_session(tmp_path, yolo=True)
+    for path in (".env", "./.env", "svc/.env"):
+        with pytest.raises(ModelRetry):
+            await read_file(SimpleNamespace(deps=s.deps), path)
+    assert "example" in await read_file(SimpleNamespace(deps=s.deps), ".env.example")
+
+
+async def test_grep_skips_secret_files(tmp_path):
+    s = secret_session(tmp_path)
+    out = await grep(SimpleNamespace(deps=s.deps), "TOKEN")
+    assert "hunter2" not in out and "swordfish" not in out and "example" in out
+
+
+def test_workspace_config_cannot_clear_secret_files(tmp_path):
+    (tmp_path / ".jimbo").mkdir()
+    (tmp_path / ".jimbo" / "config.toml").write_text("secret_files = []\n")
+    assert ".env" in Settings(workspace=tmp_path, user_dir=tmp_path / "u").secret_files
+
+
+def test_built_in_provider_defaults(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    s = Settings()
+    assert provider_config("ollama", s).send_num_ctx and not provider_config("openai", s).send_num_ctx
+    assert not provider_config("openrouter", s).send_num_ctx
+    with pytest.raises(CredentialError, match="no API key"):
+        build_model_from_spec("openai:gpt", s)

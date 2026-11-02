@@ -63,7 +63,10 @@ async def test_compact_command_summarizes_and_keeps_tail(tmp_path):
     assert s.history[0].parts[0].content == SUMMARY_PREFIX + "SUMMARY"
     assert "one" in seen[0] and "auth flow" in seen[0]
     assert s.history[-1].parts[0].content == "ok" and "three" in str(s.history[-2].parts[0].content)
-    assert [e for e in fe.events if e.kind == "compaction"]
+    ev = [e for e in fe.events if e.kind == "compaction"]
+    assert ev and "tokens_after" in ev[0].data
+    out = [e for e in fe.events if e.kind == "command_output"][-1].data["text"]
+    assert "tokens (saved ~" in out
 
 
 async def test_nothing_to_compact(tmp_path):

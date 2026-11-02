@@ -23,6 +23,7 @@ EventKind = Literal[
     "commands",
     "command_output",
     "compaction",
+    "status",
 ]
 
 
