@@ -168,7 +168,7 @@ async def test_denial_note_reaches_the_model(tmp_path):
         else:
             yield r.content
     fe = Fe()
-    s = build_session(settings(tmp_path, tasks={"shell_assess": {"mode": "off"}}), fe,
+    s = build_session(settings(tmp_path, tasks={"jimbo-shell-assess": {"mode": "off"}}), fe,
                       model=FunctionModel(answer, stream_function=stream))
     await s.send("find foo")
     assert results and "User denied this action: use rg instead" in results[0]

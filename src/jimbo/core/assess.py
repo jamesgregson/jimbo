@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from .llm_tasks import run_task
 from .models import ModelRouter
 
-TASK = "shell_assess"
+TASK = "jimbo-shell-assess"
 Risk = Literal["low", "medium", "high", "critical"]
 RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 

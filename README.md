@@ -111,8 +111,8 @@ main = "ollama:llama3.1-32k"
 ### Teach it about your project
 
 Put an `AGENTS.md` in your project root with your build commands and conventions, and jimbo will follow
-them. You can also add [custom slash commands](docs/reference.md#custom-commands) and
-[skills](docs/reference.md#instructions-and-skills).
+them. You can also add [custom slash commands](docs/reference.md#custom-commands),
+[skills](docs/reference.md#instructions-and-skills) and [agents](docs/reference.md#agents).
 
 ## Troubleshooting
 

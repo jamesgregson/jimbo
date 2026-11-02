@@ -84,10 +84,10 @@ fast  = "ollama:llama3.1:8b"
 smart = "openrouter:anthropic/claude-sonnet-5-5"
 
 [models]
-shell_assess = "fast"
-compaction   = "smart"
+jimbo-shell-assess = "fast"
+jimbo-compaction   = "smart"
 
-[tasks.shell_assess]
+[tasks.jimbo-shell-assess]
 mode = "ask"                  # off | ask | always
 timeout = 8                   # seconds before the prompt appears without the assessment
 
@@ -166,8 +166,8 @@ api_key_cmd = ["security", "find-generic-password", "-a", "you", "-s", "OPENROUT
 
 ## Models per task
 
-Besides the main conversation, jimbo uses a model for two background tasks: `compaction` and
-`shell_assess`. Both use `main` unless you choose otherwise. In the config, a task takes an alias, `main`, or a
+Besides the main conversation, jimbo uses a model for two background tasks: `jimbo-compaction` and
+`jimbo-shell-assess`. Both use `main` unless you choose otherwise. In the config, a task takes an alias, `main`, or a
 `<provider>:<name>`:
 
 ```toml
@@ -176,23 +176,23 @@ main = "openrouter:z-ai/glm-5.3-flash"
 fast = "ollama:llama3.1:8b"
 
 [models]
-shell_assess = "fast"
-compaction   = "main"
+jimbo-shell-assess = "fast"
+jimbo-compaction   = "main"
 ```
 
 In a session, `/models` shows what each task resolves to and why, `/models set <task> <alias|provider:name>`
 changes one, and `/models reset [task]` undoes that.
 
-A skill can ask for models in its frontmatter (`models: {shell_assess: smart}`). This lasts one turn and may
+A skill can ask for models in its frontmatter (`models: {jimbo-shell-assess: smart}`). This lasts one turn and may
 only name your aliases, never define a model or endpoint.
 
 **Shell risk assessment:** shell approval prompts show a short summary and a risk level (low, medium, high or
-critical), written by the `shell_assess` model, which is `main` by default. It's advice only. The command is
+critical), written by the `jimbo-shell-assess` model, which is `main` by default. It's advice only. The command is
 treated as untrusted text, and fixed checks (`sudo`, `rm -rf`, `curl | sh`, force pushes, writes outside the
 workspace and so on) set a minimum risk the model can't lower. If the model is slow or fails, the prompt
 appears without it. With a remote model, commands are sent to it, but file contents are not.
 
-`[tasks.shell_assess]` sets `timeout` and `mode`: `off`, `ask` (the default) or `always` (also for calls that
+`[tasks.jimbo-shell-assess]` sets `timeout` and `mode`: `off`, `ask` (the default) or `always` (also for calls that
 are already allowed).
 
 ## Approvals
@@ -243,7 +243,7 @@ doesn't allow nesting.
 - **All:** Ctrl+C during a run stops it and keeps the partial turn. In `plain`, a second Ctrl+C within 2 seconds,
   or one at the prompt, quits. In `tui`, press it twice at the prompt, or Ctrl+D. The current model and any plan
   or yolo mode are shown in the `tui` toolbar and at the top of the `web` page. `tui` and `plain` show the end of
-  each shell command's output, and `/output` shows all of it. Calls that skip the prompt still show their diff.
+  each shell command's output, and `/output` shows all of it. Tool calls made by an agent show its name and model. Calls that skip the prompt still show their diff.
 - **Steering (`tui`, `web`):** type while the agent works and your message reaches the model at its next
   step. Slash commands are refused mid-run.
 - **`tui`:** Enter submits, Shift+Enter or Alt+Enter inserts a newline, and Ctrl+D quits. Pastes over 10 lines
@@ -269,10 +269,11 @@ doesn't allow nesting.
 | `/plan [on\|off]` | read-only mode: the agent presents a plan for you to approve |
 | `/todos` | show the agent's task list |
 | `/skills` | list available skills |
+| `/agents [new <name> [--user]]` | list agents, or create one |
 | `/resume [id]` | list this project's saved sessions, or load one by id |
 | `/diff` | show the file changes from the latest turn that made any |
 | `/undo` | restore the files that turn changed; repeat to go further back |
-| `/output` | show the latest shell command's full output |
+| `/output` | show the latest shell output or agent report in full |
 | `/quit` | exit |
 
 Tab completes commands in `tui` and `web`. Every skill and custom command is also a `/name` command.
@@ -308,6 +309,76 @@ instructions on every request.
 **Skills:** a skill is a folder containing a `SKILL.md` with `name` and `description` frontmatter. Jimbo looks
 in `.jimbo/skills`, `.claude/skills` and `.agents/skills`, under both your home directory and the workspace.
 The model sees each name and description, and loads the body when it needs it.
+
+## Agents
+
+An agent is a helper with its own prompt, tools and model. It starts with an empty conversation, does one task
+and returns one report. Its file reads and tool output stay out of your main conversation.
+
+Jimbo includes `explore`, which is read-only, and `general`, which has all tools.
+
+**Running an agent:** the main model can choose an agent for a task, or you can start one yourself:
+
+```
+@reviewer check my last change
+```
+
+Your text goes straight to the agent, and the report joins your conversation so you can ask follow-up questions.
+When the main model starts an agent, it gets the report, and `/output` shows it in full.
+
+`@name` starts an agent only at the start of a message, and only if that agent exists. Anywhere else, `@` is a file
+mention. If a file has the same name as an agent, use `@./name` to mention the file.
+
+**Creating an agent:** `/agents new reviewer` creates `.jimbo/agents/reviewer.md`, and `--user` creates
+`~/.jimbo/agents/reviewer.md` for all projects. If both exist, the project agent is used. A file with the same
+name as a built-in agent replaces it. Changes to agent files apply from your next message.
+
+The file name is the agent's name. It can't be `main` or start with `jimbo-`. Agent files don't need config changes.
+
+```markdown
+---
+description: Reviews a diff for bugs. Use after non-trivial changes.
+model: fast
+tools: [read_file, glob, grep, shell, load_skill]
+skills: [python-style]
+---
+You are a code reviewer. Report only real bugs, with file and line.
+```
+
+| Field | Meaning | If omitted |
+|---|---|---|
+| `description` | Tells the main model when to use the agent | Only you can run it |
+| `model` | An alias or `main` | See below |
+| `tools` | Tools the agent can use | All tools except `run_agent` and `exit_plan` |
+| `skills` | Skills loaded when the agent starts | None loaded |
+
+**Choosing a model:** jimbo uses the first of these that is set, then `main`:
+
+1. `/models set reviewer <alias|provider:name>`, for this session
+2. `reviewer = "<alias|provider:name>"` under `[models]` in `~/.jimbo/config.toml`
+3. `model:` in the agent file, or in the command that started the agent
+
+Agent and command files can only name your aliases or `main`, so a repo can't add a provider or model. If the alias
+doesn't exist, jimbo prints a warning and uses `main`.
+
+**Skills:** `skills:` adds a skill's instructions when the agent starts. An agent can also call `load_skill` if it's
+in its `tools`. An agent and a skill can share a name: `@name` runs the agent and `/name` runs the skill.
+
+**Commands:** add `agent:` to a [custom command](#custom-commands) to run it in that agent, and `model:` to replace the
+agent file's model for that run. Commands without `agent:` run on the main model.
+
+**Permissions:** agents use your approval rules and the sandbox, and prompts show the agent's name, as in
+`[reviewer] run: pytest -x`. Agent files can't change approvals. In plan mode, agents can't write files or run shell
+commands. `approval_deny = ["run_agent:reviewer"]` stops the main model starting that agent.
+
+**Limits:** agents run one at a time and can't start other agents. An agent uses the turn's `request_limit`. When the
+main model starts one, 5 requests are kept for it to finish the turn, and it receives the first 20,000 characters of
+the report. Ctrl+C stops the agent and the current run. `/undo` reverts an agent's file edits with the rest of the turn.
+
+**Repo agents run without a trust prompt.** A cloned repo's agent can use any of your aliases, so it could send code
+to a hosted model. Each tool call it makes still needs approval.
+
+## Plan mode and todos
 
 **Plan mode:** `/plan` allows only read-only tools, and the agent ends with a plan you approve or reject.
 

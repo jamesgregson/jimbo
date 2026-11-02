@@ -126,7 +126,7 @@ async def test_read_file_allowed_in_skill_dir_only(tmp_path):
                       model=FunctionModel(stream_function=lambda m, i: None))
 
     class Ctx:
-        deps = s.deps
+        deps, tool_call_id = s.deps, None
 
     assert "echo hi" in await read_file(Ctx, str(skill / "run.sh"))
     with pytest.raises(ModelRetry):

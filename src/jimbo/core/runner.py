@@ -5,7 +5,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 
 from .attachments import UserMessage, build_content
-from .commands import QuitSession
+from .commands import QuitSession, agent_call
 from .interaction import Frontend
 from .session import AgentSession
 
@@ -50,6 +50,7 @@ async def _handle(session: AgentSession, msg: str | UserMessage) -> bool:
     msg = UserMessage(msg) if isinstance(msg, str) else msg
     if not msg.text.strip() and not msg.images:
         return True
+    await session.refresh_agents()
     try:
         if msg.images or not await session.commands.dispatch(session, msg.text):
             await session.send(build_content(msg.text, msg.images))
@@ -116,8 +117,8 @@ async def _steer_or_refuse(session: AgentSession, msg: str | UserMessage) -> Non
     msg = UserMessage(msg) if isinstance(msg, str) else msg
     if not msg.text.strip() and not msg.images:
         return
-    if msg.text.lstrip().startswith("/") and not msg.images:  # commands change session state mid-run
-        await session.emit("command_output", command="steer", ok=False,
+    if (msg.text.lstrip().startswith("/") or agent_call(session, msg.text)) and not msg.images:
+        await session.emit("command_output", command="steer", ok=False,  # they change session state mid-run
                            text="commands can't run while the agent is working; Esc stops it")
     else:
         session.steer(build_content(msg.text, msg.images))

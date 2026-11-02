@@ -24,6 +24,7 @@ src/jimbo/
     deps.py            Deps: per-session state handed to every tool; authorize()
     commands.py        CommandRegistry, markdown commands, frontmatter parsing
     skills.py          AGENTS.md loading and skill discovery
+    agents.py          agent files, built-in agents, ForwardSink
     compaction.py      history summarization (/compact and auto-compaction)
     attachments.py     @path mentions and pasted images
     jsonl.py           JsonlSink: session log
@@ -39,6 +40,7 @@ src/jimbo/
     shell.py           shell (with timeout, output capping, process-group kill)
     sandbox.py         macOS sandbox-exec wrapper for shell
     todos.py skills.py todo_write, load_skill
+    agents.py          run_agent
     plan.py            exit_plan (plan mode only)
   providers/         model selection: "<provider>:<name>" -> Pydantic AI Model; startup checks (preflight.py)
   frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page), json
@@ -202,7 +204,7 @@ The default chain is:
 |--------|----------|
 | `plan` (`PlanMode`) | always first; in plan mode denies non-read-only calls and asks the user to approve `exit_plan` |
 | `rules` (`PatternRules`) | `approval_deny` first, then `approval_allow`; a match decides, otherwise `ask` |
-| `readonly` (`ReadOnlyAllow`) | allow calls flagged `read_only` (read, list, glob, grep, todos, load_skill) |
+| `readonly` (`ReadOnlyAllow`) | allow calls flagged `read_only` (read, list, glob, grep, todos, load_skill, run_agent) |
 | `remembered` (`RememberedDecisions`) | allow what the user chose "always" for: one exact shell command, or a whole other tool |
 | `ask` (`AskUser`) | terminal policy: ask the frontend; honors "remember for session" |
 
@@ -223,7 +225,8 @@ Details worth knowing:
   boundary.
 - `AskUser` holds a lock so parallel tool calls never show two prompts at once.
 - Every decision, whoever made it, goes through the gate's observer and is emitted as
-  `approval_resolved` with `decided_by`, so logs show why a call ran.
+  `approval_resolved` with `decided_by`, so logs show why a call ran. Approval events carry the `call_id` of
+  their `tool_call`, because parallel calls can be decided in any order.
 
 ### Containment layers
 
@@ -252,15 +255,18 @@ Approvals are about intent; separate mechanisms limit what a call can physically
   name/description index goes in the prompt; the model calls `load_skill(name)` for the full body, and the
   tool is hidden when no skills exist. Each skill is also a `/<name>` slash command.
 - **Markdown commands**: `<dir>/<name>.md` files in `~/.jimbo/commands` and `<workspace>/.jimbo/commands`
-  become `/<name>`, with `$ARGUMENTS` substitution.
+  become `/<name>`, with `$ARGUMENTS` substitution. With `agent:` in the frontmatter they run in that agent.
+- **Agents**: `<dir>/<name>.md` files in `~/.jimbo/agents` and `<workspace>/.jimbo/agents`, plus the built-in
+  `explore` and `general` ([core/agents.py](src/jimbo/core/agents.py)). See [Agents](#agents).
 - **Providers**: `"<provider>:<model>"` resolves through
   [providers/registry.py](src/jimbo/providers/registry.py) to a per-provider `ProviderConfig` (endpoint plus
   one credential source, resolved lazily in [providers/credentials.py](src/jimbo/providers/credentials.py)).
   All current adapters speak the OpenAI-compatible API; `/model` swaps the agent mid-session without losing
   history.
 - **Model routing**: [core/models.py](src/jimbo/core/models.py) `ModelRouter` maps a task name (`main`,
-  `shell_assess`, `compaction`, ...) to a model: skill scope (aliases only) > `/models set` > `[models]` >
-  the required `main` alias. It lives on `Deps.models`; background calls go through
+  `jimbo-shell-assess`, `jimbo-compaction`, ...) to a model: skill scope (aliases only) > `/models set` >
+  `[models]` > the required `main` alias. Agents use `for_agent`: `/models set` > `[models]` > the alias in their
+  file > `main`. It lives on `Deps.models`; background calls go through
   [core/llm_tasks.py](src/jimbo/core/llm_tasks.py) `run_task`, which returns None on failure or timeout.
 - **Shell assessment**: [core/assess.py](src/jimbo/core/assess.py). `AskUser` calls an assess hook just
   before prompting, so only calls that need a human cost a model request (mode `always` also covers allowed
@@ -269,6 +275,26 @@ Approvals are about intent; separate mechanisms limit what a call can physically
 - **Attachments**: `@path` mentions are inlined (capped) for the model while the logged `user_message`
   keeps the original text; pasted images are validated for type and size and dropped with a warning when
   `vision = false`.
+
+## Agents
+
+An agent run is a child `AgentSession` with `nested=True`, so compaction, cancellation and usage tracking are the
+same code as the main loop. `core` can't import `build_agent`, so [wiring.py](src/jimbo/wiring.py) sets
+`Deps.spawn_agent`, which is the single way to start one. `run_agent` calls it from a tool, with `sequential=True` so
+agents run one at a time. `AgentSession.delegate()` calls it directly for `@name` and commands with `agent:`.
+
+- **Deps.** The child gets `replace(parent.deps, ...)` with its own router, empty todos and `agents={}`. Empty
+  `agents` is what stops agents starting agents. The gate, sandbox and checkpoints stay shared, so approvals and
+  plan mode apply unchanged. `Deps.agent` adds the agent's name to approval summaries.
+- **Checkpoints.** Nested sessions skip `checkpoints.begin()`, so an agent's edits belong to the turn that started
+  it, and one `/undo` covers them. `delegate()` calls `begin()` itself because no parent turn is running.
+- **Events.** `ForwardSink` passes the child's `tool_call`, `tool_result`, `compaction` and `error` events to the
+  parent, tagged `agent={name, model}`, and drops the rest. Frontends only add a prefix.
+- **Models.** Each model an agent uses is checked once with `inspect_model`, and its context window applies to
+  the child. An agent on the main model uses the main session's window.
+- **Limits.** Child usage is added to the parent's, so `request_limit` stays a per-turn total. `run_agent` keeps 5
+  requests for the parent. Failures return text instead of raising `ModelRetry`, because a retry could repeat file
+  changes that already happened.
 
 ## Testing
 

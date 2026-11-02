@@ -25,7 +25,7 @@ from pydantic_ai.messages import BinaryContent
 from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
 from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
-from ..core.stats import format_stats, output_preview
+from ..core.stats import agent_prefix, format_stats, output_preview
 from ..tools.search import list_files
 from .clipboard import clipboard_png
 
@@ -312,17 +312,17 @@ class TuiFrontend:
             case "tool_call":
                 self._stop_live()
                 args = ", ".join(f"{k}={v!r}" for k, v in d["args"].items())
-                c.print(Text(f"▸ {d['tool']}({_clip(args)})", style="dim cyan"))
+                c.print(Text(f"▸ {agent_prefix(d)}{d['tool']}({_clip(args)})", style="dim cyan"))
             case "tool_result":
                 if d["ok"]:
                     first = d["content"].strip().splitlines()[:1]
                     failed = d.get("tool") == "shell" and first != ["exit code 0"]
-                    c.print(Text(f"  ✓ {_clip(first[0]) if first else ''}", style="yellow" if failed else "dim green"))
+                    c.print(Text(f"  ✓ {agent_prefix(d)}{_clip(first[0]) if first else ''}", style="yellow" if failed else "dim green"))
                     if d.get("tool") == "shell":
                         for line in output_preview(d["content"]):
                             c.print(Text(f"    {line}", style="dim"))
                 else:
-                    c.print(Text(f"  ✗ {_clip(d['content'], 300)}", style="red"))
+                    c.print(Text(f"  ✗ {agent_prefix(d)}{_clip(d['content'], 300)}", style="red"))
             case "assistant_text":
                 streamed = self._streamed
                 self._stop_live()
@@ -346,13 +346,13 @@ class TuiFrontend:
                 self.completer.commands = {c["name"]: c["help"] for c in d["commands"]}
             case "compaction":
                 self._stop_live()
-                c.print(Text(f"  compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens",
+                c.print(Text(f"  {agent_prefix(d)}compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens",
                              style="dim"))
             case "command_output":
                 c.print(Text(d["text"], style="" if d["ok"] else "red"))
             case "error":
                 self._stop_live()
-                c.print(Panel(f"{d['type']}: {d['message']}", title="error", border_style="red"))
+                c.print(Panel(f"{agent_prefix(d)}{d['type']}: {d['message']}", title="error", border_style="red"))
             case "run_finished":
                 self._stop_live()
                 self._running = False

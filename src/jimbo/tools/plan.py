@@ -21,7 +21,7 @@ async def exit_plan(ctx: RunContext[Deps], plan: str) -> str:
     Call this when you have investigated enough. If approved you can start executing; if rejected, revise.
     """
     try:
-        await ctx.deps.authorize("exit_plan", {"plan": plan}, "present plan", detail=plan)
+        await ctx.deps.authorize(ctx.tool_call_id, "exit_plan", {"plan": plan}, "present plan", detail=plan)
     except ToolDenied as e:
         raise ModelRetry(str(e)) from e
     ctx.deps.mode = "normal"

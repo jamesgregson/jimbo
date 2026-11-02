@@ -1,13 +1,15 @@
 import platform
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, RunContext, Tool
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
 
 from .config import Settings
+from .core.agents import AgentSpec, format_agent_index
 from .core.deps import Deps
 from .core.skills import format_skill_index
+from .tools.agents import AGENT_TOOLS
 from .tools.skills import SKILL_TOOLS
 from .tools.fs import FS_TOOLS
 from .tools.search import SEARCH_TOOLS
@@ -36,16 +38,35 @@ Investigate the code, then call exit_plan(plan) with a concrete plan as a markdo
 If the plan is rejected, revise it using the feedback and call exit_plan again."""
 
 
+AGENT_PROMPT = """\
+# Agent
+You are the agent "{name}", doing one task. Nobody can answer questions while you work.
+Your final message is your report, and it is the only thing returned, so put everything the reader needs in it.
+
+{body}"""
+
+
+AGENT_PLAN_PROMPT = """\
+# Plan mode
+The session is in plan mode: only read-only tools work; edits and shell are denied. Report what you find."""
+
+
 def project_context(ctx: RunContext[Deps]) -> str:
-    """Dynamic instructions: AGENTS.md contents and the skill index, read from deps on every request."""
-    parts = []
-    if ctx.deps.mode == "plan":
-        parts.append(PLAN_PROMPT)
-    if ctx.deps.project_instructions:
-        parts.append(ctx.deps.project_instructions)
-    if ctx.deps.skills:
+    """Dynamic instructions: AGENTS.md contents and the skill and agent indexes, read from deps on every request."""
+    deps, parts = ctx.deps, []
+    if deps.mode == "plan":
+        parts.append(AGENT_PLAN_PROMPT if deps.agent else PLAN_PROMPT)
+    if deps.project_instructions:
+        parts.append(deps.project_instructions)
+    for name in deps.agent.skills if deps.agent else ():
+        if skill := deps.skills.get(name):
+            parts.append(f"# Skill {name}\nSkill directory: {skill.path.parent}\n\n{skill.body}")
+    if deps.skills and deps.can_load_skills:
         parts.append("# Skills\nCall load_skill(name) to get a skill's full instructions when its "
-                     "description matches the task:\n" + format_skill_index(ctx.deps.skills))
+                     "description matches the task:\n" + format_skill_index(deps.skills))
+    if index := format_agent_index(deps.agents):
+        parts.append("# Agents\nCall run_agent(agent, task) to hand a self-contained task to an agent. It starts "
+                     "with no conversation history and returns one report:\n" + index)
     return "\n\n".join(parts)
 
 
@@ -59,12 +80,27 @@ async def midrun_history(ctx: RunContext[Deps], messages: list[ModelMessage]) ->
     return messages
 
 
-def build_agent(settings: Settings, model: Model) -> Agent[Deps, str]:
+def _tool_name(tool) -> str:
+    return tool.name if isinstance(tool, Tool) else tool.__name__
+
+
+ALL_TOOLS = [*FS_TOOLS, *SEARCH_TOOLS, shell, *TODO_TOOLS, *SKILL_TOOLS]  # what agents may have
+AGENT_TOOL_NAMES = {_tool_name(t) for t in ALL_TOOLS}
+
+
+def build_agent(settings: Settings, model: Model, spec: AgentSpec | None = None) -> Agent[Deps, str]:
+    """The main agent, or with `spec` an agent run: its own prompt, and only the tools it lists."""
+    system = SYSTEM_PROMPT.format(os=platform.system())
+    if spec is None:
+        instructions, tools = [system], [*ALL_TOOLS, *AGENT_TOOLS, *PLAN_TOOLS]
+    else:
+        instructions = [system, AGENT_PROMPT.format(name=spec.name, body=spec.body)]
+        tools = [t for t in ALL_TOOLS if spec.tools is None or _tool_name(t) in spec.tools]
     return Agent(
         model,
         deps_type=Deps,
-        instructions=[SYSTEM_PROMPT.format(os=platform.system()), project_context],
-        tools=[*FS_TOOLS, *SEARCH_TOOLS, shell, *TODO_TOOLS, *SKILL_TOOLS, *PLAN_TOOLS],
+        instructions=[*instructions, project_context],
+        tools=tools,
         retries=settings.tool_retries,
         capabilities=[ProcessHistory(midrun_history)],
     )

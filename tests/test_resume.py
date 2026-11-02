@@ -14,7 +14,7 @@ def make(tmp_path, inputs, model=None):
     st = settings(tmp_path, log_dir=tmp_path / "logs")
     fe = ScriptedFrontend(inputs)
     sink = JsonlSink(st.log_dir)
-    return build_session(st, fe, [sink], model=model or TestModel(custom_output_text="hi")), fe, sink
+    return build_session(st, fe, [sink], model=model or TestModel(custom_output_text="hi", call_tools=[])), fe, sink
 
 
 async def test_history_and_todos_saved_after_turn(tmp_path):

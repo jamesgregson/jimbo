@@ -30,7 +30,7 @@ async def _ollama(http: aiohttp.ClientSession, base: str, name: str) -> ModelFac
     try:
         async with http.post(f"{root}/api/show", json={"model": name}) as r:
             if r.status == 404:
-                return ModelFacts(f"Ollama doesn't have model {name!r}: run `ollama pull {name}`, or change `main`")
+                return ModelFacts(f"Ollama doesn't have model {name!r}: run `ollama pull {name}`, or choose another model")
             if r.status != 200:
                 return ModelFacts()
             info = await r.json()

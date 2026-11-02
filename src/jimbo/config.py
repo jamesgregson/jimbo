@@ -18,6 +18,7 @@ UNTRUSTED_KEYS = {"model", "api_key", "ollama_base_url", "openai_base_url", "ope
                   "workspace", "web_host", "approval", "approval_allow", "sandbox", "sandbox_writable",
                   "sandbox_network", "log_dir", "user_dir", "providers", "model_aliases", "models", "tasks",
                   "secret_files"}
+RENAMED_TASKS = {"shell_assess": "jimbo-shell-assess", "compaction": "jimbo-compaction"}
 
 
 def _read_toml(path: Path) -> dict:
@@ -140,6 +141,8 @@ class Settings(BaseSettings):
         user = _read_toml(user_path)
         if "model" in user:
             raise ValueError(f'{user_path}: `model` was replaced by main = "..." under [model_aliases]')
+        for old in sorted(RENAMED_TASKS.keys() & {*user.get("models", {}), *user.get("tasks", {})}):
+            raise ValueError(f"{user_path}: task `{old}` was renamed to `{RENAMED_TASKS[old]}`")
         _warn_loose_permissions(user_path, user)
         project = _read_toml(Path(init.get("workspace") or Path.cwd()) / ".jimbo" / "config.toml")
         if ignored := sorted(UNTRUSTED_KEYS & project.keys()):

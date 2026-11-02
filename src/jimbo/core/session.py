@@ -9,16 +9,19 @@ from pydantic_ai.messages import (
     FunctionToolResultEvent,
     ModelMessage,
     ModelRequest,
+    ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ToolReturnPart,
     UserContent,
     UserPromptPart,
     repair_messages,
 )
 from pydantic_ai.usage import RunUsage
 
+from .agents import AgentResult
 from .attachments import build_content, expand_mentions, image_meta
 from .commands import CommandRegistry
 from .compaction import compact as compact_history, render_transcript
@@ -33,8 +36,9 @@ class AgentSession:
     def __init__(self, agent: Agent[Deps, str], deps: Deps, sinks: list[EventSink],
                  *, request_limit: int = 50, session_id: str | None = None,
                  context_window: int | None = None, vision: bool = True,
-                 compact_threshold: float = 0.8, compact_keep: int = 6) -> None:
+                 compact_threshold: float = 0.8, compact_keep: int = 6, nested: bool = False) -> None:
         self.agent = agent
+        self.nested = nested  # an agent's run: its file changes belong to the turn that started it
         self.deps = deps
         self.sinks = sinks
         self.session_id = session_id or uuid.uuid4().hex[:12]
@@ -191,7 +195,7 @@ class AgentSession:
         from ..tools.todos import format_todos
         todos = format_todos(self.deps.todos) if self.deps.todos else ""
         router = self.deps.models
-        model = await router.aresolve("compaction") if router else self.agent.model
+        model = await router.aresolve("jimbo-compaction") if router else self.agent.model
         new = await compact_history(model, messages, keep=self.compact_keep, focus=focus,
                                     todos=todos, allow_empty=allow_empty)
         if new is not None:
@@ -247,10 +251,50 @@ class AgentSession:
                 self.deps.models.pop_scope()  # skill model choices last for one turn
             self.persist()
 
+    async def delegate(self, name: str, task: str, *, model: str | None = None) -> None:
+        """Run agent `name` directly on the user's behalf, without the main model. The exchange joins the
+        conversation, so the user can follow up on the report."""
+        self._task = asyncio.create_task(self._delegate(name, task, model))  # own task, as in send()
+        try:
+            await self._task
+        finally:
+            self._task = None
+            self.persist()
+
+    async def _delegate(self, name: str, task: str, model: str | None) -> None:
+        text = f"@{name} {task}"
+        await self.emit("user_message", text=text, attachments=[])
+        self.deps.checkpoints.begin()
+        base = self.total_usage
+        self.turn_usage = RunUsage()
+        try:
+            result = await self.deps.spawn_agent(self.deps.agents[name], task, self.turn_usage, model=model)
+        except asyncio.CancelledError:  # stopped before the agent itself could report it
+            result = AgentResult(False, "", cancelled=True)
+        self.total_usage = base + self.turn_usage
+        if result.text:
+            self.history = [*self.history, ModelRequest(parts=[UserPromptPart(text)]),
+                            ModelResponse(parts=[TextPart(result.text)])]
+        if result.ok:
+            await self.emit("assistant_text", text=result.text)
+        elif not result.cancelled:
+            await self.emit("error", type="AgentError", message=result.text)
+        u = self.turn_usage
+        await self.emit("usage", requests=u.requests, input_tokens=u.input_tokens, output_tokens=u.output_tokens)
+        await self.emit_context()
+        await self.emit("run_finished", ok=result.ok, **({"cancelled": True} if result.cancelled else {}))
+
+    async def refresh_agents(self) -> None:
+        """Pick up changes to agent files, so a new or edited agent works from the next input."""
+        if self.deps.reload_agents:
+            for warning in self.deps.reload_agents() or []:
+                await self.emit("command_output", command="agents", ok=True, text=warning)
+
     async def _run(self, content: str | list[UserContent]) -> str | None:
         _, prompt = await self._compose(content)
         run = None
-        self.deps.checkpoints.begin()
+        if not self.nested:
+            self.deps.checkpoints.begin()
         base = self.total_usage
         self.turn_usage = RunUsage()
         try:
@@ -278,7 +322,8 @@ class AgentSession:
                                                     tool=ev.part.tool_name, args=ev.part.args_as_dict())
                                 elif isinstance(ev, FunctionToolResultEvent):
                                     await self.emit("tool_result", id=ev.tool_call_id, tool=ev.part.tool_name,
-                                                    ok=ev.part.part_kind == "tool-return",
+                                                    ok=isinstance(ev.part, ToolReturnPart)
+                                                    and ev.part.outcome == "success",
                                                     content=str(ev.part.content))
                                     if ev.part.tool_name == "shell":
                                         self.last_output = str(ev.part.content)

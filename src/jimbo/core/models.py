@@ -1,7 +1,8 @@
-"""Which model runs which task. The main agent is one task among several (`shell_assess`, `compaction`, ...)."""
+"""Which model runs which task. The main agent is one task among several (`jimbo-shell-assess`, `jimbo-compaction`, ...)."""
 
 import asyncio
 from collections.abc import Callable
+from copy import copy
 from dataclasses import dataclass
 
 from pydantic_ai.models import Model
@@ -12,8 +13,8 @@ MAIN = "main"
 # Tasks jimbo itself defines, with a description for /models. Any other name works too.
 KNOWN_TASKS = {
     MAIN: "the agent you talk to",
-    "shell_assess": "summary and risk assessment of shell commands",
-    "compaction": "summarizing old history to free context",
+    "jimbo-shell-assess": "summary and risk assessment of shell commands",
+    "jimbo-compaction": "summarizing old history to free context",
 }
 
 
@@ -28,11 +29,12 @@ class Resolution:
 class ModelRouter:
     """Resolves a task name to a model. Precedence, highest first:
 
-    1. skill/agent scopes (alias names only: they may pick among the user's models, never define one)
+    1. skill scopes (alias names only: they may pick among the user's models, never define one)
     2. session overrides (`/models set`)
     3. `[models]` in the user's config
     4. the main model (the required `main` alias)
-    Built models are cached by spec, so tasks sharing a model share a client.
+    Built models are cached by spec, so tasks sharing a model share a client. Agents are resolved by
+    `for_agent`, which puts the user's choices above the agent's file.
     """
 
     def __init__(self, settings: Settings, builder: Callable[[str, Settings], Model],
@@ -90,6 +92,29 @@ class ModelRouter:
 
     async def aresolve(self, task: str) -> Model:
         return await asyncio.to_thread(self.resolve, task)
+
+    async def abuild(self, spec: str) -> Model:
+        return await asyncio.to_thread(self._build, spec)
+
+    def for_agent(self, name: str, requested: str | None = None) -> tuple[Resolution, str | None]:
+        """The model for agent `name`: session override, `[models]`, the alias its file asked for, then main.
+        `requested` comes from a file that may belong to a repo, so only aliases count. Also returns a warning
+        if `requested` couldn't be used."""
+        for choices, source in ((self._session, "session"), (self.settings.models, "config")):
+            if name in choices:
+                spec, via = self._expand(choices[name])
+                return Resolution(name, spec, source, via), None
+        if requested == MAIN or requested in self.settings.model_aliases:
+            spec, via = self._expand(requested)
+            return Resolution(name, spec, f"agent {name}", via), None
+        warning = f"agent {name}: unknown model alias {requested!r}; using main" if requested else None
+        return Resolution(name, self._main_spec, "main"), warning
+
+    def child(self) -> "ModelRouter":
+        """A router for an agent run: same models and choices, but skills it loads scope only to itself."""
+        router = copy(self)
+        router._scopes = []
+        return router
 
     # -- changing the choice ------------------------------------------------------------------
 

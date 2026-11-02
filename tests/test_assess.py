@@ -68,7 +68,7 @@ class Recording(ScriptedFrontend):
 def build(tmp_path, command, assessor, *, fe=None, **kw):
     fe = fe or Recording()
     kw.setdefault("model_aliases", {"main": "t:main", "fast": "t:assess"})
-    kw.setdefault("models", {"shell_assess": "fast"})
+    kw.setdefault("models", {"jimbo-shell-assess": "fast"})
     s = build_session(settings(tmp_path, **kw), fe, model=shell_agent(command),
                       model_builder=lambda spec, st: assessor.model())
     return s, fe
@@ -92,7 +92,7 @@ async def test_assessment_shown_when_asking(tmp_path):
 
 async def test_mode_off_even_with_model(tmp_path):
     a = Assessor()
-    s, fe = build(tmp_path, "ls", a, tasks={"shell_assess": {"mode": "off"}})
+    s, fe = build(tmp_path, "ls", a, tasks={"jimbo-shell-assess": {"mode": "off"}})
     await s.send("go")
     assert a.calls == 0 and fe.requests[0].assessment is None
 
@@ -102,7 +102,7 @@ async def test_on_by_default_using_main(tmp_path):
     fe = Recording()
     s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}), fe,
                       model=a.model(), model_builder=lambda spec, st: TestModel())
-    await s.deps.authorize("shell", {"command": "ls"}, "run: ls")
+    await s.deps.authorize(None, "shell", {"command": "ls"}, "run: ls")
     assert a.calls == 1 and fe.requests[0].assessment["risk"] == "medium"
     assert fe.requests[0].assessment["model"] == "t:main"
 
@@ -116,7 +116,7 @@ async def test_not_run_for_calls_a_rule_allows(tmp_path):
 
 async def test_always_mode_also_describes_allowed_calls(tmp_path):
     a = Assessor(summary="prints hi")
-    s, fe = build(tmp_path, "echo hi", a, approval_allow=["shell:echo *"], tasks={"shell_assess": {"mode": "always"}})
+    s, fe = build(tmp_path, "echo hi", a, approval_allow=["shell:echo *"], tasks={"jimbo-shell-assess": {"mode": "always"}})
     await s.send("go")
     assert a.calls == 1 and not fe.requests
     assert resolved(fe)[-1]["assessment"]["summary"] == "prints hi"
@@ -125,15 +125,15 @@ async def test_always_mode_also_describes_allowed_calls(tmp_path):
 async def test_not_run_for_non_shell_tools(tmp_path):
     a = Assessor()
     fe = Recording()
-    s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}, models={"shell_assess": "t:assess"}), fe,
+    s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}, models={"jimbo-shell-assess": "t:assess"}), fe,
                       model=TestModel(), model_builder=lambda spec, st: a.model())
-    await s.deps.authorize("write_file", {"path": "x"}, "write x")
+    await s.deps.authorize(None, "write_file", {"path": "x"}, "write x")
     assert a.calls == 0 and fe.requests[0].assessment is None
 
 
 async def test_failure_and_timeout_do_not_block_the_dialog(tmp_path):
     for a in (Assessor(garbage=True), Assessor(delay=2)):
-        s, fe = build(tmp_path, "ls", a, tasks={"shell_assess": {"timeout": 0.2}})
+        s, fe = build(tmp_path, "ls", a, tasks={"jimbo-shell-assess": {"timeout": 0.2}})
         assert await s.send("go") == "done"
         assert len(fe.requests) == 1 and fe.requests[0].assessment is None
 
@@ -196,7 +196,7 @@ async def test_compaction_uses_its_own_model(tmp_path):
         return FunctionModel(run)
 
     fe = ScriptedFrontend()
-    s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}, models={"compaction": "t:cheap"}), fe,
+    s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}, models={"jimbo-compaction": "t:cheap"}), fe,
                       model=TestModel(), model_builder=builder)
     for i in range(4):
         await s.send(f"message {i}")
@@ -207,11 +207,11 @@ async def test_compaction_uses_its_own_model(tmp_path):
 async def test_skill_models_apply_for_one_turn(tmp_path):
     skill = tmp_path / ".jimbo" / "skills" / "careful"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: careful\ndescription: be careful\nmodels:\n  shell_assess: strong\n---\nTake care.\n")
+    (skill / "SKILL.md").write_text("---\nname: careful\ndescription: be careful\nmodels:\n  jimbo-shell-assess: strong\n---\nTake care.\n")
     seen = []
 
     def then(result):
-        seen.append(s.deps.models.explain("shell_assess"))
+        seen.append(s.deps.models.explain("jimbo-shell-assess"))
         return "ok"
 
     s = build_session(settings(tmp_path, model_aliases={"main": "t:main", "strong": "t:big"}), ScriptedFrontend(),
@@ -219,19 +219,19 @@ async def test_skill_models_apply_for_one_turn(tmp_path):
                       model_builder=lambda spec, st: TestModel())
     assert (await s.send("go")) == "ok"
     assert (seen[0].spec, seen[0].source) == ("t:big", "skill careful")
-    assert s.deps.models.explain("shell_assess").source == "main"  # popped at the end of the turn
+    assert s.deps.models.explain("jimbo-shell-assess").source == "main"  # popped at the end of the turn
 
 
 async def test_skill_with_unknown_alias_still_loads(tmp_path):
     skill = tmp_path / ".jimbo" / "skills" / "careful"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: careful\nmodels:\n  shell_assess: t:raw-spec\n---\nTake care.\n")
+    (skill / "SKILL.md").write_text("---\nname: careful\nmodels:\n  jimbo-shell-assess: t:raw-spec\n---\nTake care.\n")
     s = build_session(settings(tmp_path, model_aliases={"main": "t:main"}), ScriptedFrontend(),
                       model=tool_agent("load_skill", {"name": "careful"}, lambda r: str(r.content)),
                       model_builder=lambda spec, st: TestModel())
     out = await s.send("go")
     assert "Take care." in out and "not applied" in out and "unknown model alias" in out
-    assert s.deps.models.explain("shell_assess").source == "main"
+    assert s.deps.models.explain("jimbo-shell-assess").source == "main"
 
 
 async def test_plain_frontend_prints_assessment(capsys, monkeypatch):

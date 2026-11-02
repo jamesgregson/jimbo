@@ -1,6 +1,12 @@
 """One-line rendering of the `context` event, shared by the text frontends."""
 
 
+def agent_prefix(d: dict) -> str:
+    """Who an event came from, if an agent: `reviewer (ollama:qwen3) › `."""
+    a = d.get("agent")
+    return f"{a['name']} ({a['model']}) › " if a else ""
+
+
 def _n(v: int) -> str:
     return f"{v / 1000:.1f}k" if v >= 1000 else str(v)
 

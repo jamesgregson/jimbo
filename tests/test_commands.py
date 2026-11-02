@@ -106,7 +106,7 @@ async def test_help_lists_every_command(tmp_path):
     s, fe = make(tmp_path)
     await s.commands.dispatch(s, "/help")
     text = last(fe)["text"]
-    for name in ("approve", "clear", "help", "model", "quit", "todos", "usage"):
+    for name in ("agents", "approve", "clear", "help", "model", "quit", "todos", "usage"):
         assert f"/{name} — " in text
 
 
@@ -157,7 +157,7 @@ async def test_approve(tmp_path):
     assert last(fe)["text"] == "approval: rules → readonly → remembered → ask"
     await s.commands.dispatch(s, "/approve yolo")
     assert last(fe)["text"] == "approval: rules → yolo"
-    await s.deps.authorize("write_file", {}, "w")  # would raise if the frontend were asked
+    await s.deps.authorize(None, "write_file", {}, "w")  # would raise if the frontend were asked
     await s.commands.dispatch(s, "/approve default")
     assert last(fe)["text"].endswith("→ ask")
     await s.commands.dispatch(s, "/approve maybe")
@@ -177,7 +177,7 @@ async def test_yolo_keeps_deny_rules(tmp_path):
     s, fe = make(tmp_path, approval_deny=["shell:sudo *"])
     await s.commands.dispatch(s, "/approve yolo")
     with pytest.raises(ToolDenied):
-        await s.deps.authorize("shell", {"command": "sudo ls"}, "run")
+        await s.deps.authorize(None, "shell", {"command": "sudo ls"}, "run")
 
 
 async def test_quit_raises():
@@ -241,7 +241,7 @@ async def test_workspace_commands_override_user_commands(tmp_path):
 
 async def test_missing_command_dirs_are_fine(tmp_path):
     s, _ = make(tmp_path)  # neither user/commands nor .jimbo/commands exists
-    assert {c["name"] for c in s.commands.describe()} == {"approve", "clear", "compact", "diff", "help", "model", "models", "output", "plan", "quit", "resume", "skills", "todos", "undo", "usage"}
+    assert {c["name"] for c in s.commands.describe()} == {"agents", "approve", "clear", "compact", "diff", "help", "model", "models", "output", "plan", "quit", "resume", "skills", "todos", "undo", "usage"}
 
 
 # ---- undoing work ----
@@ -283,7 +283,7 @@ async def test_undo_removes_a_new_file_and_goes_back_turn_by_turn(tmp_path):
 async def test_output_shows_the_full_shell_result(tmp_path):
     s, fe = make(tmp_path)
     await s.commands.dispatch(s, "/output")
-    assert last(fe)["text"] == "No shell output yet."
+    assert last(fe)["text"] == "No output yet."
     s.last_output = "exit code 0\nall of it"
     await s.commands.dispatch(s, "/output")
     assert last(fe)["text"] == "exit code 0\nall of it"

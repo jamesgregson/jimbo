@@ -5,13 +5,25 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 from pydantic_ai.usage import RunUsage
 
 from .config import Settings
+from .core.agents import RESERVED_PREFIX
 from .core.approval import ApprovalPolicy
-from .core.commands import CommandError, CommandRegistry, QuitSession
+from .core.commands import NAME_RE, CommandError, CommandRegistry, QuitSession
 from .core.session import AgentSession
 from .core.skills import Skill, apply_skill_models, format_skill_index
 from .providers.credentials import describe_key_source
 from .providers.registry import all_providers
 from .tools.todos import format_todos
+
+AGENT_TEMPLATE = """\
+---
+# Tells the main model when to use this agent. Leave it empty if only you should run it.
+description:
+# model: fast                     # one of your aliases, or main
+# tools: [read_file, glob, grep]  # default: all tools
+# skills: [skill-name]            # loaded when the agent starts
+---
+Describe the agent's role here, and what its report should contain.
+"""
 
 
 def register_builtins(registry: CommandRegistry, settings: Settings,
@@ -78,9 +90,9 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
 
     def describe_models(session: AgentSession) -> str:
         router = session.deps.models
-        rows = [f"  {r.task:<14}{r.spec}" + (f" [{r.via}]" if r.via else "") + f"  ({r.source})"
+        rows = [f"  {r.task:<20}{r.spec}" + (f" [{r.via}]" if r.via else "") + f"  ({r.source})"
                 for r in router.describe()]
-        rows.append(f"shell_assess mode: {settings.task('shell_assess').mode}")
+        rows.append(f"jimbo-shell-assess mode: {settings.task('jimbo-shell-assess').mode}")
         aliases = [f"  {k} = {v}" for k, v in settings.model_aliases.items()]
         provs = [f"  {n:<12}{c.base_url or 'default url'}  key: {describe_key_source(c)}"
                  for n, c in all_providers(settings).items()]
@@ -118,6 +130,26 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     async def skills(session: AgentSession, args: str) -> str:
         return format_skill_index(session.deps.skills) or "No skills found."
 
+    async def agents(session: AgentSession, args: str) -> str:
+        match args.split():
+            case []:
+                return "\n".join(f"{a.name}{' (built in)' if a.path is None else ''}"
+                                 f"{': ' + a.description if a.description else ''}"
+                                 for a in session.deps.agents.values())
+            case ["new", name] | ["new", name, "--user"] as words:
+                if not NAME_RE.fullmatch(name) or name == "main" or name.startswith(RESERVED_PREFIX):
+                    raise CommandError(f"{name!r} can't be an agent name")
+                base = settings.user_dir if len(words) == 3 else session.deps.workspace / ".jimbo"
+                path = base / "agents" / f"{name}.md"
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open("x", encoding="utf-8") as f:
+                        f.write(AGENT_TEMPLATE)
+                except FileExistsError:
+                    raise CommandError(f"{path} already exists") from None
+                return f"Created {path}. Edit it, then use @{name} <task>."
+        raise CommandError("usage: /agents [new <name> [--user]]")
+
     async def resume(session: AgentSession, args: str) -> str:
         if session.is_running:
             raise CommandError("a run is in progress; wait for it or cancel first")
@@ -150,7 +182,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
         return f"Restored {names}. Shell commands aren't undone."
 
     async def output(session: AgentSession, args: str) -> str:
-        return session.last_output or "No shell output yet."
+        return session.last_output or "No output yet."
 
     async def quit_(session: AgentSession, args: str) -> None:
         raise QuitSession
@@ -165,10 +197,11 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("plan", "toggle plan mode (read-only until you approve a plan): /plan [on|off]", plan)
     registry.add("todos", "show the agent's task list", todos)
     registry.add("skills", "list available skills", skills)
+    registry.add("agents", "list agents, or create one: /agents [new <name> [--user]]", agents)
     registry.add("resume", "list saved sessions, or load one: /resume [id]", resume)
     registry.add("diff", "show the file changes from the latest turn that made any", diff)
     registry.add("undo", "restore the files changed by the latest turn that changed any", undo)
-    registry.add("output", "show the latest shell command's full output", output)
+    registry.add("output", "show the latest shell output or agent report in full", output)
     registry.add("quit", "exit jimbo", quit_)
 
 

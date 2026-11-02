@@ -80,7 +80,7 @@ def list_files(root: Path, base: Path) -> list[str]:
 
 async def _authorize_path(ctx: RunContext[Deps], tool: str, args: dict, summary: str, path: str) -> Path:
     try:
-        await ctx.deps.authorize(tool, args, summary, read_only=True)
+        await ctx.deps.authorize(ctx.tool_call_id, tool, args, summary, read_only=True)
         p = resolve_in_workspace(ctx.deps.workspace, path)
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e

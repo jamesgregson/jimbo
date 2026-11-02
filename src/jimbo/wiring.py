@@ -1,6 +1,13 @@
-from .agent import build_agent
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+from pydantic_ai.usage import RunUsage
+
+from .agent import AGENT_TOOL_NAMES, build_agent
 from .commands import register_builtins, register_skill_commands
 from .config import Settings
+from .core.agents import AgentResult, AgentSpec, ForwardSink, load_agents
 from .core.assess import TASK as ASSESS_TASK, assess_shell
 from .core.approval import (ApprovalGate, ApprovalPolicy, AskUser, PatternRules, PlanMode, ReadOnlyAllow,
                             RememberedDecisions, Yolo)
@@ -12,6 +19,7 @@ from .core.models import ModelRouter
 from .core.store import SessionStore
 from .core.skills import load_project_instructions, load_skills
 from .core.session import AgentSession
+from .providers.preflight import ModelFacts, inspect_model
 from .providers.registry import build_model_from_spec
 from .tools.sandbox import build_sandbox
 
@@ -24,16 +32,21 @@ class FrontendSink:
         await self._f.render(event)
 
 
+def _agent_files(dirs: list[Path]) -> dict[Path, int]:
+    return {p: p.stat().st_mtime_ns for d in dirs if d.is_dir() for p in d.glob("*.md")}
+
+
 def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[EventSink] | None = None,
-                  *, model=None, model_builder=None) -> AgentSession:
-    """Compose settings + frontend into a ready AgentSession. `model` overrides the main model and
-    `model_builder(spec, settings)` the way other models are built (tests)."""
+                  *, model=None, model_builder=None, model_inspector=None) -> AgentSession:
+    """Compose settings + frontend into a ready AgentSession. `model` overrides the main model,
+    `model_builder(spec, settings)` the way other models are built, and `model_inspector(spec, settings)` the
+    check of a model an agent will use; there is no check with a fake model or builder (tests)."""
     holder: dict[str, AgentSession] = {}
     remembered = RememberedDecisions()
     router = ModelRouter(settings, model_builder or build_model_from_spec, main_model=model)
 
     async def ask(req):
-        await holder["s"].emit("approval_requested", id=req.id, tool=req.tool,
+        await holder["s"].emit("approval_requested", id=req.id, call_id=req.call_id, tool=req.tool,
                                summary=req.summary, detail=req.detail,
                                **({"assessment": req.assessment} if req.assessment else {}))
         return await frontend.request_approval(req)
@@ -67,7 +80,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         if v.action == "allow" and call.assessment is None and assess_mode == "always":
             await assess(call)  # also describe calls a policy allowed without asking
         unseen = v.action == "allow" and v.decided_by != "user" and call.tool in ("write_file", "edit_file")
-        await holder["s"].emit("approval_resolved", tool=call.tool, action=v.action,
+        await holder["s"].emit("approval_resolved", call_id=call.call_id, tool=call.tool, action=v.action,
                                decided_by=v.decided_by, reason=v.reason,
                                **({"assessment": call.assessment} if call.assessment else {}),
                                **({"detail": call.detail} if unseen else {}))  # no prompt showed this diff
@@ -85,6 +98,75 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                   workspace / ".jimbo" / "skills"]
     deps.project_instructions = load_project_instructions(settings.user_dir, workspace)
     deps.skills = load_skills(skill_dirs)
+    agent_dirs = [settings.user_dir / "agents", workspace / ".jimbo" / "agents"]
+    loaded: dict[str, list] = {}
+
+    def load_all_agents() -> list[str]:
+        loaded["files"] = _agent_files(agent_dirs)
+        deps.agents, problems = load_agents(agent_dirs, AGENT_TOOL_NAMES)
+        return problems + [f"agent {a.name}: unknown skill {s!r}" for a in deps.agents.values() for s in a.skills
+                           if s not in deps.skills]
+
+    def reload_agents() -> list[str] | None:
+        return load_all_agents() if _agent_files(agent_dirs) != loaded["files"] else None
+
+    for warning in load_all_agents():
+        print(f"jimbo: {warning}", file=sys.stderr)
+    deps.reload_agents = reload_agents
+    inspector = model_inspector or (None if model or model_builder else inspect_model)
+    facts: dict[str, ModelFacts] = {}
+
+    async def agent_model_facts(spec: str) -> ModelFacts:
+        """What the provider says about a model an agent is about to use. Inconclusive answers are fine."""
+        if spec in facts or inspector is None:
+            return facts.get(spec) or ModelFacts()
+        try:
+            found = await inspector(spec, settings)
+        except ValueError as e:
+            found = ModelFacts(str(e))
+        if not found.problem:  # a server that's down now may be up for the next run
+            facts[spec] = found
+            for note in found.notes:
+                await holder["s"].emit("command_output", command="agent", ok=True, text=note)
+        return found
+
+    async def spawn_agent(spec: AgentSpec, task: str, usage: RunUsage, *, model: str | None = None,
+                          reserve: int = 0) -> AgentResult:
+        parent = holder["s"]
+        limit = settings.request_limit - usage.requests - reserve
+        if limit < 1:
+            return AgentResult(False, f"agent {spec.name} didn't start: this turn has too few requests left")
+        choice, warning = router.for_agent(spec.name, model or spec.model)
+        if warning:
+            await parent.emit("command_output", command="agent", ok=True, text=warning)
+        try:
+            built = await router.abuild(choice.spec)
+            on_main = choice.spec == router.explain("main").spec
+            found = ModelFacts() if on_main else await agent_model_facts(choice.spec)
+        except ValueError as e:
+            found, built = ModelFacts(str(e)), None
+        if found.problem:
+            return AgentResult(False, f"agent {spec.name} didn't start: {found.problem}")
+        sink = ForwardSink(parent, spec.name, choice.spec)
+        child = AgentSession(build_agent(settings, built, spec),
+                             replace(parent.deps, agent=spec, agents={}, models=router.child(), todos=[]), [sink],
+                             request_limit=limit, session_id=f"{parent.session_id}.{spec.name}",
+                             context_window=(parent.context_window if on_main else found.context
+                                             or settings.context_window or settings.num_ctx),
+                             vision=settings.vision, compact_threshold=settings.compact_threshold,
+                             compact_keep=settings.compact_keep, nested=True)
+        try:
+            report = await child.send(task)
+        finally:
+            usage.incr(child.turn_usage)
+        if report is None:
+            why = "stopped" if sink.cancelled else sink.reason or "it failed"
+            text = f"agent {spec.name} didn't finish: {why}" + (f"\n\nIts last text:\n{sink.text}" if sink.text else "")
+            return AgentResult(False, text, cancelled=sink.cancelled)
+        parent.last_output = report
+        return AgentResult(True, report)
+
+    deps.spawn_agent = spawn_agent
     agent = build_agent(settings, router.resolve("main"))
     session = AgentSession(agent, deps, [FrontendSink(frontend), *(extra_sinks or [])],
                            request_limit=settings.request_limit,

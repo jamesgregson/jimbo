@@ -60,7 +60,7 @@ async def test_denied_non_readonly_fails_closed(tmp_path):
     fe = ScriptedFrontend(allow=False)
     s = build_session(settings(tmp_path), fe, model=TestModel())
     with pytest.raises(ToolDenied):
-        await s.deps.authorize("write_file", {}, "write x")
+        await s.deps.authorize(None, "write_file", {}, "write x")
 
 
 async def test_remember_for_session(tmp_path):
@@ -70,8 +70,8 @@ async def test_remember_for_session(tmp_path):
             return ApprovalDecision(allow=True, remember="session")
     fe = Always()
     s = build_session(settings(tmp_path), fe, model=TestModel())
-    await s.deps.authorize("write_file", {}, "w1")
-    await s.deps.authorize("write_file", {}, "w2")
+    await s.deps.authorize(None, "write_file", {}, "w1")
+    await s.deps.authorize(None, "write_file", {}, "w2")
     assert fe.asked == 1
 
 
@@ -82,7 +82,7 @@ async def test_write_and_edit_tools(tmp_path):
 
     fe = ScriptedFrontend()
     s = build_session(settings(tmp_path), fe, model=TestModel())
-    ctx = SimpleNamespace(deps=s.deps)
+    ctx = SimpleNamespace(tool_call_id=None, deps=s.deps)
     await write_file(ctx, "sub/r.txt", "a\nb\n")
     assert (tmp_path / "sub/r.txt").read_text() == "a\nb\n"
     await edit_file(ctx, "sub/r.txt", "b", "c")
@@ -94,7 +94,7 @@ async def test_write_and_edit_tools(tmp_path):
     fe.allow = False
     s2 = build_session(settings(tmp_path), fe, model=TestModel())
     with pytest.raises(ModelRetry):
-        await write_file(SimpleNamespace(deps=s2.deps), "n.txt", "x")
+        await write_file(SimpleNamespace(tool_call_id=None, deps=s2.deps), "n.txt", "x")
     assert not (tmp_path / "n.txt").exists()
 
 
@@ -221,8 +221,9 @@ async def test_shell_allowed_by_rule_without_asking(tmp_path):
     s = build_session(settings(tmp_path, approval_allow=["shell:echo *"]), fe,
                       model=FunctionModel(stream_function=stream))
     assert await s.send("go") == "got: exit code 0\nfrom-shell"
+    call_id = next(e.data["id"] for e in fe.events if e.kind == "tool_call")
     resolved = [e.data for e in fe.events if e.kind == "approval_resolved"]
-    assert resolved == [{"tool": "shell", "action": "allow", "decided_by": "rules",
+    assert resolved == [{"call_id": call_id, "tool": "shell", "action": "allow", "decided_by": "rules",
                          "reason": "allowed by rule 'shell:echo *'"}]
 
 

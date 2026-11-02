@@ -24,7 +24,7 @@ async def todo_write(ctx: RunContext[Deps], items: list[TodoItem]) -> str:
     and mark each item `done` as soon as it is finished. Skip it for trivial one-step requests.
     """
     try:
-        await ctx.deps.authorize("todo_write", {"count": len(items)}, f"update todos ({len(items)} items)",
+        await ctx.deps.authorize(ctx.tool_call_id, "todo_write", {"count": len(items)}, f"update todos ({len(items)} items)",
                                  read_only=True)
     except ToolDenied as e:
         raise ModelRetry(str(e)) from e

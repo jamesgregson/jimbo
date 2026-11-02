@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 
 class ToolCallInfo(BaseModel):
+    call_id: str | None = None  # the id on the tool_call event
     tool: str
     args: dict
     summary: str
@@ -28,6 +29,7 @@ class Verdict(BaseModel):
 
 class ApprovalRequest(BaseModel):
     id: str
+    call_id: str | None = None  # the id on the tool_call event
     tool: str
     summary: str
     detail: str | None = None
@@ -90,7 +92,7 @@ class PlanMode:
             return Verdict(action="ask", decided_by=self.name)
         if call.tool == "exit_plan":
             self._n += 1
-            d = await self._ask(ApprovalRequest(id=f"plan-{self._n}", tool=call.tool,
+            d = await self._ask(ApprovalRequest(id=f"plan-{self._n}", call_id=call.call_id, tool=call.tool,
                                                 summary="Approve this plan and start executing?",
                                                 detail=call.detail))
             return Verdict(action="allow" if d.allow else "deny",
@@ -217,8 +219,8 @@ class AskUser:
             self._n += 1
             if self._assess is not None and call.assessment is None:
                 await self._assess(call)
-            d = await self._ask(ApprovalRequest(id=str(self._n), tool=call.tool, summary=call.summary,
-                                                detail=call.detail, assessment=call.assessment,
+            d = await self._ask(ApprovalRequest(id=str(self._n), call_id=call.call_id, tool=call.tool,
+                                                summary=call.summary, detail=call.detail, assessment=call.assessment,
                                                 always=RememberedDecisions.scope(call)))
             if d.allow and d.remember == "session" and self._remembered is not None:
                 self._remembered.add(call)

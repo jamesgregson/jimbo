@@ -6,7 +6,7 @@ import threading
 
 from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
 from ..core.events import Event
-from ..core.stats import format_stats, output_preview
+from ..core.stats import agent_prefix, format_stats, output_preview
 
 
 class _Stdin:
@@ -73,13 +73,14 @@ class PlainFrontend:
                 print() if self._streamed else print(d["text"])
                 self._streamed = False
             case "tool_call":
-                print(f"\n[tool] {d['tool']}({d['args']})", file=sys.stderr)
+                print(f"\n[tool] {agent_prefix(d)}{d['tool']}({d['args']})", file=sys.stderr)
             case "tool_result" if not d["ok"]:
-                print(f"[tool error] {d['content']}", file=sys.stderr)
+                print(f"[tool error] {agent_prefix(d)}{d['content']}", file=sys.stderr)
             case "tool_result" if d.get("tool") == "shell":
-                print(d["content"].strip().splitlines()[0], *output_preview(d["content"]), sep="\n  ", file=sys.stderr)
+                print(agent_prefix(d) + d["content"].strip().splitlines()[0], *output_preview(d["content"]),
+                      sep="\n  ", file=sys.stderr)
             case "error":
-                print(f"\n[error] {d['type']}: {d['message']}", file=sys.stderr)
+                print(f"\n[error] {agent_prefix(d)}{d['type']}: {d['message']}", file=sys.stderr)
             case "approval_resolved":
                 print(f"[approval] {d['tool']}: {d['action']} by {d['decided_by']}", file=sys.stderr)
                 if d.get("detail"):
@@ -93,7 +94,7 @@ class PlainFrontend:
                 print("[todos]", *(f"{marks.get(t['status'], '[ ]')} {t['content']}" for t in d["items"]),
                       sep="\n  ", file=sys.stderr)
             case "compaction":
-                print(f"[compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens]", file=sys.stderr)
+                print(f"[{agent_prefix(d)}compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens]", file=sys.stderr)
             case "command_output":
                 print(d["text"], file=sys.stdout if d["ok"] else sys.stderr)
             case "run_finished" if d.get("cancelled"):

@@ -14,7 +14,7 @@ async def load_skill(ctx: RunContext[Deps], name: str) -> str:
     if skill is None:
         raise ModelRetry(f"unknown skill {name!r}; available: {', '.join(ctx.deps.skills) or 'none'}")
     try:
-        await ctx.deps.authorize("load_skill", {"name": name}, f"load skill {name}", read_only=True)
+        await ctx.deps.authorize(ctx.tool_call_id, "load_skill", {"name": name}, f"load skill {name}", read_only=True)
     except ToolDenied as e:
         raise ModelRetry(str(e)) from e
     note = apply_skill_models(ctx.deps, skill)

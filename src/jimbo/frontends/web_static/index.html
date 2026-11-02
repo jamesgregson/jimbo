@@ -68,6 +68,9 @@
   .card > summary::-webkit-details-marker { display: none; }
   .card .name { font-weight: 700; }
   .card .sum { color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .verdict { font-size: 11px; color: var(--dim); white-space: nowrap; }
+  .card.denied .verdict { color: var(--err); }
+  .card.pending { border-color: var(--warn); }
   .badge { font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid currentColor; }
   .card .sect { padding: 6px 10px; border-top: 1px solid var(--line); }
   .card pre { background: transparent; padding: 0; margin: 0; }
@@ -235,6 +238,7 @@ function diff(text) {
   return pre;
 }
 const clip = (s, n) => { s = String(s).replace(/\s+/g, " "); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+const agentPrefix = (d) => d.agent ? `${d.agent.name} (${d.agent.model}) › ` : "";
 const sect = (node) => { const d = el("div", "sect"); d.append(node); return d; };
 
 function onEvent(ev) {
@@ -255,20 +259,18 @@ function onEvent(ev) {
       seg = null; break;
     case "tool_call": {
       seg = null;
-      const det = el("details", "card"), sm = el("summary"), badge = el("span", "badge dim", "running");
-      sm.append(el("span", "name", d.tool), el("span", "sum", clip(JSON.stringify(d.args), 140)), badge);
+      const det = el("details", "card"), sm = el("summary"), badge = el("span", "badge dim", "running"), verdict = el("span", "verdict");
+      sm.append(el("span", "name", agentPrefix(d) + d.tool), el("span", "sum", clip(JSON.stringify(d.args), 140)), verdict, badge);
       det.append(sm, sect(el("pre", null, JSON.stringify(d.args, null, 2))));
-      det._badge = badge; cards.set(d.id, det); add(det); break;
+      det._badge = badge; det._verdict = verdict; cards.set(d.id, det); add(det); break;
     }
     case "tool_result": {
       const det = cards.get(d.id); if (!det) break;
-      det._badge.className = "badge " + (d.ok ? "ok" : "err"); det._badge.textContent = d.ok ? "ok" : "error";
+      const denied = det.classList.contains("denied");
+      det._badge.className = "badge " + (d.ok ? "ok" : "err"); det._badge.textContent = denied ? "denied" : d.ok ? "ok" : "error";
       det.append(sect(el("pre", d.ok ? null : "err", d.content))); if (!d.ok) det.open = true; break;
     }
-    case "approval_resolved":
-      if (d.decided_by !== "user") add(el("div", "note", `approval ${d.tool}: ${d.action} (${d.decided_by})` + (d.assessment ? ` · risk ${d.assessment.risk}: ${d.assessment.summary}` : "")));
-      if (d.detail) add(diff(d.detail));
-      break;
+    case "approval_resolved": showVerdict(d); break;
     case "usage": {
       add(el("div", "note", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`)); break;
     }
@@ -282,12 +284,12 @@ function onEvent(ev) {
       const ul = el("ul"); d.items.forEach((t) => ul.append(el("li", t.status, `${mark[t.status] || "☐"} ${t.content}`)));
       box.replaceChildren(el("h2", null, "Todos"), ul); box.hidden = !d.items.length; break;
     }
-    case "compaction": seg = null; add(el("div", "note", `compacted history: ${d.messages_before} → ${d.messages_after} messages, ~${d.tokens_before} → ~${d.tokens_after} tokens`)); break;
+    case "compaction": seg = null; add(el("div", "note", `${agentPrefix(d)}compacted history: ${d.messages_before} → ${d.messages_after} messages, ~${d.tokens_before} → ~${d.tokens_after} tokens`)); break;
     case "command_output": {
       const box = add(el("div", "msg cmd" + (d.ok ? "" : " err")));
       box.append(el("div", "head", "/" + d.command), d.text); break;
     }
-    case "error": seg = null; add(el("div", "errbox", `${d.type}: ${d.message}`)); break;
+    case "error": seg = null; add(el("div", "errbox", `${agentPrefix(d)}${d.type}: ${d.message}`)); break;
     case "run_finished":
       seg = null; setRunning(false); input.focus();
       if (d.cancelled) add(el("div", "note warn", "interrupted"));
@@ -295,8 +297,31 @@ function onEvent(ev) {
   }
 }
 
+// An approval decision belongs to its tool call, whose card may not be the last one when calls run together.
+function showVerdict(d) {
+  const by = d.decided_by === "user" ? "you" : d.decided_by, text = `${d.action === "allow" ? "allowed" : "denied"} by ${by}`;
+  const risk = d.assessment ? `risk ${d.assessment.risk}: ${d.assessment.summary}` : null;
+  const det = cards.get(d.call_id);
+  if (!det) {  // a log from before calls had ids
+    add(el("div", "note", `${d.tool}: ${text}` + (risk ? ` · ${risk}` : "")));
+    if (d.detail) add(diff(d.detail));
+    return;
+  }
+  det.classList.remove("pending");
+  det._verdict.textContent = text;
+  det._badge.className = "badge dim"; det._badge.textContent = "running";
+  if (d.action !== "allow") { det.classList.add("denied"); det.open = true; }
+  if (risk) det.append(sect(el("div", "note", risk)));
+  if (d.detail) { det.append(sect(diff(d.detail))); det.open = true; }  // no prompt showed this diff
+}
+
 function showApproval(req) {
   pendingId = req.id;
+  const card = cards.get(req.call_id);
+  if (card) {
+    card.classList.add("pending"); card.scrollIntoView({ block: "nearest" });
+    card._badge.className = "badge warn"; card._badge.textContent = "needs approval";
+  }
   const dlg = $("#dlg"); dlg.replaceChildren(el("h2", null, `Approve ${req.tool}`), el("div", "sum", req.summary));
   const a = req.assessment;
   if (a) {

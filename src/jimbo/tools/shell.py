@@ -52,7 +52,7 @@ async def shell(ctx: RunContext[Deps], command: str, timeout: int | None = None)
     t = max(1, min(timeout or d.shell_timeout, d.shell_timeout_max))
     where = d.sandbox.describe() if d.sandbox else "NOT sandboxed"
     try:
-        await d.authorize("shell", {"command": command}, f"run: {' '.join(command.split())[:120]}",
+        await d.authorize(ctx.tool_call_id, "shell", {"command": command}, f"run: {' '.join(command.split())[:120]}",
                           detail=f"$ {command}\n\n({where}; timeout {t}s)")
     except ToolDenied as e:
         raise ModelRetry(str(e)) from e

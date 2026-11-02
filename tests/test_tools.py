@@ -22,7 +22,7 @@ from jimbo.wiring import build_session
 
 
 def ctx(tmp_path, sandbox=None, **kw):
-    return SimpleNamespace(deps=Deps(workspace=tmp_path.resolve(), gate=ApprovalGate([Yolo()]),
+    return SimpleNamespace(tool_call_id=None, deps=Deps(workspace=tmp_path.resolve(), gate=ApprovalGate([Yolo()]),
                                      sandbox=sandbox, **kw))
 
 
@@ -98,7 +98,7 @@ async def test_shell_cancel_kills_process(tmp_path):
 
 
 async def test_shell_denied_becomes_retry(tmp_path):
-    c = SimpleNamespace(deps=Deps(workspace=tmp_path, gate=ApprovalGate([])))  # empty chain: fail closed
+    c = SimpleNamespace(tool_call_id=None, deps=Deps(workspace=tmp_path, gate=ApprovalGate([])))  # empty chain: fail closed
     with pytest.raises(ModelRetry):
         await shell(c, "echo hi")
 
@@ -209,13 +209,13 @@ async def test_secret_files_are_blocked_by_default_even_with_yolo(tmp_path):
     s = secret_session(tmp_path, yolo=True)
     for path in (".env", "./.env", "svc/.env"):
         with pytest.raises(ModelRetry):
-            await read_file(SimpleNamespace(deps=s.deps), path)
-    assert "example" in await read_file(SimpleNamespace(deps=s.deps), ".env.example")
+            await read_file(SimpleNamespace(tool_call_id=None, deps=s.deps), path)
+    assert "example" in await read_file(SimpleNamespace(tool_call_id=None, deps=s.deps), ".env.example")
 
 
 async def test_grep_skips_secret_files(tmp_path):
     s = secret_session(tmp_path)
-    out = await grep(SimpleNamespace(deps=s.deps), "TOKEN")
+    out = await grep(SimpleNamespace(tool_call_id=None, deps=s.deps), "TOKEN")
     assert "hunter2" not in out and "swordfish" not in out and "example" in out
 
 

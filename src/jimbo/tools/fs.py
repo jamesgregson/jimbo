@@ -12,7 +12,7 @@ MAX_LIST_ENTRIES = 500
 async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: int = 500) -> str:
     """Read a text file in the workspace (or in a skill's directory, by absolute path). Returns numbered lines starting at line `offset` (1-based)."""
     try:
-        await ctx.deps.authorize("read_file", {"path": path}, f"read {path}", read_only=True)
+        await ctx.deps.authorize(ctx.tool_call_id, "read_file", {"path": path}, f"read {path}", read_only=True)
         p = resolve_readable(ctx.deps.workspace, path, ctx.deps.read_roots())
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
@@ -36,7 +36,7 @@ async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: in
 async def list_dir(ctx: RunContext[Deps], path: str = ".") -> str:
     """List entries of a workspace directory. Directories end with '/'."""
     try:
-        await ctx.deps.authorize("list_dir", {"path": path}, f"list {path}", read_only=True)
+        await ctx.deps.authorize(ctx.tool_call_id, "list_dir", {"path": path}, f"list {path}", read_only=True)
         p = resolve_readable(ctx.deps.workspace, path, ctx.deps.read_roots())
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
@@ -60,7 +60,7 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
         p = resolve_in_workspace(ctx.deps.workspace, path)
         old = p.read_text("utf-8") if p.is_file() else ""
         verb = "overwrite" if p.is_file() else "create"
-        await ctx.deps.authorize("write_file", {"path": path}, f"{verb} {path}",
+        await ctx.deps.authorize(ctx.tool_call_id, "write_file", {"path": path}, f"{verb} {path}",
                                  detail=_diff(path, old, content))
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
@@ -87,7 +87,7 @@ async def edit_file(ctx: RunContext[Deps], path: str, old: str, new: str, replac
         if n > 1 and not replace_all:
             raise ModelRetry(f"`old` matches {n} times; add context to make it unique or set replace_all")
         updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
-        await ctx.deps.authorize("edit_file", {"path": path}, f"edit {path}",
+        await ctx.deps.authorize(ctx.tool_call_id, "edit_file", {"path": path}, f"edit {path}",
                                  detail=_diff(path, text, updated))
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
