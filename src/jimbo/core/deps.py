@@ -36,6 +36,7 @@ class Deps:
     secret_files: list[str] = field(default_factory=list)  # file-name globs the model must not read
     checkpoints: Checkpoints = field(default_factory=Checkpoints)
     request_limit: int | None = None  # set by the session: model requests allowed per turn
+    wrap_up_left: int | None = None  # set by the prompt when it tells the model to wrap up; the session logs it
     # Set by the session: compacts a message list mid-run when the context is nearly full.
     midrun_compact: "Callable[[list[Any]], Awaitable[list[Any]]] | None" = None
     # Set by the session: appends queued steering messages to the request about to be sent.

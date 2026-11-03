@@ -29,6 +29,7 @@ src/jimbo/
     compaction.py      history summarization (/compact and auto-compaction)
     attachments.py     @path mentions and pasted images
     jsonl.py           JsonlSink: session log
+    trace.py           the trace viewer page (trace_viewer.html) with a session's log embedded, for /trace
     models.py          ModelRouter: which model runs each task
     llm_tasks.py       run_task: background model calls (None on failure/timeout)
     assess.py          shell command summary and risk level for approval prompts
@@ -160,6 +161,8 @@ as usual.
 | `usage`, `context` | token counts; context-window fill |
 | `todos` | the agent's task list changed |
 | `compaction` | older history was replaced by a summary |
+| `instructions` | `text`: what the model is told besides the conversation; logged on the first request of a log and whenever it changes |
+| `wrap_up` | `left`: this request told the model to wrap up, with this many requests left in the turn |
 | `command_output`, `commands` | slash command results; the command list for completion |
 | `error`, `run_finished` | failure; end of turn (`ok`, `cancelled`) |
 | `status` | model, workspace, plan/auto/yolo mode and sandbox: sent at startup and when they change |
@@ -168,7 +171,9 @@ as usual.
 
 Events carry a sequence number, timestamp and session id, and must stay JSON-serializable. That is what
 lets the same stream drive a terminal renderer, a websocket to the browser, and the JSONL session log
-(`~/.jimbo/sessions/<id>.jsonl`, viewable with [tools/trace_viewer.html](tools/trace_viewer.html)).
+(`~/.jimbo/sessions/<id>.jsonl`). `/trace` opens a session's log in the trace viewer
+([core/trace_viewer.html](src/jimbo/core/trace_viewer.html)); the web UI serves the same page at `/trace`, linked
+from the session id in its header. The viewer also opens any log dropped onto it.
 
 ## Frontends
 
@@ -330,7 +335,7 @@ agents run one at a time. `AgentSession.delegate()` calls it directly for `@name
   plan mode apply unchanged. `Deps.agent` adds the agent's name to approval summaries.
 - **Checkpoints.** Nested sessions skip `checkpoints.begin()`, so an agent's edits belong to the turn that started
   it, and one `/undo` covers them. `delegate()` calls `begin()` itself because no parent turn is running.
-- **Events.** `ForwardSink` passes the child's `tool_call`, `tool_result`, `compaction` and `error` events to the
+- **Events.** `ForwardSink` passes the child's `tool_call`, `tool_result`, `compaction`, `wrap_up` and `error` events to the
   parent, tagged `agent={name, model}`, and drops the rest. Frontends only add a prefix.
 - **Models.** Each model an agent uses is checked once with `inspect_model`, and its context window applies to
   the child. An agent on the main model uses the main session's window.

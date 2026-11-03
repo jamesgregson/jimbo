@@ -31,6 +31,8 @@
   #stats .meter.hot i { background: var(--err); }
   #status { font-size: 12px; color: var(--dim); margin-left: auto; }
   #status.busy { color: var(--accent); }
+  #sid { font: 12px ui-monospace, Menlo, monospace; color: var(--dim); }
+  #sid:hover { color: var(--accent); }
   #status.busy::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 6px;
                          border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
                          vertical-align: -1px; animation: spin .8s linear infinite; }
@@ -151,7 +153,7 @@
 </style>
 </head>
 <body>
-<header><h1>Jimbo</h1><span id="status" class="off">connecting…</span><button id="settings-btn" class="sec" type="button" title="Models and providers">Settings</button></header>
+<header><h1>Jimbo</h1><span id="status" class="off">connecting…</span><a id="sid" target="_blank" title="Open this session's trace" hidden></a><button id="settings-btn" class="sec" type="button" title="Models and providers">Settings</button></header>
 <div id="stats"><select id="st-model" title="Model for this session (Settings saves it)" hidden></select><span id="st-status"></span><span id="st-ctx">context —</span><span class="meter" id="st-meter"><i></i></span><span id="st-turn"></span><span id="st-session"></span></div>
 <aside id="todos" hidden></aside>
 <div id="log"></div>
@@ -303,6 +305,11 @@ const sect = (node) => { const d = el("div", "sect"); d.append(node); return d; 
 
 function onEvent(ev) {
   const d = ev.data;
+  const sid = $("#sid");
+  if (ev.session_id && sid.textContent !== ev.session_id) {  // changes on /clear and /resume
+    sid.textContent = ev.session_id; sid.hidden = false;
+    sid.href = "/trace" + location.search;  // carries the token
+  }
   switch (ev.kind) {
     case "user_message": {
       seg = null; const m = add(el("div", "msg user" + (d.steer ? " steer" : ""), d.text));
@@ -358,6 +365,7 @@ function onEvent(ev) {
       box.replaceChildren(el("h2", null, "Todos"), ul); box.hidden = !d.items.length; break;
     }
     case "compaction": seg = null; add(el("div", "note", `${agentPrefix(d)}compacted history: ${d.messages_before} → ${d.messages_after} messages, ~${d.tokens_before} → ~${d.tokens_after} tokens`)); break;
+    case "wrap_up": seg = null; add(el("div", "note", `${agentPrefix(d)}wrap-up requested: ${d.left} request(s) left in this turn`)); break;
     case "command_output": {
       if (d.command === "config" || d.command === "providers" || d.command === "model" || d.command === "models") {
         const m = $("#settings-msg"); m.textContent = d.text; m.className = "msg " + (d.ok ? "ok" : "err");

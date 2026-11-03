@@ -31,7 +31,7 @@ class SessionStore:
     def _state(self, sid: str) -> Path:
         return self.directory / f"{sid}.messages.json"
 
-    def _log(self, sid: str) -> Path:
+    def log_path(self, sid: str) -> Path:
         return self.directory / f"{sid}.jsonl"
 
     def _meta(self, sid: str) -> Path:
@@ -88,7 +88,7 @@ class SessionStore:
         """The logged events of a session; unreadable lines (e.g. a torn last write) are skipped."""
         events: list[Event] = []
         try:
-            lines = self._log(sid).read_text("utf-8").splitlines()
+            lines = self.log_path(sid).read_text("utf-8").splitlines()
         except OSError:
             return events
         for line in lines:

@@ -355,6 +355,7 @@ doesn't allow nesting.
 | `/agents [new <name> [--user]]` | list agents, or create one |
 | `/bundled` | list the agents, skills and commands shipped with jimbo, with their paths |
 | `/resume [id]` | list this project's saved sessions, or load one by id |
+| `/trace [id]` | open this session's trace (or another's) in the browser: every event, and what the model was told |
 | `/diff` | show the file changes from the latest turn that made any |
 | `/undo` | restore the files that turn changed; repeat to go further back |
 | `/output` | show the latest shell output or agent report in full |

@@ -676,3 +676,12 @@ async def test_model_is_told_to_wrap_up_near_the_request_limit(tmp_path):
     assert ["# Wrap up now" in i for i in seen] == [False, False, True, True, True]
     assert "1 model request(s) left" in seen[-1] and "no tool calls" in seen[-1]
     assert "no tool calls" not in seen[-2]
+    assert kinds(fe, "wrap_up") == [{"left": 3}, {"left": 2}, {"left": 1}]  # the trace shows what the model was told
+
+
+async def test_agent_wrap_up_reaches_the_parent(tmp_path):
+    write_agent(tmp_path, "worker", "---\nmodel: fast\n---\nWork.")
+    s, fe = make(tmp_path, models={"t:fast": scripted(call("glob", pattern="*"), "report")}, request_limit=2)
+    await s.commands.dispatch(s, "@worker go")
+    assert kinds(fe, "wrap_up") == [{"left": 2, "agent": {"name": "worker", "model": "t:fast"}},
+                                    {"left": 1, "agent": {"name": "worker", "model": "t:fast"}}]

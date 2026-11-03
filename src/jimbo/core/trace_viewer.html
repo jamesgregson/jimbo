@@ -60,6 +60,23 @@
   .chip { font-size: 12px; color: var(--dim); }
   .errbox { border: 1px solid var(--err); color: var(--err); border-radius: 8px; padding: 8px 12px; }
   .usage { font-size: 12px; color: var(--dim); border-top: 1px dashed var(--line); padding-top: 4px; }
+  .think { border-left: 3px solid var(--line); padding: 2px 10px; color: var(--dim); font-size: 13px;
+           white-space: pre-wrap; word-break: break-word; }
+  .think > summary { cursor: pointer; font-size: 12px; list-style: none; }
+  .think > summary::-webkit-details-marker { display: none; }
+  .agent { font: 11px ui-monospace, Menlo, monospace; padding: 0 6px; border-radius: 8px;
+           background: var(--user); color: var(--accent); white-space: nowrap; }
+  .attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .attach span { font: 11px ui-monospace, Menlo, monospace; padding: 0 6px; border-radius: 8px;
+                 border: 1px solid var(--line); color: var(--dim); }
+  .todos { list-style: none; margin: 0; padding: 6px 10px; font-size: 13px; }
+  .todos li::before { display: inline-block; width: 1.4em; color: var(--dim); }
+  .todos .pending::before { content: "○"; }
+  .todos .in_progress::before { content: "◐"; color: var(--warn); }
+  .todos .done { color: var(--dim); text-decoration: line-through; }
+  .todos .done::before { content: "●"; color: var(--ok); }
+  .risk-low { color: var(--ok); } .risk-medium { color: var(--warn); }
+  .risk-high, .risk-critical { color: var(--err); }
   .hide { display: none !important; }
   mark { background: #ffe066; color: #000; }
 </style>
@@ -77,6 +94,7 @@
   <div id="drop">Drop a session log from <code>~/.jimbo/sessions/</code> here</div>
   <div id="out"></div>
 </main>
+<script id="trace-data" type="application/x-ndjson"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -105,6 +123,26 @@ function section(title, node) {
   return s;
 }
 
+// Events forwarded from a subagent carry `agent: {name, model}`.
+const agentTag = (d) => d.agent ? el("span", "agent", d.agent.name) : null;
+const fmtBytes = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const fmtTok = (n) => n < 1000 ? String(n) : n < 1e6 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1e6).toFixed(2)}M`;
+
+// Line diff of two texts, as unified-style "+"/"-"/" " lines (LCS; instructions are a few hundred lines at most).
+function lineDiff(a, b) {
+  a = a.split("\n"); b = b.split("\n");
+  const n = a.length, m = b.length, L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = []; let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) { out.push(" " + a[i]); i++; j++; }
+    else if (j < m && (i >= n || L[i][j + 1] >= L[i + 1][j])) out.push("+" + b[j++]);
+    else out.push("-" + a[i++]);
+  }
+  return out;
+}
+
 function parse(text) {
   const events = [], bad = [];
   text.split(/\r?\n/).forEach((line, i) => {
@@ -129,6 +167,10 @@ function render(events, bad, name) {
   const tokIn = usage.reduce((n, e) => n + (e.data.input_tokens || 0), 0);
   const tokOut = usage.reduce((n, e) => n + (e.data.output_tokens || 0), 0);
   const nErr = count("error") + events.filter((e) => e.kind === "tool_result" && !e.data.ok).length;
+  const status = events.find((e) => e.kind === "status");
+  const agents = [...new Set(events.filter((e) => e.data.agent).map((e) => e.data.agent.name))];
+  const ctx = events.filter((e) => e.kind === "context" && e.data.window);
+  const peak = ctx.reduce((m, e) => Math.max(m, e.data.tokens / e.data.window), 0);
 
   const bar = $("#bar");
   bar.replaceChildren();
@@ -140,14 +182,19 @@ function render(events, bad, name) {
     stat("session", events[0].session_id), stat("file", name),
     stat("started", new Date(events[0].ts).toLocaleString()), stat("duration", fmtT(rel(last)).slice(1)),
     stat("turns", count("user_message")), stat("tool calls", count("tool_call")),
-    stat("errors", nErr, nErr ? "err" : ""), stat("tokens", `${tokIn} in / ${tokOut} out`),
+    stat("errors", nErr, nErr ? "err" : ""), stat("tokens", `${fmtTok(tokIn)} in / ${fmtTok(tokOut)} out`),
   );
+  if (status) bar.append(stat("model", status.data.model), stat("workspace", status.data.workspace));
+  if (ctx.length) bar.append(stat("peak context", `${Math.round(peak * 100)}%`, peak > 0.8 ? "warn" : ""));
+  if (count("compaction")) bar.append(stat("compactions", count("compaction")));
+  if (agents.length) bar.append(stat("subagents", agents.join(", ")));
   if (bad.length) bar.append(stat("unparseable lines", bad.slice(0, 5).join(",") + (bad.length > 5 ? "…" : ""), "warn"));
 
   const q = el("input"); q.type = "search"; q.placeholder = "search…";
   bar.append(q);
   const toggles = {};
-  for (const [key, label] of [["tool", "tools"], ["approval", "approvals"], ["usage", "usage"]]) {
+  for (const [key, label] of [["tool", "tools"], ["approval", "approvals"], ["thinking", "thinking"], ["instructions", "instructions"],
+                              ["todos", "todos"], ["command", "commands"], ["usage", "usage"]]) {
     const l = el("label"); const c = el("input"); c.type = "checkbox"; c.checked = true;
     l.append(c, label); bar.append(l); toggles[key] = c;
     c.onchange = () => applyHide();
@@ -158,9 +205,10 @@ function render(events, bad, name) {
   bar.append(expand);
 
   // Build turns.
-  let turn = null, seg = null, segStreamed = false;
+  let turn = null, seg = null, segStreamed = false, think = null, lastStatus = status && status.data;
   const cards = new Map();
-  const newTurn = () => { turn = el("section", "turn"); out.append(turn); seg = null; segStreamed = false; };
+  const lastInstructions = new Map();  // by agent name; "" is the main session
+  const newTurn = () => { turn = el("section", "turn"); out.append(turn); seg = null; segStreamed = false; think = null; };
   const row = (cls, ev, node, kind) => {
     const r = el("div", "row " + cls);
     if (kind) r.dataset.kind = kind;
@@ -173,11 +221,31 @@ function render(events, bad, name) {
   for (const ev of events) {
     const d = ev.data;
     switch (ev.kind) {
-      case "user_message":
-        newTurn();
-        row("user", ev, el("div", null, d.text));
+      case "user_message": {
+        if (!d.steer) newTurn();
+        const m = el("div", null, d.text);
+        if (d.steer) m.prepend(el("span", "chip", "steer · "));
+        if (d.attachments && d.attachments.length) {
+          const a = el("div", "attach");
+          for (const x of d.attachments)
+            a.append(el("span", null, x.kind === "image" ? `image ${x.media_type} ${fmtBytes(x.bytes)}`
+                                                         : `@${x.path}${x.truncated ? " (truncated)" : ""}`));
+          m.append(a);
+        }
+        row("user", ev, m);
+        break;
+      }
+      case "assistant_thinking_delta":
+        if (!think) {
+          think = el("details", "think"); think.dataset.text = "";
+          think.append(el("summary", null, "thinking"), el("div"));
+          row("", ev, think, "thinking");
+        }
+        think.dataset.text += d.text; think.lastChild.textContent = think.dataset.text;
+        seg = null;
         break;
       case "assistant_text_delta":
+        think = null;
         if (!seg) { seg = el("div"); seg.dataset.text = ""; row("assistant", ev, seg); }
         seg.dataset.text += d.text; seg.textContent = seg.dataset.text; segStreamed = true;
         break;
@@ -186,13 +254,16 @@ function render(events, bad, name) {
         seg = null; segStreamed = false;
         break;
       case "tool_call": {
-        seg = null; segStreamed = false;
+        seg = null; segStreamed = false; think = null;
         const det = el("details", "card");
         const sm = el("summary");
-        const status = el("span", "badge dim", "running");
-        sm.append(el("span", "name", d.tool), el("span", "sum", clip(JSON.stringify(d.args), 140)), status);
+        const badge = el("span", "badge dim", "running");
+        const tag = agentTag(d);
+        if (tag) sm.append(tag);
+        sm.append(el("span", "name", d.tool), el("span", "sum", clip(JSON.stringify(d.args), 140)), badge);
         det.append(sm, section("arguments", el("pre", null, JSON.stringify(d.args, null, 2))));
-        det._status = status;
+        if (d.agent) det.append(section("agent", el("pre", null, `${d.agent.name} (${d.agent.model})`)));
+        det._status = badge;
         cards.set(d.id, det);
         row("tool", ev, det, "tool");
         break;
@@ -211,11 +282,95 @@ function render(events, bad, name) {
         const sm = el("summary");
         sm.append(el("span", "warn name", "approval requested"), el("span", "sum", `${d.tool}: ${d.summary}`));
         det.append(sm);
+        const as = d.assessment;
+        if (as) {
+          sm.append(el("span", "badge risk-" + as.risk, as.risk + (as.raised ? " ↑" : "")));
+          const n = el("div");
+          n.append(el("div", null, as.summary));
+          for (const r of as.reasons || []) n.append(el("div", "dim", "• " + r));
+          const by = as.model ? `by ${as.model}` : "checks only";
+          n.append(el("div", "dim", as.error ? `${by} · ${as.error}` : by));
+          det.append(section("assessment", n));
+        }
         if (d.detail) det.append(section("detail", diffBlock(d.detail)));
-        det.open = !!d.detail;
+        det.open = !!(d.detail || as);
         row("tool", ev, det, "approval");
         break;
       }
+      case "todos": {
+        const det = el("details", "card");
+        const done = d.items.filter((t) => t.status === "done").length;
+        const sm = el("summary");
+        sm.append(el("span", "name", "todos"), el("span", "sum", `${done}/${d.items.length} done`));
+        const ul = el("ul", "todos");
+        for (const t of d.items) ul.append(el("li", t.status, t.content));
+        det.append(sm, ul);
+        det.open = true;
+        row("", ev, det, "todos");
+        break;
+      }
+      case "compaction": {
+        const c = el("div", "chip warn");
+        const tag = agentTag(d);
+        if (tag) c.append(tag, " ");
+        c.append(`compacted: ${d.messages_before} → ${d.messages_after} messages, `
+                 + `${fmtTok(d.tokens_before)} → ${fmtTok(d.tokens_after)} tokens`);
+        row("", ev, c);
+        break;
+      }
+      case "instructions": {
+        const key = d.agent ? d.agent.name : "", prev = lastInstructions.get(key);
+        lastInstructions.set(key, d.text);
+        const det = el("details", "card");
+        const sm = el("summary");
+        const tag = agentTag(d);
+        if (tag) sm.append(tag);
+        sm.append(el("span", "name", "instructions"));
+        det.append(sm);
+        if (prev == null) {
+          sm.append(el("span", "sum", `${d.text.split("\n").length} lines`));
+        } else {
+          const diff = lineDiff(prev, d.text), add = diff.filter((l) => l[0] === "+").length,
+                del = diff.filter((l) => l[0] === "-").length;
+          sm.append(el("span", "sum", `changed: +${add} −${del} lines`));
+          // changed lines with two lines of context; the rest is folded
+          const keep = diff.map((l, i) => diff.slice(Math.max(0, i - 2), i + 3).some((x) => x[0] !== " "));
+          const shown = []; let gap = false;
+          diff.forEach((l, i) => { if (keep[i]) { shown.push(l); gap = false; } else if (!gap) { shown.push(" …"); gap = true; } });
+          det.append(section("changes", diffBlock(shown.join("\n"))));
+        }
+        det.append(section("full text", el("pre", null, d.text)));
+        row("", ev, det, "instructions");
+        break;
+      }
+      case "wrap_up": {
+        const c = el("div", "chip warn");
+        const tag = agentTag(d);
+        if (tag) c.append(tag, " ");
+        c.append(`wrap-up requested: ${d.left} request(s) left in this turn`);
+        row("", ev, c);
+        break;
+      }
+      case "command_output": {
+        const det = el("details", "card");
+        const sm = el("summary");
+        sm.append(el("span", "name", "/" + d.command), el("span", "sum", clip(d.text || "", 140)),
+                  el("span", "badge " + (d.ok ? "ok" : "err"), d.ok ? "ok" : "error"));
+        det.append(sm, section("output", el("pre", d.ok ? null : "err", d.text || "")));
+        row("tool", ev, det, "command");
+        break;
+      }
+      case "status": {
+        const p = lastStatus || {};
+        lastStatus = d;
+        const changed = ["model", "mode", "auto", "yolo", "sandboxed", "workspace"]
+          .filter((k) => p[k] !== d[k]).map((k) => `${k}: ${d[k]}`);
+        if (changed.length && ev !== status) row("", ev, el("div", "chip", "status → " + changed.join(" · ")), "command");
+        break;
+      }
+      case "busy":
+        if (d.on) row("", ev, el("div", "chip", d.label + "…"), "command");
+        break;
       case "approval_resolved": {
         const ok = d.action === "allow";
         const c = el("div", "chip");
@@ -226,12 +381,18 @@ function render(events, bad, name) {
       case "usage":
         row("", ev, el("div", "usage", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`), "usage");
         break;
-      case "error":
-        row("", ev, el("div", "errbox", `${d.type}: ${d.message}`));
+      case "error": {
+        const b = el("div", "errbox");
+        const tag = agentTag(d);
+        if (tag) b.append(tag, " ");
+        b.append(`${d.type}: ${d.message}`);
+        row("", ev, b);
         break;
+      }
       case "run_finished":
-        if (!d.ok) row("", ev, el("div", "chip err", "run failed"));
-        seg = null; segStreamed = false;
+        if (d.cancelled) row("", ev, el("div", "chip warn", "run cancelled"));
+        else if (!d.ok) row("", ev, el("div", "chip err", "run failed"));
+        seg = null; segStreamed = false; think = null;
         break;
     }
   }
@@ -265,6 +426,13 @@ addEventListener("drop", (e) => {
   const f = e.dataTransfer.files[0];
   if (f) load(f);
 });
+
+// `/trace` and the web UI embed the session's log in the page (see core/trace.py).
+const embedded = $("#trace-data");
+if (embedded.textContent.trim()) {
+  const { events, bad } = parse(embedded.textContent);
+  render(events, bad, embedded.dataset.name);
+}
 </script>
 </body>
 </html>

@@ -90,6 +90,7 @@ def project_context(ctx: RunContext[Deps]) -> str:
                      "with no conversation history and returns one report:\n" + index)
     if notice := wrap_up_notice(deps, ctx.usage.requests):  # last, so the parts above stay cacheable
         parts.append(notice)
+        deps.wrap_up_left = deps.request_limit - ctx.usage.requests
     return "\n\n".join(parts)
 
 

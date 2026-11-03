@@ -83,6 +83,8 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
         bind(session.cancel)
     if bind := getattr(frontend, "bind_approval_mode", None):  # ... and their own approval mode control
         bind(lambda mode: set_approval_mode(session, mode))
+    if bind := getattr(frontend, "bind_trace", None):  # a link to the session's trace
+        bind(lambda: session.store.log_path(session.session_id) if session.store else None)
     if ask := getattr(frontend, "ask_secret", None):
         session.ask_secret = ask
     if session.config is not None:

@@ -108,3 +108,33 @@ async def test_resuming_another_projects_session_says_so(tmp_path):
     s2, _, _ = make(tmp_path, [])
     s2.store.workspace = tmp_path / "elsewhere"
     assert "It started in" in await s2.resume(s1.session_id)
+
+
+async def test_instructions_are_logged_when_they_change_and_in_each_new_log(tmp_path):
+    s, fe, _ = make(tmp_path, ["one", "two", "/clear", "three"])
+    await run_frontend(s, fe)
+    texts = [e.data["text"] for e in fe.events if e.kind == "instructions"]
+    assert len(texts) == 2 and texts[0] == texts[1] and texts[0]  # unchanged on "two"; logged again after /clear
+
+
+async def test_trace_opens_the_session_log_in_the_viewer(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    s, fe, sink = make(tmp_path, ["hello </script> <!-- there"])
+    await run_frontend(s, fe)
+    await s.commands.dispatch(s, "/trace")
+    out = fe.events[-1].data["text"]
+    page = (tmp_path / "jimbo-traces" / f"{s.session_id}.html").read_text()
+    assert opened == [(tmp_path / "jimbo-traces" / f"{s.session_id}.html").as_uri()]
+    assert s.session_id in out and f'data-name="{s.session_id}.jsonl"' in page
+    data = page.split('type="application/x-ndjson"', 1)[1].split("</script>", 1)[0]
+    assert "<" not in data.split(">", 1)[1] and "hello \\u003c/script> \\u003c!-- there" in data
+
+
+async def test_trace_without_logging(tmp_path):
+    st = settings(tmp_path, log_sessions=False)
+    fe = ScriptedFrontend([])
+    s = build_session(st, fe, model=TestModel())
+    await s.commands.dispatch(s, "/trace")
+    assert not fe.events[-1].data["ok"] and "log_sessions = false" in fe.events[-1].data["text"]

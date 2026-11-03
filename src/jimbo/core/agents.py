@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from .session import AgentSession
 
 RESERVED_PREFIX = "jimbo-"
-FORWARDED = {"tool_call", "tool_result", "compaction", "error"}
+FORWARDED = {"tool_call", "tool_result", "compaction", "wrap_up", "instructions", "error"}
 
 
 @dataclass

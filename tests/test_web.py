@@ -179,3 +179,15 @@ async def test_cancelled_secret_is_none(client):
     msg = await ws.receive_json()
     await ws.send_json({"type": "secret_answer", "id": msg["id"], "value": None})
     assert await asyncio.wait_for(asked, 1) is None
+
+
+async def test_trace_page_needs_the_token_and_embeds_the_log(client, tmp_path):
+    log = tmp_path / "abc.jsonl"
+    log.write_text('{"seq":1,"kind":"user_message","data":{"text":"hi"}}\n')
+    assert (await client.get(f"/trace?token={client.fe.token}")).status == 404  # not bound: no logging
+    client.fe.bind_trace(lambda: log)
+    assert (await client.get("/trace?token=nope")).status == 403
+    r = await client.get(f"/trace?token={client.fe.token}")
+    assert r.status == 200 and 'data-name="abc.jsonl">{"seq":1' in await r.text()
+    client.fe.bind_trace(lambda: tmp_path / "missing.jsonl")
+    assert (await client.get(f"/trace?token={client.fe.token}")).status == 404

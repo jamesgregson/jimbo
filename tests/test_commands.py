@@ -116,7 +116,7 @@ async def test_clear(tmp_path):
     assert s.history and s.context_tokens > 0
     await s.commands.dispatch(s, "/clear")
     assert s.history == [] and s.context_tokens == 0
-    assert last(fe)["text"] == "Conversation cleared."
+    assert last(fe)["text"] == f"Conversation cleared. New session {s.session_id}."
 
 
 async def test_model_show_switch_and_reject(tmp_path, monkeypatch):
@@ -241,7 +241,7 @@ async def test_workspace_commands_override_user_commands(tmp_path):
 
 async def test_missing_command_dirs_are_fine(tmp_path):
     s, _ = make(tmp_path)  # neither user/commands nor .jimbo/commands exists
-    assert {c["name"] for c in s.commands.describe()} == {"agents", "approve", "bundled", "clear", "compact", "diff", "help", "model", "models", "output", "plan", "providers", "quit", "resume", "skills", "todos", "undo", "usage"}
+    assert {c["name"] for c in s.commands.describe()} == {"agents", "approve", "bundled", "clear", "compact", "diff", "help", "model", "models", "output", "plan", "providers", "quit", "resume", "skills", "todos", "trace", "undo", "usage"}
 
 
 # ---- undoing work ----

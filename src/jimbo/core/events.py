@@ -24,6 +24,8 @@ EventKind = Literal[
     "commands",
     "command_output",
     "compaction",
+    "wrap_up",
+    "instructions",
     "status",
     "busy",
     "config",

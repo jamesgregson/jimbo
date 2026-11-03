@@ -241,6 +241,7 @@ class TuiFrontend:
         self._usage: dict | None = None
         self._stats = ""  # latest context/usage line, shown in the prompt toolbar and the working spinner
         self._status: dict | None = None  # model and modes, shown in the prompt toolbar
+        self._session_id = ""  # shown in the prompt toolbar; changes on /clear and /resume
         self._busy: str | None = None  # a slow command outside a run, e.g. "compacting"
         self._interrupted = False
 
@@ -271,7 +272,7 @@ class TuiFrontend:
         if not d:
             return ""
         flags = "".join(f" [{f}]" for f, on in (("PLAN", d["mode"] == "plan"), ("YOLO", d["yolo"]), ("AUTO", d.get("auto"))) if on)
-        return f"{d['model']}{flags} · "
+        return f"{d['model']}{flags} · {self._session_id} · "
 
     def _toolbar(self) -> str | None:
         stats = self._state() + self._stats
@@ -394,11 +395,13 @@ class TuiFrontend:
     async def render(self, event: Event) -> None:
         d = event.data
         c = self.console
+        self._session_id = event.session_id
         match event.kind:
             case "status":
                 if self._status is None:
                     sandbox = "sandboxed" if d["sandboxed"] else "NOT sandboxed"
-                    c.print(Text(f"jimbo · {d['model']} · {d['workspace']} · {sandbox}", style="dim"))
+                    c.print(Text(f"jimbo · {d['model']} · {d['workspace']} · {sandbox} · session {event.session_id}",
+                                 style="dim"))
                 self._status = d
                 self._invalidate()
             case "user_message":
@@ -456,6 +459,9 @@ class TuiFrontend:
                 self._stop_live()
                 c.print(Text(f"  {agent_prefix(d)}compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens",
                              style="dim"))
+            case "wrap_up":
+                self._stop_live()
+                c.print(Text(f"  {agent_prefix(d)}wrap-up requested: {d['left']} request(s) left in this turn", style="dim"))
             case "busy":
                 self._busy = d["label"] if d["on"] else None
                 self._invalidate()

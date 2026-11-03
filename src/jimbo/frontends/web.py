@@ -35,6 +35,7 @@ from pydantic_ai.messages import BinaryContent
 from ..core.approval import ApprovalDecision, ApprovalRequest
 from ..core.attachments import MAX_IMAGE_BYTES, MAX_IMAGES, UserMessage, check_image
 from ..core.events import Event
+from ..core.trace import trace_page
 from ..tools.search import list_files
 
 STATIC = Path(__file__).parent / "web_static"
@@ -60,6 +61,7 @@ class WebFrontend:
         self._set_mode: Callable[[str], Awaitable[None]] | None = None
         self._config: Callable[[dict], Awaitable[None]] | None = None
         self._list_models: Callable[[str], Awaitable[list[str] | str]] | None = None
+        self._trace_log: Callable[[], Path | None] | None = None
         self._secrets: dict[str, tuple[str, asyncio.Future[str | None]]] = {}
         self._tasks: set[asyncio.Task] = set()
 
@@ -78,6 +80,10 @@ class WebFrontend:
     def bind_model_list(self, lister: Callable[[str], Awaitable[list[str] | str]]) -> None:
         """Called by run_frontend so model pickers can offer the provider's model names."""
         self._list_models = lister
+
+    def bind_trace(self, log: Callable[[], Path | None]) -> None:
+        """Called by run_frontend so /trace can show the current session's log; None when logging is off."""
+        self._trace_log = log
 
     # ---- Frontend protocol ----
     async def next_user_input(self) -> str | None:
@@ -123,6 +129,7 @@ class WebFrontend:
         app = web.Application()
         app.router.add_get("/", self._index)
         app.router.add_get("/ws", self._ws)
+        app.router.add_get("/trace", self._trace)
         return app
 
     async def start(self) -> None:
@@ -155,6 +162,17 @@ class WebFrontend:
     # ---- handlers ----
     async def _index(self, request: web.Request) -> web.Response:
         return web.Response(text=(STATIC / "index.html").read_text("utf-8"), content_type="text/html")
+
+    async def _trace(self, request: web.Request) -> web.Response:
+        if not self._authorized(request):  # the log holds the whole conversation
+            raise web.HTTPForbidden()
+        log = self._trace_log() if self._trace_log else None
+        if log is None:
+            raise web.HTTPNotFound(text="session logging is disabled (log_sessions = false)")
+        try:
+            return web.Response(text=trace_page(log), content_type="text/html")
+        except OSError:
+            raise web.HTTPNotFound(text="this session has no log yet") from None
 
     def _authorized(self, request: web.Request) -> bool:
         if not hmac.compare_digest(request.query.get("token", ""), self.token):

@@ -1,5 +1,9 @@
 """Built-in slash commands. They live outside core because they rebuild agents and policies."""
 
+import tempfile
+import webbrowser
+from pathlib import Path
+
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.usage import RunUsage
 
@@ -9,6 +13,7 @@ from .core.agents import RESERVED_PREFIX
 from .core.approval import MODE_WARNING, RISKY_MODES, ApprovalModes
 from .core.commands import NAME_RE, CommandError, CommandRegistry, QuitSession
 from .core.session import AgentSession
+from .core.trace import trace_page
 from .core.skills import Skill, apply_skill_models, format_skill_index
 from .providers.credentials import describe_key_source
 from .providers.registry import all_providers
@@ -39,7 +44,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
         session.new_session()  # the cleared conversation stays resumable
         await session._emit_todos()
         await session.emit_context()
-        return "Conversation cleared."
+        return f"Conversation cleared. New session {session.session_id}."
 
     async def compact_(session: AgentSession, args: str) -> str:
         if session.is_running:
@@ -228,6 +233,21 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
         except ValueError as e:
             raise CommandError(str(e)) from None
 
+    async def trace(session: AgentSession, args: str) -> str:
+        if session.store is None:
+            raise CommandError("session logging is disabled (log_sessions = false)")
+        try:
+            sid = session.store.resolve(args) if args else session.session_id
+            page = trace_page(session.store.log_path(sid))
+        except (ValueError, OSError) as e:
+            raise CommandError(str(e)) from None
+        out = Path(tempfile.gettempdir()) / "jimbo-traces" / f"{sid}.html"
+        out.parent.mkdir(exist_ok=True)
+        out.write_text(page, "utf-8")
+        if webbrowser.open(out.as_uri()):
+            return f"Opened the trace of session {sid} in your browser ({out}). Run /trace again to refresh it."
+        return f"Wrote the trace of session {sid} to {out}"
+
     async def diff(session: AgentSession, args: str) -> str:
         return session.deps.checkpoints.diff(session.deps.workspace) or "No file changes to show."
 
@@ -265,6 +285,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
     registry.add("agents", "list agents, or create one: /agents [new <name> [--user]]", agents)
     registry.add("bundled", "list the agents, skills and commands shipped with jimbo, with their paths", bundled)
     registry.add("resume", "list saved sessions, or load one: /resume [id]", resume)
+    registry.add("trace", "open a session's trace in the browser: /trace [id]", trace)
     registry.add("diff", "show the file changes from the latest turn that made any", diff)
     registry.add("undo", "restore the files changed by the latest turn that changed any", undo)
     registry.add("output", "show the latest shell output or agent report in full", output)

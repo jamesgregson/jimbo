@@ -73,6 +73,7 @@ class AgentSession:
         self.deps.request_limit = request_limit  # so the prompt can warn the model before it runs out
         self._seq = 0
         self._todos_sent: list = []
+        self._instructions_sent: str | None = None  # logged again whenever they change, and in each new log
         self._task: asyncio.Task | None = None
 
     async def emit(self, kind: EventKind, **data) -> None:
@@ -101,6 +102,12 @@ class AgentSession:
             self._status_sent = status
             await self.emit("status", **status)
 
+    async def _emit_instructions(self, text: str | None) -> None:
+        """Log what the model is told besides the conversation, when it differs from the last request's."""
+        if text != self._instructions_sent:
+            self._instructions_sent = text
+            await self.emit("instructions", text=text or "")
+
     async def _emit_todos(self) -> None:
         if self.deps.todos != self._todos_sent:
             self._todos_sent = list(self.deps.todos)
@@ -119,6 +126,7 @@ class AgentSession:
         """Later turns save under a new id, so the conversation so far stays resumable."""
         self.session_id = uuid.uuid4().hex[:12]
         self._seq = 0
+        self._instructions_sent = None
 
     async def resume(self, prefix: str) -> str:
         """Load a saved session into this one: history, todos and id (so the log keeps appending to the
@@ -131,6 +139,7 @@ class AgentSession:
         self.history = saved.history
         self.session_id = saved.id
         self._seq = max((e.seq for e in events), default=0)
+        self._instructions_sent = None
         self.deps.todos = [TodoItem.model_validate(t) for t in saved.todos]
         self._todos_sent = list(self.deps.todos)
         self.context_tokens = 0
@@ -324,7 +333,11 @@ class AgentSession:
                                        usage_limits=self._limits) as run:
                 async for node in run:
                     if Agent.is_model_request_node(node):
+                        self.deps.wrap_up_left = None
                         async with node.stream(run.ctx) as stream:
+                            await self._emit_instructions(node.request.instructions)  # built by now
+                            if (left := self.deps.wrap_up_left) is not None:
+                                await self.emit("wrap_up", left=left)
                             async for ev in stream:
                                 if isinstance(ev, PartStartEvent) and isinstance(ev.part, TextPart):
                                     if ev.part.content:  # first chunk arrives here, not as a delta

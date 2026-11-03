@@ -65,7 +65,8 @@ class PlainFrontend:
             case "status":
                 sandbox = "sandboxed" if d["sandboxed"] else "NOT sandboxed"
                 flags = "".join(f" · {f}" for f, on in (("plan mode", d["mode"] == "plan"), ("YOLO", d["yolo"]), ("AUTO", d.get("auto"))) if on)
-                print(f"[jimbo: {d['model']} · {d['workspace']} · {sandbox}{flags}]", file=sys.stderr)
+                print(f"[jimbo: {d['model']} · {d['workspace']} · {sandbox}{flags} · session {event.session_id}]",
+                      file=sys.stderr)
             case "user_message":
                 print("[working…]", file=sys.stderr)
             case "busy" if d["on"]:
@@ -105,6 +106,8 @@ class PlainFrontend:
                       sep="\n  ", file=sys.stderr)
             case "compaction":
                 print(f"[{agent_prefix(d)}compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens]", file=sys.stderr)
+            case "wrap_up":
+                print(f"[{agent_prefix(d)}wrap-up requested: {d['left']} request(s) left in this turn]", file=sys.stderr)
             case "command_output":
                 print(d["text"], file=sys.stdout if d["ok"] else sys.stderr)
             case "run_finished" if d.get("cancelled"):

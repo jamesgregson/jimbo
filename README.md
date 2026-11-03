@@ -53,6 +53,7 @@ In a session, type `/help` to list commands. Useful ones:
 - `/model` switch model, `/providers` add a provider or set a key
 - `/plan` make a plan without changing any files
 - `/diff` show the last file changes, `/undo` revert them
+- `/trace` see everything that happened in this session, in the browser
 - `/quit` exit
 
 Ctrl+C stops the current task.
