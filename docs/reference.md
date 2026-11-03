@@ -104,7 +104,7 @@ send_num_ctx = true           # send Ollama-style options.num_ctx; off except fo
 ## Providers and API keys
 
 Set the main model as `main = "<provider>:<name>"` under `[model_aliases]`. `--model` overrides it for one run
-and `/model` for the session; both also take an alias. Every provider speaks the OpenAI-compatible chat API.
+and `/model` for the session; both also take an alias. `/model <value> --save` also writes it to the config. Every provider speaks the OpenAI-compatible chat API.
 
 | Provider | Default endpoint | API key |
 |----------|------------------|---------|
@@ -115,7 +115,8 @@ and `/model` for the session; both also take an alias. Every provider speaks the
 At startup jimbo checks the main model against its server: it stops if the server is unreachable, rejects
 your key, or (with Ollama) doesn't have the model or the model can't call tools. It also takes the context
 size from the server where it can (Ollama and OpenRouter). Otherwise set `context_window` to the model's real
-size, because it drives `/usage` and automatic compaction. These checks don't run again after `/model`.
+size, because it drives `/usage` and automatic compaction. `/model` runs the same check before it switches, and
+leaves the model unchanged if the check finds a problem.
 
 **Ollama:** pull a model that supports tool calling, then set it as `main`:
 
@@ -187,6 +188,27 @@ Then read it from your config, replacing `you` with your username:
 api_key_cmd = ["security", "find-generic-password", "-a", "you", "-s", "OPENROUTER_API_KEY", "-w"]
 ```
 
+**Changing providers in jimbo:** these commands save to `~/.jimbo/config.toml` and apply at once. Your comments
+and the order of the file are kept. Other running jimbo sessions see the change when they restart.
+
+| Command | |
+|---------|--|
+| `/providers` | list providers, their URLs and where each key comes from |
+| `/providers add <name> <url>` | add an OpenAI-compatible endpoint; asks for a key, then checks the endpoint |
+| `/providers url <name> <url>` | change a provider's URL |
+| `/providers key <name>` | set a key; you paste it at a prompt that doesn't show it or keep it in history |
+| `/providers key <name> $ENV_VAR` | read the key from an environment variable |
+| `/providers rm <name>` | remove a provider, or your settings for a built-in one |
+| `/providers test <name>` | check the provider answers and count its models |
+
+At the key prompt, press Enter for no key, or type `$NAME` for an environment variable. A pasted key is not
+written to `config.toml`. On macOS it goes in the login Keychain as `jimbo-<provider>`, and the config gets the
+matching `api_key_cmd`. Elsewhere it goes in `~/.jimbo/keys/<provider>` (mode 600), and the config gets
+`api_key_file`. Removing the provider, or switching it to `$ENV_VAR`, deletes the stored key. `rm` refuses while
+an alias or `[models]` entry uses the provider. The `json` UI can't ask for a hidden key, so use `$ENV_VAR` there.
+
+In `web`, the Settings button in the header opens the same controls, with a Models tab and a Providers tab.
+
 **Adding a provider in code:** for an API that isn't OpenAI-compatible, implement `ProviderSpec`
 ([providers/base.py](../src/jimbo/providers/base.py)) and register it in `ADAPTERS` in
 [providers/registry.py](../src/jimbo/providers/registry.py). Select it with `type` under `[providers.*]`.
@@ -208,7 +230,17 @@ jimbo-compaction   = "main"
 ```
 
 In a session, `/models` shows what each task resolves to and why, `/models set <task> <alias|provider:name>`
-changes one, and `/models reset [task]` undoes that.
+changes one, and `/models reset [task]` undoes that. These last for the session. Add `--save` to `set` or
+`reset <task>` to write the change to `[models]` in `~/.jimbo/config.toml`.
+
+`/models alias <name> <provider>:<name>` adds or changes an alias and saves it. `/models alias <name> --rm`
+removes it; this is refused while `[models]` or a session choice uses it. Agents whose file names a removed alias
+use `main`.
+
+In `tui`, Tab completes model values after `/model`, `/models set <task>` and `/models alias <name>`: aliases,
+provider names, and then the provider's model names, which jimbo asks the provider for. In `web`, the model in
+the status bar is a menu of your aliases and the current provider's models. It changes the model for the session
+only; the Settings panel saves.
 
 A skill can ask for models in its frontmatter (`models: {jimbo-shell-assess: smart}`). This lasts one turn and may
 only name your aliases, never define a model or endpoint.
@@ -312,8 +344,9 @@ doesn't allow nesting.
 | `/help` | list commands |
 | `/clear` | forget the conversation so far |
 | `/compact [focus]` | summarize older history to free context |
-| `/model <provider>:<name>` | show or switch the model |
-| `/models` | show or set which model runs each task |
+| `/model [<alias\|provider:name>] [--save]` | show or switch the model; `--save` writes it to the config |
+| `/models` | show or set which model runs each task, and add or remove aliases |
+| `/providers` | list, add or change providers and their keys |
 | `/usage` | tokens used and context fill |
 | `/approve [auto\|yolo\|default]` | show or set the approval mode |
 | `/plan [on\|off]` | read-only mode: the agent presents a plan for you to approve |

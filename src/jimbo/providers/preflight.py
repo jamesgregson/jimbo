@@ -6,12 +6,14 @@ import re
 from dataclasses import dataclass, field
 
 import aiohttp
+from pydantic import SecretStr
 
 from ..config import ProviderConfig, Settings
 from .credentials import resolve_api_key
 from .registry import provider_config, split_spec
 
 TIMEOUT = 3.0  # seconds
+LIST_TIMEOUT = 10.0  # seconds; some providers list hundreds of models
 OPENAI_URL = "https://api.openai.com/v1"
 OLLAMA_DEFAULT_CONTEXT = 4096  # what Ollama usually runs a model at without a num_ctx in its Modelfile
 _NUM_CTX = re.compile(r"^num_ctx\s+(\d+)", re.M)
@@ -55,25 +57,39 @@ async def _ollama(http: aiohttp.ClientSession, base: str, name: str) -> ModelFac
     return facts
 
 
-async def _openai_compat(http: aiohttp.ClientSession, base: str, provider: str, name: str) -> ModelFacts:
+async def _model_list(http: aiohttp.ClientSession, base: str, provider: str) -> list | str | None:
+    """The provider's /models data. A string is a problem jimbo can't work around; None is inconclusive."""
     try:
         async with http.get(f"{base}/models") as r:
             if r.status in (401, 403):
-                return ModelFacts(f"{provider} rejected the API key (HTTP {r.status})")
+                return f"{provider} rejected the API key (HTTP {r.status})"
             if r.status != 200:
-                return ModelFacts()
-            models = (await r.json(content_type=None)).get("data")
+                return None
+            body = await r.json(content_type=None)
     except aiohttp.ClientConnectorError:
-        return ModelFacts(f"can't reach {provider} at {base}")
+        return f"can't reach {provider} at {base}"
     except ValueError:  # not JSON: this endpoint doesn't really implement /models
+        return None
+    models = body.get("data") if isinstance(body, dict) else None
+    return models if isinstance(models, list) else None
+
+
+async def _openai_compat(http: aiohttp.ClientSession, base: str, provider: str, name: str) -> ModelFacts:
+    models = await _model_list(http, base, provider)
+    if models is None:
         return ModelFacts()
-    if not isinstance(models, list):
-        return ModelFacts()
+    if isinstance(models, str):
+        return ModelFacts(models)
     found = next((m for m in models if isinstance(m, dict) and m.get("id") == name), None)
     if found is None:
         # a warning only: gateways often serve models they don't list
         return ModelFacts(notes=[f"{provider} doesn't list model {name!r}"] if models else [])
     return ModelFacts(context=found.get("context_length"))
+
+
+def _client(key: SecretStr | None, timeout: float) -> aiohttp.ClientSession:
+    headers = {"Authorization": f"Bearer {key.get_secret_value()}"} if key else {}
+    return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout), headers=headers)
 
 
 async def inspect_model(spec: str, settings: Settings) -> ModelFacts:
@@ -82,12 +98,32 @@ async def inspect_model(spec: str, settings: Settings) -> ModelFacts:
     if cfg.type != "openai_compat":
         return ModelFacts()
     base = (cfg.base_url or OPENAI_URL).rstrip("/")
-    key = resolve_api_key(provider, cfg)
-    headers = {"Authorization": f"Bearer {key.get_secret_value()}"} if key else {}
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT), headers=headers) as http:
+    async with _client(resolve_api_key(provider, cfg), TIMEOUT) as http:
         try:
             if provider == "ollama":
                 return await _ollama(http, base, name)
             return await _openai_compat(http, base, provider, name)
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return ModelFacts()
+
+
+async def list_models(provider: str, settings: Settings) -> list[str] | str:
+    """The ids of the models `provider` serves, or why they couldn't be listed."""
+    try:
+        cfg = provider_config(provider, settings)
+        if cfg.type != "openai_compat":
+            return f"can't list models for provider type {cfg.type!r}"
+        base = (cfg.base_url or OPENAI_URL).rstrip("/")
+        key = await asyncio.to_thread(resolve_api_key, provider, cfg)  # may run a key command
+    except ValueError as e:
+        return str(e)
+    async with _client(key, LIST_TIMEOUT) as http:
+        try:
+            models = await _model_list(http, base, provider)
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return f"no answer from {provider} at {base}"
+    if models is None:
+        return f"{provider} at {base} doesn't list its models"
+    if isinstance(models, str):
+        return models
+    return sorted({m["id"] for m in models if isinstance(m, dict) and isinstance(m.get("id"), str)})

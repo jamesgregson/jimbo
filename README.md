@@ -50,7 +50,7 @@ Other ways to run it:
 In a session, type `/help` to list commands. Useful ones:
 
 - `/clear` start a new conversation
-- `/model` switch model
+- `/model` switch model, `/providers` add a provider or set a key
 - `/plan` make a plan without changing any files
 - `/diff` show the last file changes, `/undo` revert them
 - `/quit` exit
@@ -85,7 +85,7 @@ reads it at the start of each session. Run `/init` to have jimbo write one for y
 |---------|-----|
 | `jimbo: command not found` | The folder pip installs scripts into is not on your `PATH`. Add it, or install jimbo in a virtual environment and activate it. |
 | `no main model` | Create `~/.jimbo/config.toml` as shown in [Set up a model](#set-up-a-model). |
-| `provider openrouter has no API key configured` | Set `OPENROUTER_API_KEY` in this terminal. |
+| `provider openrouter has no API key configured` | Set `OPENROUTER_API_KEY` in this terminal, or run `/providers key openrouter` and paste the key. |
 
 ## Update
 

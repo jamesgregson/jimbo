@@ -125,11 +125,34 @@
                  padding: 2px 6px; font: inherit; }
   .mode select.risky { border-color: var(--err); color: var(--err); font-weight: 600; }
   #dlg .btns .mode { margin-right: auto; }
+  #st-model { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+              padding: 1px 4px; font: inherit; max-width: 320px; }
+  #st-model[hidden] { display: none; }
+  #settings { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100%); z-index: 8; overflow: auto;
+              background: var(--panel); border-left: 1px solid var(--line); padding: 12px 16px;
+              box-shadow: -8px 0 24px rgba(0,0,0,.15); }
+  #settings[hidden] { display: none; }
+  #settings .shead { display: flex; gap: 8px; align-items: center; }
+  #settings .shead h2 { font-size: 15px; margin: 0; } #settings .shead button { margin-left: auto; }
+  #settings .path { font: 11px ui-monospace, Menlo, monospace; color: var(--dim); margin: 2px 0 8px; word-break: break-all; }
+  #settings .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  #settings .tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #settings fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+  #settings fieldset:disabled { opacity: .6; }
+  #settings h3 { font-size: 12px; margin: 14px 0 6px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+  #settings .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+  #settings .row .name { font: 12.5px ui-monospace, Menlo, monospace; min-width: 120px; font-weight: 600; }
+  #settings .box { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin: 6px 0; }
+  #settings input, #settings select { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; font: 12.5px ui-monospace, Menlo, monospace; flex: 1; min-width: 120px; }
+  #settings button { padding: 4px 12px; }
+  #settings .msg { font-size: 12px; white-space: pre-wrap; margin-top: 8px; }
+  #settings-btn { margin-left: 4px; padding: 4px 12px; }
 </style>
 </head>
 <body>
-<header><h1>Jimbo</h1><span id="status" class="off">connecting…</span></header>
-<div id="stats"><span id="st-status"></span><span id="st-ctx">context —</span><span class="meter" id="st-meter"><i></i></span><span id="st-turn"></span><span id="st-session"></span></div>
+<header><h1>Jimbo</h1><span id="status" class="off">connecting…</span><button id="settings-btn" class="sec" type="button" title="Models and providers">Settings</button></header>
+<div id="stats"><select id="st-model" title="Model for this session (Settings saves it)" hidden></select><span id="st-status"></span><span id="st-ctx">context —</span><span class="meter" id="st-meter"><i></i></span><span id="st-turn"></span><span id="st-session"></span></div>
 <aside id="todos" hidden></aside>
 <div id="log"></div>
 <div id="thinking"><span></span><span></span><span></span> working…</div>
@@ -141,6 +164,14 @@
   <button id="stop" type="button" class="deny" hidden>Stop</button>
 </form>
 <div id="modal"><div id="dlg"></div></div>
+<aside id="settings" hidden>
+  <div class="shead"><h2>Settings</h2><button id="settings-close" class="sec" type="button">Close</button></div>
+  <div class="path" id="settings-path"></div>
+  <div class="tabs"><button class="sec on" type="button" data-tab="models">Models</button><button class="sec" type="button" data-tab="providers">Providers</button></div>
+  <fieldset id="settings-body"></fieldset>
+  <div class="msg" id="settings-msg"></div>
+</aside>
+<datalist id="model-names"></datalist>
 <script>
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -161,6 +192,7 @@ function showStats(d) {
 function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
 function setRunning(v) {
   running = v; sendBtn.disabled = !ws || ws.readyState !== 1;
+  $("#settings-body").disabled = v; $("#st-model").disabled = v;
   stopBtn.hidden = !v; input.placeholder = v ? "Steer jimbo — sent with its next step" : "Message jimbo — Enter to send, Shift+Enter for newline";
   $("#thinking").classList.toggle("show", v);
   if (ws && ws.readyState === 1) setStatus(v ? "working…" : "idle", v ? "busy" : "");
@@ -310,7 +342,8 @@ function onEvent(ev) {
     }
     case "context": lastCtx = d; showStats(d); break;
     case "status":
-      $("#st-status").textContent = [d.model, d.mode === "plan" && "PLAN", d.yolo && "YOLO", d.auto && "AUTO", !d.sandboxed && "not sandboxed"].filter(Boolean).join(" · ");
+      currentModel = d.model; renderModelPicker();
+      $("#st-status").textContent = [d.mode === "plan" && "PLAN", d.yolo && "YOLO", d.auto && "AUTO", !d.sandboxed && "not sandboxed"].filter(Boolean).join(" · ");
       approvalMode = d.yolo ? "yolo" : d.auto ? "auto" : "default";
       document.querySelectorAll(".mode select").forEach(syncMode);
       break;
@@ -318,6 +351,7 @@ function onEvent(ev) {
       if (!running) { setStatus(d.on ? d.label + "…" : "idle", d.on ? "busy" : ""); $("#thinking").classList.toggle("show", d.on); }
       break;
     case "commands": commands = d.commands; break;
+    case "config": cfg = d; renderSettings(); renderModelPicker(); break;
     case "todos": {
       const box = $("#todos"), mark = { done: "☑", in_progress: "▶", pending: "☐" };
       const ul = el("ul"); d.items.forEach((t) => ul.append(el("li", t.status, `${mark[t.status] || "☐"} ${t.content}`)));
@@ -325,6 +359,9 @@ function onEvent(ev) {
     }
     case "compaction": seg = null; add(el("div", "note", `${agentPrefix(d)}compacted history: ${d.messages_before} → ${d.messages_after} messages, ~${d.tokens_before} → ~${d.tokens_after} tokens`)); break;
     case "command_output": {
+      if (d.command === "config" || d.command === "providers" || d.command === "model" || d.command === "models") {
+        const m = $("#settings-msg"); m.textContent = d.text; m.className = "msg " + (d.ok ? "ok" : "err");
+      }
       const box = add(el("div", "msg cmd" + (d.ok ? "" : " err")));
       box.append(el("div", "head", "/" + d.command), d.text); break;
     }
@@ -388,13 +425,16 @@ function showApproval(req) {
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  ws.onopen = () => { log.replaceChildren(); cards.clear(); seg = null; setRunning(false); };  // history is replayed
+  ws.onopen = () => { log.replaceChildren(); cards.clear(); seg = null; modelLists = {}; setRunning(false); };  // history is replayed
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.type === "event") onEvent(msg.event);
     else if (msg.type === "files") { if (msg.prefix === atToken()) { fileHits = msg.files; updateHint(); } }
     else if (msg.type === "approval") showApproval(msg.request);
     else if (msg.type === "approval_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
+    else if (msg.type === "secret") showSecret(msg);
+    else if (msg.type === "secret_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
+    else if (msg.type === "models") { modelLists[msg.provider] = msg.models || { error: msg.error }; renderModelPicker(); fillModelNames(lastSpecInput); }
   };
   ws.onclose = () => { setStatus("disconnected — retrying…", "off"); sendBtn.disabled = true; setTimeout(connect, 1500); };
 }
@@ -463,6 +503,131 @@ input.oninput = () => {
   input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; updateHint();
 };
 $("header h1").after(modeControl());
+
+// A key typed here goes to jimbo only: it is not shown, logged or replayed.
+function showSecret(msg) {
+  pendingId = msg.id;
+  const dlg = $("#dlg"), field = el("input"), btns = el("div", "btns");
+  field.type = "password"; field.autocomplete = "off";
+  const answer = (value) => ws.send(JSON.stringify({ type: "secret_answer", id: msg.id, value }));
+  field.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answer(field.value); } };
+  const cancel = el("button", "sec", "Cancel"), ok = el("button", null, "OK");
+  cancel.type = ok.type = "button"; cancel.onclick = () => answer(null); ok.onclick = () => answer(field.value);
+  btns.append(cancel, ok);
+  dlg.replaceChildren(el("h2", null, "Key"), el("div", "sum", msg.message), field, btns);
+  $("#modal").classList.add("show"); field.focus();
+}
+
+// ---- Models and providers. Changes in the settings panel are saved to the user config. ----
+let cfg = null, currentModel = null, modelLists = {}, settingsTab = "models", lastSpecInput = null;
+const configSet = (msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "config_set", ...msg })); };
+const providerOf = (spec) => spec && spec.includes(":") ? spec.split(":")[0] : null;
+function requestModels(provider) {
+  if (!provider || provider in modelLists || !ws || ws.readyState !== 1) return;
+  modelLists[provider] = null; ws.send(JSON.stringify({ type: "models_list", provider }));
+}
+function option(value, text) { const o = el("option", null, text); o.value = value; return o; }
+function button(text, onclick, cls = "sec") { const b = el("button", cls, text); b.type = "button"; b.onclick = onclick; return b; }
+function textField(value, placeholder, type = "text") {
+  const f = el("input"); f.type = type; f.value = value || ""; f.placeholder = placeholder; f.autocomplete = "off"; return f;
+}
+// A field for "<provider>:<name>": suggests providers, then the chosen provider's models.
+function specField(value) {
+  const f = textField(value, "provider:model"); f.setAttribute("list", "model-names");
+  f.onfocus = f.oninput = () => { lastSpecInput = f; requestModels(providerOf(f.value)); fillModelNames(f); };
+  return f;
+}
+function fillModelNames(f) {
+  if (!f || !cfg) return;
+  const p = providerOf(f.value), list = p && modelLists[p];
+  const names = Array.isArray(list) ? list.map((m) => `${p}:${m}`) : cfg.providers.map((x) => x.name + ":");
+  $("#model-names").replaceChildren(...names.slice(0, 500).map((n) => option(n, n)));
+}
+
+function renderModelPicker() {
+  const sel = $("#st-model");
+  if (!currentModel) return;
+  const opts = [option(currentModel, currentModel)], seen = new Set([currentModel]);
+  for (const [name, spec] of Object.entries(cfg ? cfg.aliases : {}))
+    if (name !== "main" && !seen.has(name)) { seen.add(name); opts.push(option(name, `${name} — ${spec}`)); }
+  const p = providerOf(currentModel), list = modelLists[p];
+  if (Array.isArray(list)) for (const m of list) { const s = `${p}:${m}`; if (!seen.has(s)) { seen.add(s); opts.push(option(s, s)); } }
+  sel.replaceChildren(...opts); sel.value = currentModel; sel.hidden = false;
+}
+$("#st-model").onfocus = () => requestModels(providerOf(currentModel));
+$("#st-model").onchange = (e) => { configSet({ op: "main", value: e.target.value }); e.target.value = currentModel; };
+
+function renderSettings() {
+  if (!cfg) return;
+  $("#settings-path").textContent = `Saved to ${cfg.path}`;
+  document.querySelectorAll("#settings .tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === settingsTab));
+  $("#settings-body").replaceChildren(...(settingsTab === "models" ? modelsTab() : providersTab()));
+}
+
+function modelsTab() {
+  const out = [el("h3", null, "Aliases")];
+  for (const [name, spec] of Object.entries(cfg.aliases)) {
+    const row = el("div", "row"), f = specField(spec);
+    row.append(el("span", "name", name), f, button("Save", () => configSet(name === "main" ? { op: "main", value: f.value, save: true }
+      : { op: "alias_set", name, spec: f.value })));
+    if (name !== "main") row.append(button("Remove", () => configSet({ op: "alias_rm", name })));
+    out.push(row);
+  }
+  const add = el("div", "row"), name = textField("", "new alias"), spec = specField("");
+  add.append(name, spec, button("Add", () => configSet({ op: "alias_set", name: name.value, spec: spec.value })));
+  out.push(add, el("h3", null, "Tasks and agents"));
+  for (const t of cfg.tasks) {
+    if (t.task === "main") continue;
+    const row = el("div", "row"), sel = el("select");
+    sel.append(option("", `default (main)`));
+    for (const name of Object.keys(cfg.aliases)) sel.append(option(name, name));
+    if (t.value && !(t.value in cfg.aliases)) sel.append(option(t.value, t.value));
+    sel.value = t.value || "";
+    sel.onchange = () => configSet({ op: "task_set", task: t.task, value: sel.value || null });
+    const where = t.source === "config" || t.source === "main" ? t.spec : `${t.spec} (${t.source})`;
+    row.append(el("span", "name", (t.agent ? "@" : "") + t.task), sel, el("span", "dim", where));
+    out.push(row);
+  }
+  return out;
+}
+
+function keyRequest(name, value) {
+  const v = value.trim();
+  return v.startsWith("$") ? { op: "provider_set", name, key_env: v } : { op: "provider_set", name, key: v };
+}
+function providersTab() {
+  const out = [];
+  for (const p of cfg.providers) {
+    const box = el("div", "box"), head = el("div", "row");
+    head.append(el("span", "name", p.name), el("span", "dim", [p.builtin && "built in", p.changed && "changed"].filter(Boolean).join(", ")));
+    head.append(button("Test", () => configSet({ op: "provider_test", name: p.name })));
+    if (p.changed) head.append(button(p.builtin ? "Reset" : "Remove", () => {
+      if (confirm(p.builtin ? `Remove your settings for ${p.name}?` : `Remove provider ${p.name}?`)) configSet({ op: "provider_rm", name: p.name });
+    }));
+    const url = el("div", "row"), u = textField(p.base_url, "default URL");
+    url.append(el("span", "dim", "URL"), u, button("Save", () => configSet({ op: "provider_set", name: p.name, base_url: u.value })));
+    const key = el("div", "row"), k = textField("", `key: ${p.key}`, "password");
+    k.title = "Paste a key, or type $NAME to read it from an environment variable";
+    key.append(el("span", "dim", "Key"), k, button("Save", () => { if (k.value.trim()) configSet(keyRequest(p.name, k.value)); }));
+    box.append(head, url, key); out.push(box);
+  }
+  const add = el("div", "box"), r1 = el("div", "row"), r2 = el("div", "row");
+  const name = textField("", "name"), url = textField("", "http://host:port/v1"), key = textField("", "key or $ENV_VAR (optional)", "password");
+  r1.append(name, url); r2.append(key, button("Add provider", () => {
+    const msg = { op: "provider_set", new: true, name: name.value, base_url: url.value };
+    if (key.value.trim()) Object.assign(msg, keyRequest(name.value, key.value));
+    configSet(msg);
+  }, ""));
+  add.append(el("h3", null, "Add a provider"), r1, r2); out.push(add);
+  return out;
+}
+
+$("#settings-btn").onclick = () => {
+  $("#settings").hidden = !$("#settings").hidden;
+  if (!$("#settings").hidden && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "config_get" }));
+};
+$("#settings-close").onclick = () => { $("#settings").hidden = true; };
+document.querySelectorAll("#settings .tabs button").forEach((b) => { b.onclick = () => { settingsTab = b.dataset.tab; renderSettings(); }; });
 connect();
 </script>
 </body>

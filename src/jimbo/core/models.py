@@ -145,6 +145,15 @@ class ModelRouter:
         else:
             self._session.pop(task, None)
 
+    def forget(self, provider: str) -> None:
+        """Drop built models of `provider`, after its endpoint or key changed. Agent routers share the cache."""
+        for spec in [s for s in self._cache if s.startswith(f"{provider}:")]:
+            del self._cache[spec]
+
+    def users(self, match: Callable[[str], bool]) -> list[str]:
+        """Tasks whose session or `[models]` choice matches, e.g. before an alias is removed."""
+        return sorted({t for t, v in (*self._session.items(), *self.settings.models.items()) if match(v)})
+
     def push_scope(self, owner: str, overrides: dict[str, str]) -> None:
         """Skill/agent choice for the current turn. Only alias names (or "main") are accepted."""
         bad = [v for v in overrides.values() if v != MAIN and v not in self.settings.model_aliases]

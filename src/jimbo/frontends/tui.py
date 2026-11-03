@@ -89,6 +89,81 @@ class FileCompleter(Completer):
             yield Completion("@" + f, start_position=-len(m.group(0)))
 
 
+class ModelCompleter(Completer):
+    """Completes model values in /model, /models set and /models alias: aliases, `provider:`, and the provider's
+    model names once it has answered. Names and providers come from the `config` event."""
+
+    PATTERN = re.compile(r"/(model|models set \S+|models alias \S+)\s+(\S*)")
+
+    def __init__(self) -> None:
+        self.aliases: dict[str, str] = {}
+        self.providers: list[str] = []
+        self.lister: Callable[[str], Awaitable[list[str] | str]] | None = None
+        self.on_update: Callable[[], None] = lambda: None
+        self._models: dict[str, list[str] | str] = {}
+        self._tasks: set[asyncio.Task] = set()
+
+    def reset(self, aliases: dict[str, str], providers: list[str]) -> None:
+        self.aliases, self.providers = aliases, providers
+        self._models.clear()  # a provider may have changed
+
+    def get_completions(self, document, complete_event):
+        m = self.PATTERN.fullmatch(document.text_before_cursor)
+        if not m:
+            return
+        word = m.group(2)
+        provider, colon, _ = word.partition(":")
+        if colon:
+            found = self._models.get(provider)
+            if found is None:
+                self._fetch(provider)
+            for name in found if isinstance(found, list) else []:
+                if f"{provider}:{name}".startswith(word):
+                    yield Completion(f"{provider}:{name}", start_position=-len(word))
+            return
+        if not m.group(1).startswith("models alias"):  # an alias names a model, not another alias
+            for name, spec in self.aliases.items():
+                if name.startswith(word):
+                    yield Completion(name, start_position=-len(word), display_meta=spec)
+        for p in self.providers:
+            if p.startswith(word):
+                yield Completion(p + ":", start_position=-len(word))
+
+    def _fetch(self, provider: str) -> None:
+        if self.lister is None or provider not in self.providers or provider in self._models:
+            return
+        self._models[provider] = []  # asked; nothing to offer until it answers
+
+        async def fetch() -> None:
+            self._models[provider] = await self.lister(provider)
+            self.on_update()
+
+        try:
+            task = asyncio.get_running_loop().create_task(fetch())
+        except RuntimeError:
+            return
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+
+class _SkippableHistory(History):
+    """Input history that leaves out lines typed while `skip()` is true (API keys)."""
+
+    def __init__(self, inner: History, skip: Callable[[], bool]) -> None:
+        super().__init__()
+        self.inner, self.skip = inner, skip
+
+    def load_history_strings(self):
+        return self.inner.load_history_strings()
+
+    def store_string(self, string: str) -> None:
+        self.inner.store_string(string)
+
+    def append_string(self, string: str) -> None:
+        if not self.skip():
+            super().append_string(string)
+
+
 def _history() -> History:
     try:
         return FileHistory(str(HISTORY_FILE))
@@ -125,6 +200,7 @@ class TuiFrontend:
         self._running = False
         self._prompting = False  # next_user_input is waiting on the main prompt
         self._question: tuple[str, asyncio.Future[str]] | None = None  # asked through the main prompt
+        self._secret = False  # the prompt is taking a key: hidden, and not kept in history
         self._pastes: dict[int, str] = {}
         self._images: dict[int, BinaryContent] = {}
 
@@ -156,6 +232,8 @@ class TuiFrontend:
         self._kb = kb
         self.completer = SlashCompleter()
         self.file_completer = FileCompleter(workspace or Path.cwd())
+        self.model_completer = ModelCompleter()
+        self.model_completer.on_update = self._refresh_completions
         self._ask = ask
         self._buf = ""  # streamed assistant text not yet printed
         self._think = ""  # streamed reasoning not yet printed
@@ -168,8 +246,10 @@ class TuiFrontend:
 
     def _prompt_session(self) -> PromptSession:
         if self._session is None:
-            self._session = PromptSession(history=_history(), key_bindings=self._kb,
-                                          completer=merge_completers([self.completer, self.file_completer]),
+            self._session = PromptSession(history=_SkippableHistory(_history(), lambda: self._secret),
+                                          key_bindings=self._kb, is_password=Condition(lambda: self._secret),
+                                          completer=merge_completers([self.completer, self.model_completer,
+                                                                      self.file_completer]),
                                           complete_while_typing=True,
                                           bottom_toolbar=self._toolbar, refresh_interval=0.5)
         return self._session
@@ -177,6 +257,14 @@ class TuiFrontend:
     def bind_cancel(self, cancel: Callable[[], object]) -> None:
         """Called by run_frontend: Ctrl+C / Esc during a run stop it."""
         self._cancel = cancel
+
+    def bind_model_list(self, lister: Callable[[str], Awaitable[list[str] | str]]) -> None:
+        """Called by run_frontend: model names for completion."""
+        self.model_completer.lister = lister
+
+    def _refresh_completions(self) -> None:
+        if self._session is not None and self._session.app.is_running:
+            self._session.default_buffer.start_completion(select_first=False)
 
     def _state(self) -> str:
         d = self._status
@@ -362,6 +450,8 @@ class TuiFrontend:
                     c.print(Text(f"  {mark} {t['content']}", style=style))
             case "commands":
                 self.completer.commands = {c["name"]: c["help"] for c in d["commands"]}
+            case "config":
+                self.model_completer.reset(d["aliases"], [p["name"] for p in d["providers"]])
             case "compaction":
                 self._stop_live()
                 c.print(Text(f"  {agent_prefix(d)}compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens",
@@ -393,6 +483,17 @@ class TuiFrontend:
         except (EOFError, KeyboardInterrupt):
             return False
         return answer.strip().lower() in ("y", "yes")
+
+    async def ask_secret(self, message: str) -> str | None:
+        """A line that isn't echoed or kept in input history."""
+        self._stop_live()
+        self._secret = True
+        try:
+            return await self._ask_line(message)
+        except (EOFError, KeyboardInterrupt):
+            return None
+        finally:
+            self._secret = False
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         self._stop_live()

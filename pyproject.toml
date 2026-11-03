@@ -11,6 +11,7 @@ dependencies = [
     "prompt_toolkit",
     "aiohttp>=3.14.5",
     "pyyaml>=6.0.3",
+    "tomlkit>=0.15.2",
 ]
 
 [project.scripts]

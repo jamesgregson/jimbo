@@ -3,6 +3,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from typing import Any
 
 from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.messages import (
@@ -57,6 +58,8 @@ class AgentSession:
         self.replay_sink: EventSink | None = None  # where resume() redraws past events (the frontend only)
         self.approval_modes: ApprovalModes | None = None  # set by wiring; switched by /approve or the frontend
         self.confirm: Callable[[str], Awaitable[bool]] | None = None  # the frontend's yes/no question, if any
+        self.ask_secret: Callable[[str], Awaitable[str | None]] | None = None  # the frontend's hidden question
+        self.config: Any = None  # set by wiring: config_edit.ConfigControl, which saves model and provider changes
         self.deps.midrun_compact = self._compact_midrun
         self.deps.midrun_steer = self._inject_steers
         self.failed = False  # a run or command failed; one-shot mode turns this into the exit code

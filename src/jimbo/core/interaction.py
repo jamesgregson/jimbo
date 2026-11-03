@@ -18,3 +18,5 @@ class Frontend(Protocol):
 
     # Optional: `async def confirm(self, message: str) -> bool` asks a yes/no question. A frontend that has
     # it is asked before a risky approval mode is turned on (/approve auto|yolo, or --auto/--yolo at start).
+    # Optional: `async def ask_secret(self, message: str) -> str | None` asks for a line that isn't echoed or kept
+    # in input history (an API key); None means cancelled. Without it, keys can only come from env variables.

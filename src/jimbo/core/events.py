@@ -26,6 +26,7 @@ EventKind = Literal[
     "compaction",
     "status",
     "busy",
+    "config",
 ]
 
 

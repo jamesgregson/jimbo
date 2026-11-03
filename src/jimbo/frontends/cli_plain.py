@@ -1,6 +1,7 @@
 """Line-based frontend using only print/input. Works in pipes and CI; the reference Frontend."""
 
 import asyncio
+import getpass
 import sys
 import threading
 
@@ -109,6 +110,13 @@ class PlainFrontend:
             case "run_finished" if d.get("cancelled"):
                 self._streamed = False
                 print("\n[interrupted]", file=sys.stderr)
+
+    async def ask_secret(self, message: str) -> str | None:
+        """A line read without echo (from the terminal, not stdin, when there is one)."""
+        try:
+            return await asyncio.to_thread(getpass.getpass, message)
+        except (EOFError, KeyboardInterrupt):
+            return None
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         print(f"\nApprove {req.tool}: {req.summary}", file=sys.stderr)

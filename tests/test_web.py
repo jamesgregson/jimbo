@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -139,3 +140,42 @@ async def test_page_warns_before_auto_or_yolo(client):
     text = await (await client.get("/")).text()
     assert ("Are you sure? Jimbo will make automated decisions on your behalf and WILL destroy your code, "
             "system and reputation") in text
+
+
+async def test_secret_dialog_and_config_messages(client):
+    fe = client.fe
+    got = asyncio.Queue()
+
+    async def handle(msg):
+        await got.put(msg)
+
+    async def lister(provider):
+        return ["a"] if provider == "lm" else "can't reach x"
+
+    fe.bind_config(handle)
+    fe.bind_model_list(lister)
+    ws = await client.ws_connect(ws_url(client))
+    asked = asyncio.ensure_future(fe.ask_secret("API key for lm: "))
+    msg = await ws.receive_json()
+    assert msg["type"] == "secret" and msg["message"] == "API key for lm: "
+    await ws.send_json({"type": "secret_answer", "id": msg["id"], "value": "sk-x"})
+    assert await asyncio.wait_for(asked, 1) == "sk-x"
+    assert (await ws.receive_json()) == {"type": "secret_closed", "id": msg["id"]}
+    assert "sk-x" not in json.dumps(fe._history)
+
+    await ws.send_json({"type": "config_set", "op": "alias_rm", "name": "fast"})
+    assert await asyncio.wait_for(got.get(), 1) == {"op": "alias_rm", "name": "fast"}
+    await ws.send_json({"type": "config_get"})
+    assert await asyncio.wait_for(got.get(), 1) == {"op": "get"}
+    await ws.send_json({"type": "models_list", "provider": "lm"})
+    assert await ws.receive_json() == {"type": "models", "provider": "lm", "models": ["a"]}
+    await ws.send_json({"type": "models_list", "provider": "x"})
+    assert await ws.receive_json() == {"type": "models", "provider": "x", "error": "can't reach x"}
+
+
+async def test_cancelled_secret_is_none(client):
+    ws = await client.ws_connect(ws_url(client))
+    asked = asyncio.ensure_future(client.fe.ask_secret("key: "))
+    msg = await ws.receive_json()
+    await ws.send_json({"type": "secret_answer", "id": msg["id"], "value": None})
+    assert await asyncio.wait_for(asked, 1) is None

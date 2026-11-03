@@ -194,3 +194,47 @@ async def test_busy_shows_in_the_toolbar():
     assert fe._toolbar().startswith("compacting…")
     await fe.render(ev(2, "busy", label="compacting", on=False))
     assert not (fe._toolbar() or "").startswith("compacting")
+
+
+async def test_secret_answers_stay_out_of_history():
+    from prompt_toolkit.history import InMemoryHistory
+    from jimbo.frontends.tui import _SkippableHistory
+
+    fe, _ = make(["sk-secret"])
+    assert await fe.ask_secret("key: ") == "sk-secret" and not fe._secret
+    hidden = {"on": True}
+    h = _SkippableHistory(InMemoryHistory(), lambda: hidden["on"])
+    h.append_string("sk-secret")
+    hidden["on"] = False
+    h.append_string("/providers key x")
+    assert h.get_strings() == ["/providers key x"]
+    fe, _ = make([KeyboardInterrupt()])
+    assert await fe.ask_secret("key: ") is None
+
+
+async def test_model_completion():
+    from prompt_toolkit.document import Document
+
+    fe, _ = make()
+    await fe.render(ev(1, "config", path="p", aliases={"main": "ollama:a", "fast": "ollama:b"}, tasks=[],
+                       providers=[{"name": "ollama"}, {"name": "work"}]))
+    asked = []
+
+    async def lister(provider):
+        asked.append(provider)
+        return ["m1", "m2"]
+
+    fe.bind_model_list(lister)
+    c = fe.model_completer
+
+    def complete(text):
+        return [x.text for x in c.get_completions(Document(text), None)]
+
+    assert complete("/model f") == ["fast"]
+    assert complete("/models set jimbo-compaction ") == ["main", "fast", "ollama:", "work:"]
+    assert complete("/models alias x ") == ["ollama:", "work:"]  # no aliases of aliases
+    assert complete("/model work:") == []  # asked; offered once it answers
+    await asyncio.sleep(0)
+    assert asked == ["work"] and complete("/model work:m") == ["work:m1", "work:m2"]
+    assert complete("/model nobody:") == [] and asked == ["work"]  # unknown providers aren't asked
+    assert complete("hello ") == []

@@ -7,6 +7,7 @@ from pydantic_ai.usage import RunUsage
 from .agent import AGENT_TOOL_NAMES, build_agent
 from .commands import register_builtins, register_skill_commands
 from .config import BUNDLED_DIR, Settings
+from .config_edit import ConfigControl
 from .core.agents import AgentResult, AgentSpec, ForwardSink, load_agents
 from .core.assess import TASK as ASSESS_TASK, assess_shell
 from .core.approval import (ApprovalGate, ApprovalModes, ApprovalPolicy, AskUser, AutoApprove, PatternRules,
@@ -199,6 +200,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         session.store = SessionStore(settings.log_dir, workspace)
     session.replay_sink = FrontendSink(frontend)
     session.approval_modes = modes
+    session.config = ConfigControl(settings, inspector)
     register_builtins(session.commands, settings, modes)
     load_markdown_commands(session.commands, [settings.user_dir / "commands",
                                               deps.workspace / ".jimbo" / "commands"])

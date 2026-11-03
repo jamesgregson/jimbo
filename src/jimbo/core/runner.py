@@ -83,6 +83,14 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
         bind(session.cancel)
     if bind := getattr(frontend, "bind_approval_mode", None):  # ... and their own approval mode control
         bind(lambda mode: set_approval_mode(session, mode))
+    if ask := getattr(frontend, "ask_secret", None):
+        session.ask_secret = ask
+    if session.config is not None:
+        await session.config.emit(session)
+        if bind := getattr(frontend, "bind_config", None):  # a settings panel
+            bind(lambda msg: config_request(session, msg))
+        if bind := getattr(frontend, "bind_model_list", None):  # model name completion
+            bind(session.config.list_models)
     if confirm := getattr(frontend, "confirm", None):
         session.confirm = confirm
         modes = session.approval_modes
@@ -135,6 +143,21 @@ async def set_approval_mode(session: AgentSession, mode: str) -> None:
         await session.emit("command_output", command="approve", ok=False, text=str(e))
     else:
         await session.emit_status()
+
+
+async def config_request(session: AgentSession, msg: dict) -> None:
+    """A request from a frontend's settings panel (see config_edit.ConfigControl.apply). Changes are refused
+    during a run, like slash commands."""
+    try:
+        if msg.get("op") != "get" and session.is_running:
+            raise ValueError("a run is in progress; wait for it or cancel first")
+        text = await session.config.apply(session, msg)
+    except ValueError as e:
+        await session.emit("command_output", command="config", ok=False, text=str(e))
+        return
+    if text:
+        await session.emit("command_output", command="config", ok=True, text=text)
+    await session.emit_status()
 
 
 async def _steer_or_refuse(session: AgentSession, msg: str | UserMessage) -> None:

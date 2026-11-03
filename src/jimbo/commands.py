@@ -1,10 +1,10 @@
 """Built-in slash commands. They live outside core because they rebuild agents and policies."""
 
-from .agent import build_agent
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.usage import RunUsage
 
 from .config import BUNDLED_DIR, Settings
+from .config_edit import ENV_RE
 from .core.agents import RESERVED_PREFIX
 from .core.approval import MODE_WARNING, RISKY_MODES, ApprovalModes
 from .core.commands import NAME_RE, CommandError, CommandRegistry, QuitSession
@@ -51,38 +51,92 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
             raise CommandError(f"compaction failed: {e}") from None
         return result or "Nothing to compact."
 
+    def save_flag(args: str) -> tuple[list[str], bool]:
+        words = args.split()
+        return [w for w in words if w != "--save"], "--save" in words
+
     async def model(session: AgentSession, args: str) -> str:
         router = session.deps.models
-        if not args:
+        words, save = save_flag(args)
+        if len(words) > 1:
+            raise CommandError("usage: /model [<alias|provider:name>] [--save]")
+        if not words and not save:
             return f"model: {router.explain('main').spec}"
-        spec = router.explain_value(args)
         try:
-            session.agent = build_agent(settings, router.set_main(spec))
+            return await session.config.switch_main(session, words[0] if words else router.explain("main").spec,
+                                                    save=save)
         except ValueError as e:
             raise CommandError(str(e)) from None
-        return f"model: {spec}"
 
     async def models(session: AgentSession, args: str) -> str:
         router = session.deps.models
-        words = args.split()
+        words, save = save_flag(args)
         try:
             match words:
-                case []:
+                case [] if not save:
                     return describe_models(session)
-                case ["set", "main", value]:
-                    return await model(session, value)
                 case ["set", task, value]:
-                    r = router.set_override(task, value)
-                    return f"{task}: {r.spec}" + (f" [{r.via}]" if r.via else "")
-                case ["reset"]:
+                    return await session.config.set_task(session, task, value, save=save)
+                case ["reset"] if not save:
                     router.clear_override()
                     return "Session model choices cleared."
                 case ["reset", task]:
-                    router.clear_override(task)
-                    return f"{task}: " + router.explain(task).spec
+                    return await session.config.clear_task(session, task, save=save)
+                case ["alias", name, "--rm"] if not save:
+                    return await session.config.remove_alias(session, name)
+                case ["alias", name, spec] if not save:
+                    return await session.config.set_alias(session, name, spec)
         except ValueError as e:
             raise CommandError(str(e)) from None
-        raise CommandError("usage: /models [set <task> <alias|provider:name> | reset [task]]")
+        raise CommandError("usage: /models [set <task> <alias|provider:name> [--save] | reset [task [--save]] | "
+                           "alias <name> <provider:name> | alias <name> --rm]")
+
+    async def ask_key(session: AgentSession, name: str) -> dict:
+        """The key for provider `name`, typed at a hidden prompt: a key, $ENV_VAR, or nothing."""
+        if session.ask_secret is None:
+            raise CommandError(f"this UI can't ask for a key without showing it; use /providers key {name} $ENV_VAR")
+        answer = await session.ask_secret(f"API key for {name} (empty for none, $NAME for an environment variable): ")
+        if answer is None:
+            raise CommandError("cancelled")
+        answer = answer.strip()
+        if m := ENV_RE.fullmatch(answer):
+            return {"key_env": m.group(1)}
+        return {"key": answer} if answer else {}
+
+    async def providers(session: AgentSession, args: str) -> str:
+        control = session.config
+        try:
+            match args.split():
+                case []:
+                    return control.describe_providers()
+                case ["add", name, url]:
+                    control.check_new_provider(name, url)  # before asking for a key
+                    key = await ask_key(session, name) if session.ask_secret else {}
+                    return await control.set_provider(session, name, base_url=url, new=True, **key)
+                case ["url", name, url]:
+                    return await control.set_provider(session, name, base_url=url)
+                case ["key", name]:
+                    if name not in all_providers(settings):
+                        raise ValueError(f"unknown provider {name!r}")
+                    key = await ask_key(session, name)
+                    if not key:
+                        return "No key given; nothing changed."
+                    return await control.set_provider(session, name, **key)
+                case ["key", name, env] if (m := ENV_RE.fullmatch(env)):
+                    return await control.set_provider(session, name, key_env=m.group(1))
+                case ["key", name, _]:
+                    raise CommandError(f"type /providers key {name} and paste the key at the hidden prompt, so it "
+                                       "isn't kept in your input history")
+                case ["rm", name]:
+                    return await control.remove_provider(session, name)
+                case ["test", name]:
+                    if name not in all_providers(settings):
+                        raise ValueError(f"unknown provider {name!r}")
+                    return await control.test_provider(name)
+        except ValueError as e:
+            raise CommandError(str(e)) from None
+        raise CommandError("usage: /providers [add <name> <url> | url <name> <url> | key <name> [$ENV_VAR] | "
+                           "rm <name> | test <name>]")
 
     def describe_models(session: AgentSession) -> str:
         router = session.deps.models
@@ -199,8 +253,10 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
     registry.add("help", "list commands", help_)
     registry.add("clear", "forget the conversation so far", clear)
     registry.add("compact", "summarize older history to free context: /compact [focus]", compact_)
-    registry.add("model", "show or switch model: /model <alias|provider:name>", model)
-    registry.add("models", "which model runs each task: /models [set <task> <alias|spec> | reset [task]]", models)
+    registry.add("model", "show or switch model: /model <alias|provider:name> [--save]", model)
+    registry.add("models", "which model runs each task: /models [set <task> <alias|spec> [--save] | reset [task] "
+                 "| alias <name> <spec> | alias <name> --rm]", models)
+    registry.add("providers", "list or change model providers: /providers [add|url|key|rm|test <name> ...]", providers)
     registry.add("usage", "token usage and context fill for this session", usage)
     registry.add("approve", "show or set approval chain: /approve [auto|yolo|default]", approve)
     registry.add("plan", "toggle plan mode (read-only until you approve a plan): /plan [on|off]", plan)

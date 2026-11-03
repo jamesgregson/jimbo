@@ -13,8 +13,9 @@ src/jimbo/
   main.py            CLI entry point: parse args, build frontend + session, run
   wiring.py          composition root: Settings + Frontend -> AgentSession
   agent.py           system prompt, tool list, builds the Pydantic AI Agent
-  commands.py        built-in slash commands (/model, /approve, /clear, ...) and skill commands
+  commands.py        built-in slash commands (/model, /providers, /approve, /clear, ...) and skill commands
   config.py          Settings (env, config.toml, CLI), trust rules for workspace config
+  config_edit.py     ConfigControl: saves model and provider changes to ~/.jimbo/config.toml and applies them
   core/              headless, UI-free logic
     session.py         AgentSession: the agent loop driver; emits events
     events.py          Event model and the EventSink interface
@@ -163,6 +164,7 @@ as usual.
 | `error`, `run_finished` | failure; end of turn (`ok`, `cancelled`) |
 | `status` | model, workspace, plan/auto/yolo mode and sandbox: sent at startup and when they change |
 | `busy` | `label` and `on`: a slow command outside a run (`/compact`) started or finished; sent by `session.busy()` |
+| `config` | aliases, task models and providers (never key values): sent at startup, after each saved change, and on request |
 
 Events carry a sequence number, timestamp and session id, and must stay JSON-serializable. That is what
 lets the same stream drive a terminal renderer, a websocket to the browser, and the JSONL session log
@@ -187,6 +189,10 @@ in a terminal and `plain` otherwise:
 - **web**: a local aiohttp server and single-page UI; approvals appear as a dialog with the diff. The header
   and the dialog each have an approval mode menu, which sends `approval_mode` (see The approval chain). The URL
   carries a one-time token because the page can approve file writes, so keep it on localhost.
+
+Optional methods add more: `confirm(message)` (yes/no), `ask_secret(message)` (a line that isn't echoed or kept in
+history, for API keys), and `bind_cancel`, `bind_approval_mode`, `bind_config` and `bind_model_list`, which
+`run_frontend` calls with functions the frontend's own controls can use.
 
 To add one, implement the protocol and register a factory in `FRONTENDS`.
 
@@ -297,6 +303,20 @@ Approvals are about intent; separate mechanisms limit what a call can physically
 - **Attachments**: `@path` mentions are inlined (capped) for the model while the logged `user_message`
   keeps the original text; pasted images are validated for type and size and dropped with a warning when
   `vision = false`.
+
+## Editing config
+
+[config_edit.py](src/jimbo/config_edit.py) `ConfigControl` (on `session.config`) handles `/model --save`, `/models
+alias`, `/models set --save`, `/providers` and the web Settings panel. Each change reads `~/.jimbo/config.toml`
+again with `tomlkit`, which keeps comments, changes it, validates the edited sections against `Settings`, and
+writes it to a temp file that replaces the original. Then it updates the shared `Settings` in place, drops
+models built for a changed provider (`ModelRouter.forget`), rebuilds the main agent if its provider changed, and
+emits `config`. Only the user file is written; the workspace config can't hold these keys anyway.
+
+A new main model is checked with `inspect_model` before the switch, as at startup. Pasted keys go through
+`store_key` in [providers/credentials.py](src/jimbo/providers/credentials.py): the macOS Keychain (via `security -i`,
+so the key isn't in a process list) or a 0600 file, never `config.toml`. The web panel's requests arrive through
+`runner.config_request`, which refuses changes during a run.
 
 ## Agents
 
