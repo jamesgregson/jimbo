@@ -6,7 +6,7 @@ from pydantic_ai.usage import RunUsage
 
 from .agent import AGENT_TOOL_NAMES, build_agent
 from .commands import register_builtins, register_skill_commands
-from .config import Settings
+from .config import BUNDLED_DIR, Settings
 from .core.agents import AgentResult, AgentSpec, ForwardSink, load_agents
 from .core.assess import TASK as ASSESS_TASK, assess_shell
 from .core.approval import (ApprovalGate, ApprovalPolicy, AskUser, PatternRules, PlanMode, ReadOnlyAllow,
@@ -93,12 +93,13 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     # Lowest to highest precedence. Also reads the cross-tool .agents/.claude skill folders; the user-level
     # ones are derived from user_dir's parent (the home dir by default).
     home = settings.user_dir.parent
-    skill_dirs = [home / ".claude" / "skills", home / ".agents" / "skills", settings.user_dir / "skills",
-                  workspace / ".claude" / "skills", workspace / ".agents" / "skills",
+    bundled = [BUNDLED_DIR] if settings.bundled else []
+    skill_dirs = [*(d / "skills" for d in bundled), home / ".claude" / "skills", home / ".agents" / "skills",
+                  settings.user_dir / "skills", workspace / ".claude" / "skills", workspace / ".agents" / "skills",
                   workspace / ".jimbo" / "skills"]
     deps.project_instructions = load_project_instructions(settings.user_dir, workspace)
     deps.skills = load_skills(skill_dirs)
-    agent_dirs = [settings.user_dir / "agents", workspace / ".jimbo" / "agents"]
+    agent_dirs = [*(d / "agents" for d in bundled), settings.user_dir / "agents", workspace / ".jimbo" / "agents"]
     loaded: dict[str, list] = {}
 
     def load_all_agents() -> list[str]:
@@ -180,5 +181,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     load_markdown_commands(session.commands, [settings.user_dir / "commands",
                                               deps.workspace / ".jimbo" / "commands"])
     register_skill_commands(session.commands, deps.skills)
+    # Last, because this skips names already taken: a user's skill replaces a bundled command of the same name.
+    load_markdown_commands(session.commands, [d / "commands" for d in bundled])
     holder["s"] = session
     return session

@@ -12,6 +12,9 @@ from .tools.sandbox import SandboxMode
 # The only setting read from the environment: tests use it to stay away from the real ~/.jimbo.
 USER_DIR_ENV = "JIMBO_USER_DIR"
 
+# Agents, skills and commands shipped with jimbo, laid out like .jimbo/. Any user file of the same name wins.
+BUNDLED_DIR = Path(__file__).parent / "bundled"
+
 # A cloned repo's .jimbo/config.toml must not be able to loosen approvals, the sandbox, or where
 # code and credentials are sent. These keys are only read from ~/.jimbo/config.toml (or env/CLI).
 UNTRUSTED_KEYS = {"model", "api_key", "ollama_base_url", "openai_base_url", "openrouter_base_url",
@@ -122,6 +125,7 @@ class Settings(BaseSettings):
     log_sessions: bool = True
     log_dir: Path = Path.home() / ".jimbo" / "sessions"
     user_dir: Path = Path.home() / ".jimbo"  # config.toml, commands/ (and later skills/)
+    bundled: bool = True  # False: load nothing from BUNDLED_DIR. A repo may set this; it only removes files
     tool_retries: int = 3
 
     shell_timeout: int = 120  # seconds, default per command; the model may ask for up to shell_timeout_max

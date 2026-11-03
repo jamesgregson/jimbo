@@ -12,6 +12,7 @@ Look things up here. To get started, see the [README](../README.md).
 - [Slash commands](#slash-commands)
 - [Custom commands](#custom-commands)
 - [Instructions and skills](#instructions-and-skills)
+- [Bundled files](#bundled-files)
 - [Sessions and context](#sessions-and-context)
 
 ## Configuration
@@ -42,6 +43,7 @@ temperature = 0.2             # sample value; unset by default (the provider's d
 request_timeout = 600         # seconds to wait for a model response
 request_limit = 50            # max model requests per turn
 tool_retries = 3              # how often the model may retry a failed or denied tool call
+bundled = true                # false loads no bundled agents, skills or commands
 
 # ---- Context and compaction -------------------------------------------------------------------
 num_ctx = 90000               # context size sent to the model; Ollama's /v1 endpoint ignores it
@@ -270,6 +272,7 @@ doesn't allow nesting.
 | `/todos` | show the agent's task list |
 | `/skills` | list available skills |
 | `/agents [new <name> [--user]]` | list agents, or create one |
+| `/bundled` | list the agents, skills and commands shipped with jimbo, with their paths |
 | `/resume [id]` | list this project's saved sessions, or load one by id |
 | `/diff` | show the file changes from the latest turn that made any |
 | `/undo` | restore the files that turn changed; repeat to go further back |
@@ -309,6 +312,34 @@ instructions on every request.
 **Skills:** a skill is a folder containing a `SKILL.md` with `name` and `description` frontmatter. Jimbo looks
 in `.jimbo/skills`, `.claude/skills` and `.agents/skills`, under both your home directory and the workspace.
 The model sees each name and description, and loads the body when it needs it.
+
+## Bundled files
+
+Jimbo ships these in the package. They work in every project, with no setup:
+
+| Kind | Name | What it does |
+|------|------|--------------|
+| Agent | `reviewer` | reviews a diff and reports bugs. It doesn't edit files |
+| Command | `/review [change]` | runs `reviewer` on uncommitted changes, or on the change you name |
+| Command | `/init` | writes or updates `AGENTS.md`, which applies from the next session |
+| Skill | `debug` | reproduce a problem, find the cause, fix it, add a test |
+| Skill | `write-tests` | write tests in the style the project already uses |
+
+**Replacing one:** create a file with the same name in any of the usual places. Your files always win, including
+skills in `~/.claude/skills` and `~/.agents/skills`. A skill and a command share the `/name` space, so your skill
+`review` replaces the command `/review`.
+
+**Changing one:** `/bundled` shows each file's path. Copy the file to `.jimbo/` or `~/.jimbo/`, in the matching folder,
+and edit the copy. Don't edit the file in the package, because an upgrade overwrites it. The bundled files change
+with the jimbo version, and your copies don't.
+
+**Model:** bundled files don't set a model, so `reviewer` runs on `main`. To change it, see [Agents](#agents).
+
+**Approvals:** `reviewer` runs `git diff`, which asks for approval as usual. To skip the prompt, add
+`approval_allow = ["shell:git diff*"]` to `~/.jimbo/config.toml`.
+
+**Turning them off:** set `bundled = false` in `~/.jimbo/config.toml`, or in `.jimbo/config.toml` for one project.
+`explore` and `general` still work, because they are built into the code.
 
 ## Agents
 

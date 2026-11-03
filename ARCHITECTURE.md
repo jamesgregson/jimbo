@@ -44,6 +44,7 @@ src/jimbo/
     plan.py            exit_plan (plan mode only)
   providers/         model selection: "<provider>:<name>" -> Pydantic AI Model; startup checks (preflight.py)
   frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page), json
+  bundled/           agents, skills and commands shipped with jimbo, laid out like .jimbo/
 ```
 
 The dependency direction is strict: `core` imports nothing from `frontends`; frontends depend only on
@@ -59,8 +60,9 @@ commands) live outside `core` for the same reason.
 3. Load project instructions and skills from disk into `Deps`.
 4. Build the Pydantic AI `Agent` and wrap it in an `AgentSession` with the sinks: the frontend (through
    `FrontendSink`) plus an optional `JsonlSink`.
-5. Register slash commands: built-ins, then markdown commands, then one per skill. Earlier registrations
-   win, so user files can never override a built-in.
+5. Register slash commands: built-ins, then markdown commands, then one per skill, then bundled commands.
+   Earlier registrations win, so user files can never override a built-in, and always override a bundled
+   command.
 
 Tests use the same function with a fake `model=`, so they exercise the real wiring.
 
@@ -258,6 +260,8 @@ Approvals are about intent; separate mechanisms limit what a call can physically
   become `/<name>`, with `$ARGUMENTS` substitution. With `agent:` in the frontmatter they run in that agent.
 - **Agents**: `<dir>/<name>.md` files in `~/.jimbo/agents` and `<workspace>/.jimbo/agents`, plus the built-in
   `explore` and `general` ([core/agents.py](src/jimbo/core/agents.py)). See [Agents](#agents).
+- **Bundled files**: `src/jimbo/bundled/` holds agents, skills and commands in the same formats. Its directories
+  are lowest precedence, and `bundled = false` skips them. `tests/test_bundled.py` checks the real files.
 - **Providers**: `"<provider>:<model>"` resolves through
   [providers/registry.py](src/jimbo/providers/registry.py) to a per-provider `ProviderConfig` (endpoint plus
   one credential source, resolved lazily in [providers/credentials.py](src/jimbo/providers/credentials.py)).

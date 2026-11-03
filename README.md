@@ -111,8 +111,18 @@ main = "ollama:llama3.1-32k"
 ### Teach it about your project
 
 Put an `AGENTS.md` in your project root with your build commands and conventions, and jimbo will follow
-them. You can also add [custom slash commands](docs/reference.md#custom-commands),
+them. `/init` writes one for you. You can also add [custom slash commands](docs/reference.md#custom-commands),
 [skills](docs/reference.md#instructions-and-skills) and [agents](docs/reference.md#agents).
+
+Jimbo also comes with a [small set of these](docs/reference.md#bundled-files) that work in every project:
+
+| Name | What it does |
+|------|--------------|
+| `/review` | reviews your uncommitted changes in the `reviewer` agent |
+| `/init` | writes or updates `AGENTS.md` |
+| `/debug` | finds the cause of a bug before changing code |
+| `/write-tests` | writes tests in the style the project already uses |
+| `@reviewer` | the review agent, which the model can also choose |
 
 ## Troubleshooting
 

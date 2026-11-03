@@ -5,6 +5,7 @@ from jimbo.core.approval import ApprovalDecision
 
 
 def settings(tmp_path, **kw):
+    kw.setdefault("bundled", False)
     return Settings(workspace=tmp_path, user_dir=tmp_path / "user", **kw)
 
 

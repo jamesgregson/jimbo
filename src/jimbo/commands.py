@@ -4,7 +4,7 @@ from .agent import build_agent
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.usage import RunUsage
 
-from .config import Settings
+from .config import BUNDLED_DIR, Settings
 from .core.agents import RESERVED_PREFIX
 from .core.approval import ApprovalPolicy
 from .core.commands import NAME_RE, CommandError, CommandRegistry, QuitSession
@@ -150,6 +150,14 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
                 return f"Created {path}. Edit it, then use @{name} <task>."
         raise CommandError("usage: /agents [new <name> [--user]]")
 
+    async def bundled(session: AgentSession, args: str) -> str:
+        if not settings.bundled:
+            return "Bundled files are off (bundled = false)."
+        rows = [("agent", p.stem, p) for p in sorted((BUNDLED_DIR / "agents").glob("*.md"))]
+        rows += [("command", p.stem, p) for p in sorted((BUNDLED_DIR / "commands").glob("*.md"))]
+        rows += [("skill", p.parent.name, p) for p in sorted((BUNDLED_DIR / "skills").glob("*/SKILL.md"))]
+        return "\n".join(f"{kind:<9}{name:<14}{path}" for kind, name, path in rows)
+
     async def resume(session: AgentSession, args: str) -> str:
         if session.is_running:
             raise CommandError("a run is in progress; wait for it or cancel first")
@@ -198,6 +206,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("todos", "show the agent's task list", todos)
     registry.add("skills", "list available skills", skills)
     registry.add("agents", "list agents, or create one: /agents [new <name> [--user]]", agents)
+    registry.add("bundled", "list the agents, skills and commands shipped with jimbo, with their paths", bundled)
     registry.add("resume", "list saved sessions, or load one: /resume [id]", resume)
     registry.add("diff", "show the file changes from the latest turn that made any", diff)
     registry.add("undo", "restore the files changed by the latest turn that changed any", undo)
