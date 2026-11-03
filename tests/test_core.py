@@ -324,3 +324,18 @@ def test_output_preview_keeps_the_end():
     shown = output_preview(f"exit code 0\n{body}")
     assert shown[0].startswith("… 15 earlier lines") and shown[-1] == "line24" and len(shown) == 11
     assert output_preview("exit code 0") == []
+
+
+async def test_streamed_thinking_is_emitted(tmp_path):
+    from pydantic_ai.models.function import DeltaThinkingPart
+
+    async def stream(messages, info):
+        yield {0: DeltaThinkingPart(content="Let me ")}
+        yield {0: DeltaThinkingPart(content="think")}
+        yield "done"
+
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path), fe, model=FunctionModel(stream_function=stream))
+    await s.send("go")
+    thought = "".join(e.data["text"] for e in fe.events if e.kind == "assistant_thinking_delta")
+    assert thought == "Let me think"

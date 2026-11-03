@@ -51,8 +51,29 @@ AGENT_PLAN_PROMPT = """\
 The session is in plan mode: only read-only tools work; edits and shell are denied. Report what you find."""
 
 
+WRAP_UP_REQUESTS = 3  # warn the model when this many requests (or fewer) are left in the turn
+
+WRAP_UP_PROMPT = """\
+# Wrap up now
+You have {left} model request(s) left in this turn, including this one; after that the turn is stopped.
+Do not start new work. Leave the workspace in a sensible state: finish or undo any half-made edit,
+and update the todo list. Then end with a message saying what is done, what is not, and what to do next.
+{last}"""
+
+
+def wrap_up_notice(deps: Deps, requests_made: int) -> str | None:
+    if deps.request_limit is None:
+        return None
+    left = deps.request_limit - requests_made
+    if left > WRAP_UP_REQUESTS:
+        return None
+    last = "This is the last request: reply with text only, no tool calls." if left <= 1 else ""
+    return WRAP_UP_PROMPT.format(left=left, last=last).rstrip()
+
+
 def project_context(ctx: RunContext[Deps]) -> str:
-    """Dynamic instructions: AGENTS.md contents and the skill and agent indexes, read from deps on every request."""
+    """Dynamic instructions: AGENTS.md contents, the skill and agent indexes, and a wrap-up warning when the
+    turn is nearly out of requests, read from deps on every request."""
     deps, parts = ctx.deps, []
     if deps.mode == "plan":
         parts.append(AGENT_PLAN_PROMPT if deps.agent else PLAN_PROMPT)
@@ -67,6 +88,8 @@ def project_context(ctx: RunContext[Deps]) -> str:
     if index := format_agent_index(deps.agents):
         parts.append("# Agents\nCall run_agent(agent, task) to hand a self-contained task to an agent. It starts "
                      "with no conversation history and returns one report:\n" + index)
+    if notice := wrap_up_notice(deps, ctx.usage.requests):  # last, so the parts above stay cacheable
+        parts.append(notice)
     return "\n\n".join(parts)
 
 

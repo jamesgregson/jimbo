@@ -663,3 +663,16 @@ async def test_agent_approvals_match_the_forwarded_id(tmp_path):
     s, fe = make(tmp_path, models={"t:fast": scripted(call("glob", pattern="*"), "report")})
     await s.commands.dispatch(s, "@worker go")
     assert kinds(fe, "approval_resolved")[0]["call_id"] == kinds(fe, "tool_call")[0]["id"]
+
+
+async def test_model_is_told_to_wrap_up_near_the_request_limit(tmp_path):
+    seen, steps = [], iter([call("glob", pattern="*")] * 4 + ["summary"])
+
+    async def stream(messages, info):
+        seen.append(next(m.instructions for m in reversed(messages) if isinstance(m, ModelRequest)))
+        yield next(steps)
+    s, fe = make(tmp_path, models={"t:main": FunctionModel(stream_function=stream)}, request_limit=5)
+    assert await s.send("go") == "summary"
+    assert ["# Wrap up now" in i for i in seen] == [False, False, True, True, True]
+    assert "1 model request(s) left" in seen[-1] and "no tool calls" in seen[-1]
+    assert "no tool calls" not in seen[-2]

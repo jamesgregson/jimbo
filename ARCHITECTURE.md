@@ -79,6 +79,7 @@ user input
 ┌─────────────────────────────────────────────────────────────┐
 │ ModelRequestNode   stream model output                       │
 │                    └─ text chunks ─────────────────────────► assistant_text_delta
+│                    └─ reasoning chunks ────────────────────► assistant_thinking_delta
 │        │                                                     │
 │        ▼                                                     │
 │ CallToolsNode      record context size                       ► context
@@ -94,7 +95,9 @@ user input
 
 Key properties:
 
-- **Bounded.** `request_limit` (default 50) caps model requests per turn via `UsageLimits`.
+- **Bounded.** `request_limit` (default 50) caps model requests per turn via `UsageLimits`. For the last 3
+  requests, `project_context` adds a notice telling the model to stop starting new work, leave the workspace
+  in a sensible state and end with a summary. On the last request it is told to reply without tool calls.
 - **Cancellable.** `send()` runs the turn in its own `asyncio.Task` so `cancel()` (Ctrl+C, or the web UI's
   Stop button) cancels the run without cancelling the caller. In the runner's SIGINT handler a second
   Ctrl+C within 2 seconds of one that cancelled a run escalates to quitting. On cancel, the partial turn is kept in
@@ -150,6 +153,7 @@ as usual.
 |------|---------|
 | `user_message` | the user's input, with attachment metadata |
 | `assistant_text_delta` / `assistant_text` | streamed chunks / final answer |
+| `assistant_thinking_delta` | streamed reasoning, when the model returns it; not replayed on resume |
 | `tool_call` / `tool_result` | a tool invocation and its outcome |
 | `approval_requested` / `approval_resolved` | a human was asked / any policy decided |
 | `usage`, `context` | token counts; context-window fill |
@@ -157,7 +161,8 @@ as usual.
 | `compaction` | older history was replaced by a summary |
 | `command_output`, `commands` | slash command results; the command list for completion |
 | `error`, `run_finished` | failure; end of turn (`ok`, `cancelled`) |
-| `status` | model, workspace, plan/yolo mode and sandbox: sent at startup and when they change |
+| `status` | model, workspace, plan/auto/yolo mode and sandbox: sent at startup and when they change |
+| `busy` | `label` and `on`: a slow command outside a run (`/compact`) started or finished; sent by `session.busy()` |
 
 Events carry a sequence number, timestamp and session id, and must stay JSON-serializable. That is what
 lets the same stream drive a terminal renderer, a websocket to the browser, and the JSONL session log
@@ -179,7 +184,8 @@ in a terminal and `plain` otherwise:
 - **plain**: line-oriented stdin/stdout.
 - **tui**: inline rich UI with streaming markdown, `@path` completion, paste collapsing, clipboard images.
 - **json**: one JSON event per line on stdout, for scripts. Calls that need a human are denied.
-- **web**: a local aiohttp server and single-page UI; approvals appear as a dialog with the diff. The URL
+- **web**: a local aiohttp server and single-page UI; approvals appear as a dialog with the diff. The header
+  and the dialog each have an approval mode menu, which sends `approval_mode` (see The approval chain). The URL
   carries a one-time token because the page can approve file writes, so keep it on localhost.
 
 To add one, implement the protocol and register a factory in `FRONTENDS`.
@@ -210,8 +216,20 @@ The default chain is:
 | `remembered` (`RememberedDecisions`) | allow what the user chose "always" for: one exact shell command, or a whole other tool |
 | `ask` (`AskUser`) | terminal policy: ask the frontend; honors "remember for session" |
 
+`--auto` (or `/approve auto`) inserts `auto` (`AutoApprove`) before `ask`. It allows `write_file` and
+`edit_file` (which can't leave the workspace), and shell calls whose assessment came from the model and is
+`low` or `medium`. It returns `ask` for everything else, including shell calls with no model answer. It runs the assess hook itself, so the prompt for a call it passes on shows the
+same assessment. It is built without the hook, and then allows nothing, when `jimbo-shell-assess` mode is `off`.
+
 `--yolo` (or `/approve yolo`) swaps the chain for `rules` then `yolo`, so **deny rules still apply** when
-everything else is auto-approved. `/approve default` restores the normal chain. Because policies are plain
+everything else is auto-approved. `/approve default` restores the normal chain.
+
+The named chains live in `ApprovalModes`, which `/approve` and frontend controls share. A frontend with its own
+control defines `bind_approval_mode`; `run_frontend` hands it `set_approval_mode`, which, unlike a slash command,
+works mid-run and while a prompt is open. It replaces `gate.policies`, so a call already being decided keeps the
+old chain and later calls use the new one. A frontend with an optional `confirm(message) -> bool` (the TUI) is
+asked before a risky mode is turned on: `run_frontend` sets it as `session.confirm`, `/approve auto|yolo` uses it,
+and a session started in a risky mode is asked once and falls back to the default chain on "no". Because policies are plain
 objects behind a protocol, a smarter one (for example an LLM-based guard) can be inserted before `ask`.
 
 Details worth knowing:

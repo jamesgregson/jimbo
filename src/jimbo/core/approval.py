@@ -195,6 +195,32 @@ class Yolo:
         return Verdict(action="allow", decided_by=self.name)
 
 
+class AutoApprove:
+    """Allows file writes and edits (the tools keep them inside the workspace), and shell commands the
+    assessment model rates medium risk or lower; everything else falls through. The fixed checks can raise a
+    command's risk but never approve it on their own: with no model answer (slow or failed) it asks. `assess`
+    is None when there is no assessment model, which disables the whole policy."""
+
+    name = "auto"
+
+    def __init__(self, assess: Callable[[ToolCallInfo], Awaitable[None]] | None) -> None:
+        self.assess = assess
+
+    async def evaluate(self, call: ToolCallInfo) -> Verdict:
+        if self.assess is None:
+            return Verdict(action="ask", decided_by=self.name)
+        if call.tool in ("write_file", "edit_file"):
+            return Verdict(action="allow", decided_by=self.name)
+        if call.tool != "shell":
+            return Verdict(action="ask", decided_by=self.name)
+        if call.assessment is None:
+            await self.assess(call)
+        a = call.assessment
+        if a and a.get("model") and a.get("risk") in ("low", "medium"):
+            return Verdict(action="allow", decided_by=self.name, reason=f"assessed as {a['risk']} risk")
+        return Verdict(action="ask", decided_by=self.name)
+
+
 class AskUser:
     """Terminal policy: delegates to the frontend. Add smarter policies (e.g. an LLM guard) before it."""
 
@@ -226,6 +252,43 @@ class AskUser:
                 self._remembered.add(call)
             reason = None if d.allow else f"User denied this action: {d.note}" if d.note else None
             return Verdict(action="allow" if d.allow else "deny", reason=reason, decided_by="user")
+
+
+AUTO_CHAIN = ["rules", "readonly", "remembered", "auto", "ask"]
+YOLO_CHAIN = ["rules", "yolo"]  # deny rules still apply
+RISKY_MODES = ("auto", "yolo")
+# Shown before turning on a risky mode, by frontends that can ask (the web page has its own copy).
+MODE_WARNING = ("Are you sure? Jimbo will make automated decisions on your behalf and WILL destroy your code, "
+                "system and reputation")
+
+
+class ApprovalModes:
+    """The approval chains the user can switch between, with /approve or a frontend's own control. Plan mode
+    stays at the head of the chain. A call already being decided keeps the chain it started with."""
+
+    def __init__(self, gate: "ApprovalGate", policies: dict[str, ApprovalPolicy], current: list[str],
+                 default: list[str], *, auto_available: bool) -> None:
+        self._gate, self._policies = gate, policies
+        self.chains = {"default": default, "auto": AUTO_CHAIN, "yolo": YOLO_CHAIN}
+        self.auto_available = auto_available  # False without a shell assessment model
+        self.names = list(current)
+
+    @property
+    def risky(self) -> bool:
+        """A mode that decides without asking is on."""
+        return any(m in self.names for m in RISKY_MODES)
+
+    def check(self, mode: str) -> None:
+        """Raise ValueError if `mode` can't be switched to."""
+        if mode not in self.chains:
+            raise ValueError(f"unknown approval mode {mode!r}; use {', '.join(self.chains)}")
+        if mode == "auto" and not self.auto_available:
+            raise ValueError("auto needs the shell assessment model; [tasks.jimbo-shell-assess] mode is off")
+
+    def set(self, mode: str) -> None:
+        self.check(mode)
+        self.names = list(self.chains[mode])
+        self._gate.policies = [self._policies["plan"], *(self._policies[n] for n in self.names)]
 
 
 class ApprovalGate:

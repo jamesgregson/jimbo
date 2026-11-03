@@ -11,6 +11,7 @@ EventKind = Literal[
     "user_message",
     "assistant_text_delta",
     "assistant_text",
+    "assistant_thinking_delta",
     "tool_call",
     "tool_result",
     "approval_requested",
@@ -24,6 +25,7 @@ EventKind = Literal[
     "command_output",
     "compaction",
     "status",
+    "busy",
 ]
 
 

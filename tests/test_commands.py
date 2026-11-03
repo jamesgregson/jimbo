@@ -161,7 +161,7 @@ async def test_approve(tmp_path):
     await s.commands.dispatch(s, "/approve default")
     assert last(fe)["text"].endswith("→ ask")
     await s.commands.dispatch(s, "/approve maybe")
-    assert last(fe) == {"command": "approve", "ok": False, "text": "usage: /approve [yolo|default]"}
+    assert last(fe) == {"command": "approve", "ok": False, "text": "usage: /approve [auto|yolo|default]"}
 
 
 async def test_approve_default_after_starting_in_yolo(tmp_path):
@@ -184,7 +184,7 @@ async def test_quit_raises():
     reg = CommandRegistry()
     from jimbo.commands import register_builtins
     from jimbo.config import Settings
-    register_builtins(reg, Settings(), {})
+    register_builtins(reg, Settings(), None)
     with pytest.raises(QuitSession):
         await reg.dispatch(None, "/quit")
 
@@ -287,3 +287,49 @@ async def test_output_shows_the_full_shell_result(tmp_path):
     s.last_output = "exit code 0\nall of it"
     await s.commands.dispatch(s, "/output")
     assert last(fe)["text"] == "exit code 0\nall of it"
+
+
+class Confirming(ScriptedFrontend):
+    """A frontend that can answer yes/no questions, like the TUI."""
+
+    def __init__(self, inputs=(), answers=()):
+        super().__init__(inputs)
+        self.answers, self.asked = list(answers), []
+
+    async def confirm(self, message):
+        self.asked.append(message)
+        return self.answers.pop(0)
+
+
+async def test_approve_confirms_risky_modes(tmp_path):
+    from jimbo.core.approval import MODE_WARNING
+    fe = Confirming(["/approve yolo", "/approve yolo", "/approve default", "/approve auto"], answers=[False, True, True])
+    s = build_session(settings(tmp_path), fe, model=TestModel())
+    await run_frontend(s, fe)
+    assert [o["text"] for o in outputs(fe)] == [
+        "approval unchanged: rules → readonly → remembered → ask", "approval: rules → yolo",
+        "approval: rules → readonly → remembered → ask", "approval: rules → readonly → remembered → auto → ask"]
+    assert fe.asked == [MODE_WARNING] * 3  # not for "default"
+
+
+async def test_approve_reports_unavailable_auto_before_asking(tmp_path):
+    fe = Confirming(["/approve auto"])
+    s = build_session(settings(tmp_path, tasks={"jimbo-shell-assess": {"mode": "off"}}), fe, model=TestModel())
+    await run_frontend(s, fe)
+    assert not fe.asked and "mode is off" in outputs(fe)[-1]["text"]
+
+
+@pytest.mark.parametrize("answer,names", [(True, ["rules", "yolo"]), (False, ["rules", "readonly", "remembered", "ask"])])
+async def test_starting_in_a_risky_mode_asks_first(tmp_path, answer, names):
+    fe = Confirming(answers=[answer])
+    s = build_session(settings(tmp_path, approval=["rules", "yolo"]), fe, model=TestModel())
+    await run_frontend(s, fe)
+    assert len(fe.asked) == 1 and s.approval_modes.names == names
+    assert [e.data["yolo"] for e in fe.events if e.kind == "status"] == ([True] if answer else [True, False])
+
+
+async def test_frontends_without_confirm_are_not_asked(tmp_path):
+    fe = ScriptedFrontend(["/approve yolo"])
+    s = build_session(settings(tmp_path, approval=["rules", "yolo"]), fe, model=TestModel())
+    await run_frontend(s, fe)
+    assert outputs(fe)[-1]["text"] == "approval: rules → yolo"

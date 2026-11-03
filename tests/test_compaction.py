@@ -119,3 +119,36 @@ async def test_midrun_compaction_keeps_pending_tool_pair(tmp_path):
     assert await s.send("go") == "done"
     assert seen and not [e for e in fe.events if e.kind == "error"]
     assert s.history[0].parts[0].content.startswith(SUMMARY_PREFIX)
+
+
+def busy_and_after(fe):
+    """The busy events, and the kinds of events that came between them."""
+    kinds = [e.kind for e in fe.events]
+    start, end = kinds.index("busy"), len(kinds) - 1 - kinds[::-1].index("busy")
+    return [e.data for e in fe.events if e.kind == "busy"], kinds[start + 1:end], kinds[end + 1:]
+
+
+async def test_compact_command_shows_busy_until_done(tmp_path):
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path, compact_keep=2), fe, model=model_with_summary([]))
+    for t in ("one", "two", "three"):
+        await s.send(t)
+    await s.commands.dispatch(s, "/compact")
+    busy, during, after = busy_and_after(fe)
+    assert busy == [{"label": "compacting", "on": True}, {"label": "compacting", "on": False}]
+    assert "compaction" in during and "command_output" in after
+
+
+async def test_compact_failure_still_ends_busy(tmp_path):
+    def broken(messages, info):
+        raise RuntimeError("model down")
+
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path, compact_keep=2), fe, model=model_with_summary([]))
+    for t in ("one", "two", "three"):
+        await s.send(t)
+    s.deps.models.resolve = lambda task: FunctionModel(broken)  # the compaction model fails
+    await s.commands.dispatch(s, "/compact")
+    busy, _, after = busy_and_after(fe)
+    assert [b["on"] for b in busy] == [True, False]
+    assert [e.data for e in fe.events if e.kind == "command_output"][-1]["ok"] is False

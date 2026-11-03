@@ -80,7 +80,7 @@ class TaskConfig(BaseModel):
     # off: never. ask: when the user is about to be asked. always: for every call, including ones a
     # policy already allowed.
     mode: Literal["off", "ask", "always"] = "ask"
-    timeout: float = 8.0  # seconds to wait for the model before carrying on without its answer
+    timeout: float = 30.0  # seconds to wait for the model before carrying on without its answer
 
 
 class Settings(BaseSettings):

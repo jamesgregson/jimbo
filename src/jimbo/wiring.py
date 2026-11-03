@@ -9,8 +9,8 @@ from .commands import register_builtins, register_skill_commands
 from .config import BUNDLED_DIR, Settings
 from .core.agents import AgentResult, AgentSpec, ForwardSink, load_agents
 from .core.assess import TASK as ASSESS_TASK, assess_shell
-from .core.approval import (ApprovalGate, ApprovalPolicy, AskUser, PatternRules, PlanMode, ReadOnlyAllow,
-                            RememberedDecisions, Yolo)
+from .core.approval import (ApprovalGate, ApprovalModes, ApprovalPolicy, AskUser, AutoApprove, PatternRules,
+                            PlanMode, ReadOnlyAllow, RememberedDecisions, Yolo)
 from .core.commands import load_markdown_commands
 from .core.deps import Deps
 from .core.events import EventSink
@@ -22,6 +22,9 @@ from .core.session import AgentSession
 from .providers.preflight import ModelFacts, inspect_model
 from .providers.registry import build_model_from_spec
 from .tools.sandbox import build_sandbox
+
+
+ASSESS_WARN_AFTER = 3  # failed shell assessments in a row before the user is told
 
 
 class FrontendSink:
@@ -52,6 +55,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         return await frontend.request_approval(req)
 
     assess_mode = settings.task(ASSESS_TASK).mode
+    failures = {"streak": 0}  # assessments in a row the model didn't answer
 
     async def assess(call) -> None:
         """Attach a model-written summary and risk to a shell call; never blocks the call on failure."""
@@ -62,6 +66,15 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         a = await assess_shell(router, str(call.args["command"]), deps.workspace,
                                timeout=settings.task(ASSESS_TASK).timeout, where=f"Execution: {where}")
         call.assessment = a.model_dump() if a else None
+        if a is not None and a.model:
+            failures["streak"] = 0
+        elif a is not None and a.error:
+            failures["streak"] += 1
+            if failures["streak"] == ASSESS_WARN_AFTER:  # once per streak
+                await holder["s"].emit("command_output", command=ASSESS_TASK, ok=True, text=(
+                    f"warning: {ASSESS_TASK} failed {ASSESS_WARN_AFTER} times in a row (last: {a.error}). Shell "
+                    "prompts show only the fixed checks, and auto mode asks before every shell command. Check "
+                    f"the model with /models, or raise timeout under [tasks.{ASSESS_TASK}]."))
 
     async def assess_asked(call) -> None:
         if assess_mode != "off":
@@ -72,8 +85,11 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         "rules": PatternRules(settings.approval_allow,
                               [*settings.approval_deny, *(f"read_file:{p}" for p in settings.secret_files)]),
         "readonly": ReadOnlyAllow(), "remembered": remembered, "yolo": Yolo(),
+        "auto": AutoApprove(assess if assess_mode != "off" else None),
         "ask": AskUser(ask, remembered, assess_asked),
     }
+    if "auto" in settings.approval and assess_mode == "off":
+        print("jimbo: auto approval is off because jimbo-shell-assess mode is off", file=sys.stderr)
     policies = [available["plan"], *(available[n] for n in settings.approval)]
 
     async def observe(call, v):
@@ -87,7 +103,12 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
 
     workspace = settings.workspace.resolve()
     sandbox = build_sandbox(settings.sandbox, workspace, settings.sandbox_writable, settings.sandbox_network)
-    deps = Deps(workspace=workspace, gate=ApprovalGate(policies, observe), sandbox=sandbox,
+    gate = ApprovalGate(policies, observe)
+    # Started with --yolo or --auto: "default" means the normal chain, not that one.
+    default_chain = (settings.approval if not {"yolo", "auto"} & set(settings.approval)
+                     else list(Settings.model_fields["approval"].default))
+    modes = ApprovalModes(gate, available, settings.approval, default_chain, auto_available=assess_mode != "off")
+    deps = Deps(workspace=workspace, gate=gate, sandbox=sandbox,
                 shell_timeout=settings.shell_timeout, shell_timeout_max=settings.shell_timeout_max,
                 models=router, secret_files=settings.secret_files)
     # Lowest to highest precedence. Also reads the cross-tool .agents/.claude skill folders; the user-level
@@ -177,7 +198,8 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     if settings.log_sessions:
         session.store = SessionStore(settings.log_dir, workspace)
     session.replay_sink = FrontendSink(frontend)
-    register_builtins(session.commands, settings, available)
+    session.approval_modes = modes
+    register_builtins(session.commands, settings, modes)
     load_markdown_commands(session.commands, [settings.user_dir / "commands",
                                               deps.workspace / ".jimbo" / "commands"])
     register_skill_commands(session.commands, deps.skills)

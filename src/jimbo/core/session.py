@@ -1,5 +1,7 @@
 import asyncio
 import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import replace
 
 from pydantic_ai import Agent, UsageLimits
@@ -14,6 +16,8 @@ from pydantic_ai.messages import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
     ToolReturnPart,
     UserContent,
     UserPromptPart,
@@ -22,6 +26,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 
 from .agents import AgentResult
+from .approval import ApprovalModes
 from .attachments import build_content, expand_mentions, image_meta
 from .commands import CommandRegistry
 from .compaction import compact as compact_history, render_transcript
@@ -50,6 +55,8 @@ class AgentSession:
         self.compact_keep = compact_keep
         self.store: SessionStore | None = None  # set to persist history after each turn (enables /resume)
         self.replay_sink: EventSink | None = None  # where resume() redraws past events (the frontend only)
+        self.approval_modes: ApprovalModes | None = None  # set by wiring; switched by /approve or the frontend
+        self.confirm: Callable[[str], Awaitable[bool]] | None = None  # the frontend's yes/no question, if any
         self.deps.midrun_compact = self._compact_midrun
         self.deps.midrun_steer = self._inject_steers
         self.failed = False  # a run or command failed; one-shot mode turns this into the exit code
@@ -60,6 +67,7 @@ class AgentSession:
         self.total_usage = RunUsage()  # whole session; updated live during a run
         self.turn_usage = RunUsage()  # the current (or most recent) prompt
         self._limits = UsageLimits(request_limit=request_limit)
+        self.deps.request_limit = request_limit  # so the prompt can warn the model before it runs out
         self._seq = 0
         self._todos_sent: list = []
         self._task: asyncio.Task | None = None
@@ -84,6 +92,7 @@ class AgentSession:
         d = self.deps
         status = {"model": d.models.explain("main").spec if d.models else None, "workspace": str(d.workspace),
                   "mode": d.mode, "yolo": any(p.name == "yolo" for p in d.gate.policies),
+                  "auto": any(p.name == "auto" for p in d.gate.policies),
                   "sandboxed": d.sandbox is not None}
         if initial or self._status_sent not in (None, status):
             self._status_sent = status
@@ -216,6 +225,16 @@ class AgentSession:
             await self.emit("error", type=type(e).__name__, message=f"auto-compaction failed: {e}")
             return messages
 
+    @asynccontextmanager
+    async def busy(self, label: str) -> AsyncIterator[None]:
+        """Show the UI as busy with `label` (e.g. "compacting") while a slow command runs. Runs have their own
+        indicator (user_message .. run_finished); this is for work outside them."""
+        await self.emit("busy", label=label, on=True)
+        try:
+            yield
+        finally:
+            await self.emit("busy", label=label, on=False)
+
     async def compact(self, focus: str = "") -> str | None:
         """Summarize older history now. Returns a status line, or None if there was nothing to compact."""
         before = self.context_tokens
@@ -309,6 +328,12 @@ class AgentSession:
                                         await self.emit("assistant_text_delta", text=ev.part.content)
                                 elif isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta):
                                     await self.emit("assistant_text_delta", text=ev.delta.content_delta)
+                                elif isinstance(ev, PartStartEvent) and isinstance(ev.part, ThinkingPart):
+                                    if ev.part.content:
+                                        await self.emit("assistant_thinking_delta", text=ev.part.content)
+                                elif isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, ThinkingPartDelta):
+                                    if ev.delta.content_delta:  # signature-only deltas carry no text
+                                        await self.emit("assistant_thinking_delta", text=ev.delta.content_delta)
                     elif Agent.is_call_tools_node(node):
                         u = node.model_response.usage
                         self.context_tokens = u.input_tokens + u.output_tokens

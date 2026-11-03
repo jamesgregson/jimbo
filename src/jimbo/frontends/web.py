@@ -4,7 +4,8 @@ Server -> client: {"type": "event", "event": Event}, {"type": "approval", "reque
                   {"type": "approval_closed", "id": str}, {"type": "files", "prefix": str, "files": [str]}
 Client -> server: {"type": "send", "text": str, "images"?: [{"media_type": str, "data": base64}]},
                   {"type": "approve", "id": str, "decision": "yes|no|always", "note"?: str  (why, on "no")},
-                  {"type": "cancel"}, {"type": "complete", "prefix": str}  (workspace files for @path)
+                  {"type": "cancel"}, {"type": "complete", "prefix": str}  (workspace files for @path),
+                  {"type": "approval_mode", "mode": "default|auto|yolo"}  (allowed mid-run and during a prompt)
 """
 
 import asyncio
@@ -16,7 +17,7 @@ import json
 import secrets
 import webbrowser
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 from urllib.parse import urlparse
 
 from aiohttp import WSMsgType, web
@@ -47,10 +48,15 @@ class WebFrontend:
         self._pending: dict[str, tuple[ApprovalRequest, asyncio.Future[ApprovalDecision]]] = {}
         self._runner: web.AppRunner | None = None
         self._cancel: Callable[[], object] | None = None
+        self._set_mode: Callable[[str], Awaitable[None]] | None = None
 
     def bind_cancel(self, cancel: Callable[[], object]) -> None:
         """Called by run_frontend so the page's stop button can interrupt the run."""
         self._cancel = cancel
+
+    def bind_approval_mode(self, set_mode: Callable[[str], Awaitable[None]]) -> None:
+        """Called by run_frontend so the page's approval mode control can switch modes."""
+        self._set_mode = set_mode
 
     # ---- Frontend protocol ----
     async def next_user_input(self) -> str | None:
@@ -155,6 +161,8 @@ class WebFrontend:
             asyncio.get_running_loop().create_task(self._send_files(ws, msg["prefix"]))
         elif kind == "cancel" and self._cancel:
             self._cancel()
+        elif kind == "approval_mode" and isinstance(msg.get("mode"), str) and self._set_mode:
+            asyncio.get_running_loop().create_task(self._set_mode(msg["mode"]))
         elif kind == "approve" and msg.get("id") in self._pending:
             _, fut = self._pending[msg["id"]]
             d, note = msg.get("decision"), msg.get("note")

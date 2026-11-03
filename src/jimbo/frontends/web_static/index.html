@@ -62,6 +62,9 @@
   pre { margin: 6px 0; padding: 8px 10px; background: var(--code); border-radius: 6px; overflow: auto;
         font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; max-height: 420px; }
   pre code { background: none; padding: 0; }
+  .reasoning { margin: 8px auto; color: var(--dim); font-size: 13px; }
+  .reasoning > summary { cursor: pointer; font-size: 12px; }
+  .reasoning > div { white-space: pre-wrap; padding: 4px 0 0 12px; border-left: 2px solid var(--line); margin-top: 4px; }
   .card { margin: 8px auto; border: 1px solid var(--line); background: var(--tool); border-radius: 8px; overflow: hidden; }
   .card > summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 8px; align-items: baseline;
                     font: 12px ui-monospace, Menlo, monospace; list-style: none; }
@@ -116,7 +119,12 @@
   #dlg { background: var(--panel); border-radius: 12px; padding: 16px; width: min(760px, 100%);
          max-height: 90vh; overflow: auto; border: 1px solid var(--warn); }
   #dlg h2 { font-size: 15px; margin: 0 0 4px; } #dlg .sum { margin-bottom: 8px; font-weight: 600; }
-  #dlg .btns { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+  #dlg .btns { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; flex-wrap: wrap; }
+  .mode { font-size: 12px; color: var(--dim); display: inline-flex; gap: 6px; align-items: center; }
+  .mode select { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+                 padding: 2px 6px; font: inherit; }
+  .mode select.risky { border-color: var(--err); color: var(--err); font-weight: 600; }
+  #dlg .btns .mode { margin-right: auto; }
 </style>
 </head>
 <body>
@@ -138,7 +146,7 @@ const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const log = $("#log"), input = $("#input"), sendBtn = $("#send"), stopBtn = $("#stop"), statusEl = $("#status");
 const token = new URLSearchParams(location.search).get("token") || "";
-let ws, running = false, seg = null, segText = "", cards = new Map(), pendingId = null;
+let ws, running = false, seg = null, segText = "", thinkSeg = null, cards = new Map(), pendingId = null;
 let commands = [], lastCtx = null;
 const fmtN = (n) => n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
 function showStats(d) {
@@ -157,8 +165,28 @@ function setRunning(v) {
   $("#thinking").classList.toggle("show", v);
   if (ws && ws.readyState === 1) setStatus(v ? "working…" : "idle", v ? "busy" : "");
 }
+// Approval mode: a control in the header and one in each approval prompt, both showing the session's mode.
+const MODES = [["default", "Ask first"], ["auto", "Auto"], ["yolo", "YOLO"]];
+const MODE_WARNING = "Are you sure? Jimbo will make automated decisions on your behalf and WILL destroy your code, system and reputation";
+let approvalMode = "default";
+function syncMode(sel) { sel.value = approvalMode; sel.classList.toggle("risky", approvalMode !== "default"); }
+function modeControl() {
+  const label = el("label", "mode", "Approvals "), sel = el("select");
+  label.title = "How later tool calls are approved";
+  for (const [value, text] of MODES) { const o = el("option", null, text); o.value = value; sel.append(o); }
+  sel.onchange = () => {
+    const mode = sel.value;
+    syncMode(sel);  // keep showing the session's mode until a status event confirms the change
+    if (mode !== "default" && !confirm(MODE_WARNING)) return;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "approval_mode", mode }));
+  };
+  label.append(sel); syncMode(sel); return label;
+}
+
 function scroll() { const near = log.scrollHeight - log.scrollTop - log.clientHeight < 120; if (near) log.scrollTop = log.scrollHeight; }
-function add(node) { log.append(node); scroll(); return node; }
+function add(node) { endThinking(); log.append(node); scroll(); return node; }
+// Reasoning stays open while it streams and folds away once the model moves on.
+function endThinking() { if (thinkSeg) { thinkSeg.open = false; thinkSeg = null; } }
 
 // Small markdown renderer: fences, headings, lists, quotes, tables, rules, and inline code/bold/italic/links.
 // Built from DOM nodes only (no innerHTML), and links are limited to http(s)/mailto.
@@ -254,6 +282,12 @@ function onEvent(ev) {
     case "assistant_text_delta":
       if (!seg) { seg = add(el("div", "msg assistant")); segText = ""; }
       segText += d.text; renderMd(seg, segText); scroll(); break;
+    case "assistant_thinking_delta":
+      if (!thinkSeg) {
+        seg = null; const det = add(el("details", "reasoning")); det.open = true;
+        det.append(el("summary", null, "reasoning"), el("div")); thinkSeg = det;
+      }
+      thinkSeg.lastChild.textContent += d.text; scroll(); break;
     case "assistant_text":
       if (!seg) { const m = add(el("div", "msg assistant")); renderMd(m, d.text); }
       seg = null; break;
@@ -276,7 +310,12 @@ function onEvent(ev) {
     }
     case "context": lastCtx = d; showStats(d); break;
     case "status":
-      $("#st-status").textContent = [d.model, d.mode === "plan" && "PLAN", d.yolo && "YOLO", !d.sandboxed && "not sandboxed"].filter(Boolean).join(" · ");
+      $("#st-status").textContent = [d.model, d.mode === "plan" && "PLAN", d.yolo && "YOLO", d.auto && "AUTO", !d.sandboxed && "not sandboxed"].filter(Boolean).join(" · ");
+      approvalMode = d.yolo ? "yolo" : d.auto ? "auto" : "default";
+      document.querySelectorAll(".mode select").forEach(syncMode);
+      break;
+    case "busy":  // a slow command outside a run, e.g. /compact; runs show their own state
+      if (!running) { setStatus(d.on ? d.label + "…" : "idle", d.on ? "busy" : ""); $("#thinking").classList.toggle("show", d.on); }
       break;
     case "commands": commands = d.commands; break;
     case "todos": {
@@ -291,7 +330,7 @@ function onEvent(ev) {
     }
     case "error": seg = null; add(el("div", "errbox", `${agentPrefix(d)}${d.type}: ${d.message}`)); break;
     case "run_finished":
-      seg = null; setRunning(false); input.focus();
+      seg = null; endThinking(); setRunning(false); input.focus();
       if (d.cancelled) add(el("div", "note warn", "interrupted"));
       break;
   }
@@ -328,11 +367,12 @@ function showApproval(req) {
     const box = el("div", "risk " + a.risk);
     box.append(el("b", null, a.risk.toUpperCase()), " " + a.summary);
     if (a.reasons.length) box.append(el("div", "why", a.reasons.join("; ")));
-    if (a.model) box.append(el("div", "why", "assessed by " + a.model));
+    box.append(el("div", "why", a.model ? "assessed by " + a.model : "fixed checks only; no model assessment"));
     dlg.append(box);
   }
   if (req.detail) dlg.append(diff(req.detail));
   const btns = el("div", "btns"), answer = (decision, note) => ws.send(JSON.stringify({ type: "approve", id: req.id, decision, note }));
+  btns.append(modeControl());
   const why = el("input"); why.type = "text"; why.placeholder = "Why? (optional) — Enter to deny"; why.hidden = true;
   why.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answer("no", why.value); } };
   for (const [label, decision, cls] of [["Deny", "no", "deny"], ["Allow once", "yes", "sec"], [`Always (${req.always})`, "always", ""]]) {
@@ -422,6 +462,7 @@ input.onkeydown = (e) => {
 input.oninput = () => {
   input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; updateHint();
 };
+$("header h1").after(modeControl());
 connect();
 </script>
 </body>

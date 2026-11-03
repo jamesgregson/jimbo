@@ -48,6 +48,7 @@ class _Stdin:
 class PlainFrontend:
     def __init__(self) -> None:
         self._streamed = False
+        self._thinking = False  # reasoning is mid-line on stderr
         self._stats = ""
         self._stdin = _Stdin()
 
@@ -62,11 +63,19 @@ class PlainFrontend:
         match event.kind:
             case "status":
                 sandbox = "sandboxed" if d["sandboxed"] else "NOT sandboxed"
-                flags = "".join(f" · {f}" for f, on in (("plan mode", d["mode"] == "plan"), ("YOLO", d["yolo"])) if on)
+                flags = "".join(f" · {f}" for f, on in (("plan mode", d["mode"] == "plan"), ("YOLO", d["yolo"]), ("AUTO", d.get("auto"))) if on)
                 print(f"[jimbo: {d['model']} · {d['workspace']} · {sandbox}{flags}]", file=sys.stderr)
             case "user_message":
                 print("[working…]", file=sys.stderr)
+            case "busy" if d["on"]:
+                print(f"[{d['label']}…]", file=sys.stderr)
+            case "assistant_thinking_delta":
+                self._thinking = True
+                print(d["text"], end="", flush=True, file=sys.stderr)
             case "assistant_text_delta":
+                if self._thinking:
+                    print(file=sys.stderr)
+                    self._thinking = False
                 self._streamed = True
                 print(d["text"], end="", flush=True)
             case "assistant_text":
@@ -107,6 +116,8 @@ class PlainFrontend:
             print(f"[risk: {a['risk'].upper()}] {a['summary']}", file=sys.stderr)
             if a["reasons"]:
                 print("  " + "; ".join(a["reasons"]), file=sys.stderr)
+            if not a.get("model"):
+                print("  fixed checks only; no model assessment", file=sys.stderr)
         if req.detail:
             print(req.detail, file=sys.stderr)
         try:

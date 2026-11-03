@@ -15,3 +15,6 @@ class Frontend(Protocol):
         """Display an event. Must not block the run."""
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision: ...
+
+    # Optional: `async def confirm(self, message: str) -> bool` asks a yes/no question. A frontend that has
+    # it is asked before a risky approval mode is turned on (/approve auto|yolo, or --auto/--yolo at start).

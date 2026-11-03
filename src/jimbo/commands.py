@@ -6,7 +6,7 @@ from pydantic_ai.usage import RunUsage
 
 from .config import BUNDLED_DIR, Settings
 from .core.agents import RESERVED_PREFIX
-from .core.approval import ApprovalPolicy
+from .core.approval import MODE_WARNING, RISKY_MODES, ApprovalModes
 from .core.commands import NAME_RE, CommandError, CommandRegistry, QuitSession
 from .core.session import AgentSession
 from .core.skills import Skill, apply_skill_models, format_skill_index
@@ -26,12 +26,7 @@ Describe the agent's role here, and what its report should contain.
 """
 
 
-def register_builtins(registry: CommandRegistry, settings: Settings,
-                      policies: dict[str, ApprovalPolicy]) -> None:
-    current = list(settings.approval)
-    # Started with --yolo: "default" means the normal chain, not the yolo one.
-    default_chain = current if "yolo" not in current else list(Settings.model_fields["approval"].default)
-    chain = {"names": current}
+def register_builtins(registry: CommandRegistry, settings: Settings, modes: ApprovalModes) -> None:
 
     async def help_(session: AgentSession, args: str) -> str:
         return "\n".join(f"/{c['name']} — {c['help']}" for c in registry.describe())
@@ -50,7 +45,8 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
         if session.is_running:
             raise CommandError("a run is in progress; wait for it or cancel first")
         try:
-            result = await session.compact(args)
+            async with session.busy("compacting"):
+                result = await session.compact(args)
         except Exception as e:
             raise CommandError(f"compaction failed: {e}") from None
         return result or "Nothing to compact."
@@ -109,12 +105,17 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
         return "\n".join(lines)
 
     async def approve(session: AgentSession, args: str) -> str:
-        if args in ("yolo", "default"):
-            chain["names"] = ["rules", "yolo"] if args == "yolo" else default_chain
-            session.deps.gate.policies = [policies["plan"], *(policies[n] for n in chain["names"])]
-        elif args:
-            raise CommandError("usage: /approve [yolo|default]")
-        return "approval: " + " → ".join(chain["names"])
+        if args and args not in modes.chains:
+            raise CommandError("usage: /approve [auto|yolo|default]")
+        if args:
+            try:
+                modes.check(args)
+            except ValueError as e:
+                raise CommandError(str(e)) from None
+            if args in RISKY_MODES and session.confirm and not await session.confirm(MODE_WARNING):
+                return "approval unchanged: " + " → ".join(modes.names)
+            modes.set(args)
+        return "approval: " + " → ".join(modes.names)
 
     async def plan(session: AgentSession, args: str) -> str:
         if args not in ("", "on", "off"):
@@ -201,7 +202,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings,
     registry.add("model", "show or switch model: /model <alias|provider:name>", model)
     registry.add("models", "which model runs each task: /models [set <task> <alias|spec> | reset [task]]", models)
     registry.add("usage", "token usage and context fill for this session", usage)
-    registry.add("approve", "show or set approval chain: /approve [yolo|default]", approve)
+    registry.add("approve", "show or set approval chain: /approve [auto|yolo|default]", approve)
     registry.add("plan", "toggle plan mode (read-only until you approve a plan): /plan [on|off]", plan)
     registry.add("todos", "show the agent's task list", todos)
     registry.add("skills", "list available skills", skills)

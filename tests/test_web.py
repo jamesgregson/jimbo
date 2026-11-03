@@ -120,3 +120,22 @@ async def test_approval_carries_assessment(client):
     assert (await ws.receive_json())["request"]["assessment"] == a
     await ws.send_json({"type": "approve", "id": "9", "decision": "yes"})
     await asyncio.wait_for(task, 1)
+
+
+async def test_approval_mode_message_calls_bound_setter(client):
+    got = asyncio.Queue()
+
+    async def set_mode(mode):
+        await got.put(mode)
+
+    client.fe.bind_approval_mode(set_mode)
+    ws = await client.ws_connect(ws_url(client))
+    await ws.send_json({"type": "approval_mode", "mode": 3})  # ignored: not a string
+    await ws.send_json({"type": "approval_mode", "mode": "auto"})
+    assert await asyncio.wait_for(got.get(), 1) == "auto"
+
+
+async def test_page_warns_before_auto_or_yolo(client):
+    text = await (await client.get("/")).text()
+    assert ("Are you sure? Jimbo will make automated decisions on your behalf and WILL destroy your code, "
+            "system and reputation") in text

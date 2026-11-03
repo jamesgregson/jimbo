@@ -41,7 +41,7 @@ before the `[tables]`.
 ui = "auto"                   # auto (tui in a terminal, otherwise plain) | tui | plain | web | json
 temperature = 0.2             # sample value; unset by default (the provider's default is used)
 request_timeout = 600         # seconds to wait for a model response
-request_limit = 50            # max model requests per turn
+request_limit = 50            # max model requests per turn; the model is told to wrap up for the last 3
 tool_retries = 3              # how often the model may retry a failed or denied tool call
 bundled = true                # false loads no bundled agents, skills or commands
 
@@ -91,7 +91,7 @@ jimbo-compaction   = "smart"
 
 [tasks.jimbo-shell-assess]
 mode = "ask"                  # off | ask | always
-timeout = 8                   # seconds before the prompt appears without the assessment
+timeout = 30                  # seconds before the prompt appears without the assessment
 
 # ---- Providers (none by default; sample values) -----------------------------------------------
 [providers.work]
@@ -116,6 +116,31 @@ At startup jimbo checks the main model against its server: it stops if the serve
 your key, or (with Ollama) doesn't have the model or the model can't call tools. It also takes the context
 size from the server where it can (Ollama and OpenRouter). Otherwise set `context_window` to the model's real
 size, because it drives `/usage` and automatic compaction. These checks don't run again after `/model`.
+
+**Ollama:** pull a model that supports tool calling, then set it as `main`:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+```toml
+[model_aliases]
+main = "ollama:llama3.1:8b"
+```
+
+Ollama ignores the context size jimbo requests, so models run at Ollama's default, often 4096 tokens. That
+is too small for real work, and jimbo warns at startup. Make a copy of the model with a larger context and
+use that instead. Jimbo reads the size from the model. `ollama ps` shows the size a loaded model is using.
+
+```bash
+printf 'FROM llama3.1:8b\nPARAMETER num_ctx 32768\n' > Modelfile
+ollama create llama3.1-32k -f Modelfile
+```
+
+```toml
+[model_aliases]
+main = "ollama:llama3.1-32k"
+```
 
 **OpenAI:**
 
@@ -189,10 +214,19 @@ A skill can ask for models in its frontmatter (`models: {jimbo-shell-assess: sma
 only name your aliases, never define a model or endpoint.
 
 **Shell risk assessment:** shell approval prompts show a short summary and a risk level (low, medium, high or
-critical), written by the `jimbo-shell-assess` model, which is `main` by default. It's advice only. The command is
-treated as untrusted text, and fixed checks (`sudo`, `rm -rf`, `curl | sh`, force pushes, writes outside the
-workspace and so on) set a minimum risk the model can't lower. If the model is slow or fails, the prompt
-appears without it. With a remote model, commands are sent to it, but file contents are not.
+critical), written by the `jimbo-shell-assess` model, which is `main` by default. The model is told that changes
+to files in the workspace are low or medium, and that any change to source control state (commits, branches,
+tags, the stash, remotes) or to external state (pushes, pull requests, published packages, container images,
+cloud and cluster resources, databases, other machines, write requests to a server) is high. The one exception
+is a test server, container or database on this machine, reached through localhost. The command is treated as
+untrusted text, and fixed checks set a minimum risk the model can't lower. They cover `sudo`, `rm -rf`,
+`curl | sh`, writes outside the workspace, and the common commands that change source control or external
+state: `git commit`, `checkout`, `reset`, `stash`, `push` and similar, `gh pr create`/`merge` and other `gh`
+changes, `npm`/`uv`/`cargo publish`, `docker push`, `kubectl`, `helm`, `terraform`, `aws`/`gcloud`/`az`
+changes, SQL that changes data, `ssh`, and `curl`/`wget` POST, PUT, PATCH and DELETE requests to anything other
+than localhost. If the model is slow, fails, or doesn't answer in the expected
+format after one retry, the prompt says why (for example "no model summary: timed out after 30s") and marks the
+risk as coming from the fixed checks only. After 3 failures in a row, jimbo prints a warning once. With a remote model, commands are sent to it, but file contents are not.
 
 `[tasks.jimbo-shell-assess]` sets `timeout` and `mode`: `off`, `ask` (the default) or `always` (also for calls that
 are already allowed).
@@ -220,6 +254,13 @@ approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:secrets/*"]
   `shell:git status*` can't approve `git status; rm -rf ~`.
 - Deny rules are best effort: `bash -c "sudo …"` slips past them. The sandbox is the real boundary.
 
+**Auto mode:** `jimbo --auto` or `/approve auto` makes file writes and edits without asking, and runs shell
+commands without asking when the `jimbo-shell-assess` model rates them low or medium risk. Commands that
+change source control or external state are rated high (see Shell risk assessment), so they still ask.
+Staging with `git add` is not covered and can run without asking. Deny rules and `secret_files` still apply. The fixed checks can raise the risk but can't approve a command on their
+own, so if the model is slow or fails, jimbo asks. Auto mode needs the assessment model: with `[tasks.jimbo-shell-assess]` `mode = "off"`,
+`--auto` and `/approve auto` give an error, and file changes are not auto-approved either. `/approve default` turns it off.
+
 `secret_files` lists file names the model can't read or `grep`, even with `--yolo`. The default covers `.env`
 and its usual variants (not `.env.example`), `*.pem`, `*.key`, `id_rsa` and `id_ed25519`. Set it in
 `~/.jimbo/config.toml` to change it; a workspace config can't. It doesn't stop a shell command you approve,
@@ -243,9 +284,16 @@ doesn't allow nesting.
 ## Interfaces
 
 - **All:** Ctrl+C during a run stops it and keeps the partial turn. In `plain`, a second Ctrl+C within 2 seconds,
-  or one at the prompt, quits. In `tui`, press it twice at the prompt, or Ctrl+D. The current model and any plan
-  or yolo mode are shown in the `tui` toolbar and at the top of the `web` page. `tui` and `plain` show the end of
+  or one at the prompt, quits. In `tui`, press it twice at the prompt, or Ctrl+D. The current model and any plan,
+  auto or yolo mode are shown in the `tui` toolbar and at the top of the `web` page. `tui` and `plain` show the end of
   each shell command's output, and `/output` shows all of it. Tool calls made by an agent show its name and model. Calls that skip the prompt still show their diff.
+- **Approval mode (`web`):** the Approvals menu in the header, and the same menu in each approval prompt,
+  switches between Ask first, Auto and YOLO, like `/approve`. Choosing Auto or YOLO asks you to confirm first. It
+  works while the agent is running. A change made from a prompt applies to later calls; you still answer the one on
+  screen.
+- **Approval mode (`tui`):** `/approve auto` and `/approve yolo` ask you to confirm, and so does starting with
+  `--auto` or `--yolo`. If you don't answer `y`, the mode stays as it was, or the session starts in the default
+  mode. `plain`, `json` and one-shot runs don't ask.
 - **Steering (`tui`, `web`):** type while the agent works and your message reaches the model at its next
   step. Slash commands are refused mid-run.
 - **`tui`:** Enter submits, Shift+Enter or Alt+Enter inserts a newline, and Ctrl+D quits. Pastes over 10 lines
@@ -267,7 +315,7 @@ doesn't allow nesting.
 | `/model <provider>:<name>` | show or switch the model |
 | `/models` | show or set which model runs each task |
 | `/usage` | tokens used and context fill |
-| `/approve [yolo\|default]` | show or set the approval mode |
+| `/approve [auto\|yolo\|default]` | show or set the approval mode |
 | `/plan [on\|off]` | read-only mode: the agent presents a plan for you to approve |
 | `/todos` | show the agent's task list |
 | `/skills` | list available skills |

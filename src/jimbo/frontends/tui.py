@@ -158,10 +158,12 @@ class TuiFrontend:
         self.file_completer = FileCompleter(workspace or Path.cwd())
         self._ask = ask
         self._buf = ""  # streamed assistant text not yet printed
+        self._think = ""  # streamed reasoning not yet printed
         self._streamed = False
         self._usage: dict | None = None
         self._stats = ""  # latest context/usage line, shown in the prompt toolbar and the working spinner
         self._status: dict | None = None  # model and modes, shown in the prompt toolbar
+        self._busy: str | None = None  # a slow command outside a run, e.g. "compacting"
         self._interrupted = False
 
     def _prompt_session(self) -> PromptSession:
@@ -180,12 +182,14 @@ class TuiFrontend:
         d = self._status
         if not d:
             return ""
-        flags = "".join(f" [{f}]" for f, on in (("PLAN", d["mode"] == "plan"), ("YOLO", d["yolo"])) if on)
+        flags = "".join(f" [{f}]" for f, on in (("PLAN", d["mode"] == "plan"), ("YOLO", d["yolo"]), ("AUTO", d.get("auto"))) if on)
         return f"{d['model']}{flags} · "
 
     def _toolbar(self) -> str | None:
         stats = self._state() + self._stats
-        return (f"working… {stats}  (Esc stops · type to steer)" if self._running else stats) or None
+        if self._running:
+            return f"working… {stats}  (Esc stops · type to steer)"
+        return (f"{self._busy}… {stats}" if self._busy else stats) or None
 
     def _message(self) -> str:
         if self._question:
@@ -285,7 +289,17 @@ class TuiFrontend:
                 self.console.print(Markdown(self._buf))
             self._buf = ""
 
+    def _flush_thinking(self, *, final: bool = False) -> None:
+        """Print the complete reasoning lines buffered so far (all of it when `final`), dimmed."""
+        if final:
+            done, self._think = self._think, ""
+        else:
+            done, _, self._think = self._think.rpartition("\n")
+        if done.strip():
+            self.console.print(Text(done, style="dim italic"))
+
     def _stop_live(self) -> None:
+        self._flush_thinking(final=True)
         self._flush_blocks(final=True)
         self._streamed = False
 
@@ -305,7 +319,11 @@ class TuiFrontend:
                     c.print(Text(f"↳ steering: {_clip(d['text'], 200)}", style="bold yellow"))
                 else:
                     self._running = True
+            case "assistant_thinking_delta":
+                self._think += d["text"]
+                self._flush_thinking()
             case "assistant_text_delta":
+                self._flush_thinking(final=True)
                 self._buf += d["text"]
                 self._streamed = True
                 self._flush_blocks()
@@ -348,6 +366,9 @@ class TuiFrontend:
                 self._stop_live()
                 c.print(Text(f"  {agent_prefix(d)}compacted history: {d['messages_before']} → {d['messages_after']} messages, ~{d['tokens_before']} → ~{d['tokens_after']} tokens",
                              style="dim"))
+            case "busy":
+                self._busy = d["label"] if d["on"] else None
+                self._invalidate()
             case "command_output":
                 c.print(Text(d["text"], style="" if d["ok"] else "red"))
             case "error":
@@ -363,6 +384,16 @@ class TuiFrontend:
                     u, self._usage = self._usage, None
                     c.print(Rule(self._stats or f"{u['requests']} req · {u['input_tokens']} in · {u['output_tokens']} out", style="dim", align="right"))
 
+    async def confirm(self, message: str) -> bool:
+        """A yes/no question; only an exact yes counts."""
+        self._stop_live()
+        self.console.print(Panel(Text(message, style="bold"), title="Confirm", border_style="red"))
+        try:
+            answer = await self._ask_line("[y]es / [n]o? ")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer.strip().lower() in ("y", "yes")
+
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         self._stop_live()
         body: list = [Text(req.summary, style="bold")]
@@ -374,6 +405,8 @@ class TuiFrontend:
                 body.append(Text("  · " + "; ".join(a["reasons"]), style="dim"))
             if a.get("model"):
                 body.append(Text(f"  assessed by {a['model']}", style="dim"))
+            else:
+                body.append(Text("  fixed checks only; no model assessment", style="yellow"))
         if req.detail:
             is_diff = req.detail.lstrip().startswith(("---", "diff ", "@@"))
             body.append(Syntax(req.detail, "diff", theme="ansi_dark") if is_diff else Text(req.detail))

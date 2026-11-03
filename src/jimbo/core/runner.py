@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 
+from .approval import MODE_WARNING
 from .attachments import UserMessage, build_content
 from .commands import QuitSession, agent_call
 from .interaction import Frontend
@@ -80,6 +81,16 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
     await session.emit_context()
     if bind := getattr(frontend, "bind_cancel", None):  # frontends with their own stop control
         bind(session.cancel)
+    if bind := getattr(frontend, "bind_approval_mode", None):  # ... and their own approval mode control
+        bind(lambda mode: set_approval_mode(session, mode))
+    if confirm := getattr(frontend, "confirm", None):
+        session.confirm = confirm
+        modes = session.approval_modes
+        if modes is not None and modes.risky and not await confirm(MODE_WARNING):  # started with --auto/--yolo
+            modes.set("default")
+            await session.emit("command_output", command="approve", ok=True,
+                               text="approval: " + " → ".join(modes.names))
+            await session.emit_status()
     steering = getattr(frontend, "supports_steering", False)
     with _interrupt_cancels_run(session):
         run: asyncio.Task | None = None
@@ -111,6 +122,19 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
                     t.cancel()
             if run is not None:
                 await asyncio.gather(run, return_exceptions=True)
+
+
+async def set_approval_mode(session: AgentSession, mode: str) -> None:
+    """Switch the approval mode from a frontend control. Unlike /approve this works mid-run, so it can be
+    used from an approval prompt: the call being asked about keeps its chain, later calls use the new one."""
+    try:
+        if session.approval_modes is None:
+            raise ValueError("this session has no approval modes")
+        session.approval_modes.set(mode)
+    except ValueError as e:
+        await session.emit("command_output", command="approve", ok=False, text=str(e))
+    else:
+        await session.emit_status()
 
 
 async def _steer_or_refuse(session: AgentSession, msg: str | UserMessage) -> None:

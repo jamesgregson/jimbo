@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .config import Settings
+from .core.approval import AUTO_CHAIN, YOLO_CHAIN
 from .core.commands import QuitSession
 from .core.jsonl import JsonlSink
 from .core.models import MAIN
@@ -21,7 +22,10 @@ def main() -> None:
     ap.add_argument("--model", help="main model for this run: an alias or <provider>:<name>")
     ap.add_argument("--workspace", type=Path, help="directory to work on (default: the current one)")
     ap.add_argument("--ui", help="tui, plain, web, or json for scripts (default: tui in a terminal, else plain)")
-    ap.add_argument("--yolo", action="store_true", help="auto-approve everything")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--yolo", action="store_true", help="auto-approve everything")
+    mode.add_argument("--auto", action="store_true",
+                      help="auto-approve file edits, and shell commands the assessment model rates medium risk or lower")
     ap.add_argument("--resume", nargs="?", const="", metavar="ID",
                     help="continue a saved session (the most recent if no id/prefix is given)")
     args = ap.parse_args()
@@ -35,7 +39,11 @@ def main() -> None:
         if args.model:
             settings.model_aliases[MAIN] = settings.model_aliases.get(args.model, args.model)
         if args.yolo:
-            settings.approval = ["rules", "yolo"]  # deny rules still apply
+            settings.approval = list(YOLO_CHAIN)
+        if args.auto:
+            if settings.task("jimbo-shell-assess").mode == "off":
+                raise ValueError("--auto needs the shell assessment model; [tasks.jimbo-shell-assess] mode is off")
+            settings.approval = list(AUTO_CHAIN)
         if settings.ui == "auto":
             settings.ui = pick_ui(args.prompt, sys.stdin.isatty(), sys.stdout.isatty())
         if settings.ui in ("plain", "json") and not sys.stdin.isatty():  # cat log | jimbo "explain this"

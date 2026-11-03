@@ -178,3 +178,19 @@ async def test_sentence_at_approval_denies_with_it_as_the_reason():
     f = TuiFrontend(console=Console(file=StringIO(), width=100), ask=ask)
     d = await f.request_approval(ApprovalRequest(id="1", tool="shell", summary="run", always="this exact command"))
     assert not d.allow and d.note == "actually keep the dist folder"
+
+
+async def test_confirm_needs_an_exact_yes():
+    for answer, ok in [("y", True), ("YES", True), ("n", False), ("", False), ("yes please", False),
+                       (EOFError(), False), (KeyboardInterrupt(), False)]:
+        fe, out = make([answer])
+        assert await fe.confirm("Are you sure? Something bad") is ok
+        assert "Are you sure? Something bad" in out.getvalue()
+
+
+async def test_busy_shows_in_the_toolbar():
+    fe, _ = make()
+    await fe.render(ev(1, "busy", label="compacting", on=True))
+    assert fe._toolbar().startswith("compacting…")
+    await fe.render(ev(2, "busy", label="compacting", on=False))
+    assert not (fe._toolbar() or "").startswith("compacting")

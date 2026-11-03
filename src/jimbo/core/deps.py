@@ -35,6 +35,7 @@ class Deps:
     skills: "dict[str, Skill]" = field(default_factory=dict)
     secret_files: list[str] = field(default_factory=list)  # file-name globs the model must not read
     checkpoints: Checkpoints = field(default_factory=Checkpoints)
+    request_limit: int | None = None  # set by the session: model requests allowed per turn
     # Set by the session: compacts a message list mid-run when the context is nearly full.
     midrun_compact: "Callable[[list[Any]], Awaitable[list[Any]]] | None" = None
     # Set by the session: appends queued steering messages to the request about to be sent.
