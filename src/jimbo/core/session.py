@@ -145,9 +145,14 @@ class AgentSession:
         self.context_tokens = 0
         self.turn_usage, self.total_usage = RunUsage(), RunUsage()
         if self.replay_sink is not None:
-            for ev in events:
-                if ev.kind in REPLAY_KINDS:
-                    await self.replay_sink.emit(ev)
+            replayed = [ev for ev in events if ev.kind in REPLAY_KINDS]
+            for ev in replayed:
+                await self.replay_sink.emit(ev)
+            last = next((ev for ev in reversed(replayed) if ev.kind in ("user_message", "run_finished")), None)
+            if last is not None and last.kind == "user_message":
+                # the log stops mid-run (jimbo was killed): close it in the UI only, the log stays as it was
+                await self.replay_sink.emit(Event(seq=self._seq, session_id=self.session_id, kind="run_finished",
+                                                  data={"ok": False}))
         await self.emit_context()
         msg = f"Resumed session {saved.id} ({len(self.history)} messages)."
         started = self.store.workspace_of(saved.id)

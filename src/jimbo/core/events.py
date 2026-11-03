@@ -26,6 +26,7 @@ EventKind = Literal[
     "compaction",
     "wrap_up",
     "instructions",
+    "agent_report",
     "status",
     "busy",
     "config",

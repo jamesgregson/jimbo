@@ -47,6 +47,10 @@ async def shell(ctx: RunContext[Deps], command: str, timeout: int | None = None)
 
     Non-interactive (stdin is empty). `timeout` is in seconds. Prefer grep/glob/read_file for searching
     and reading files.
+
+    The call returns only when every process holding its output has exited. To leave a server or other
+    process running, redirect its output: `cmd >/tmp/cmd.log 2>&1 &`. Without that, the call waits until the
+    timeout and is killed.
     """
     d = ctx.deps
     t = max(1, min(timeout or d.shell_timeout, d.shell_timeout_max))

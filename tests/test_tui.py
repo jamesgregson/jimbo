@@ -238,3 +238,25 @@ async def test_model_completion():
     assert asked == ["work"] and complete("/model work:m") == ["work:m1", "work:m2"]
     assert complete("/model nobody:") == [] and asked == ["work"]  # unknown providers aren't asked
     assert complete("hello ") == []
+
+
+async def test_agent_progress_is_a_toolbar_status_not_text():
+    f = TuiFrontend(console=Console(file=StringIO()), ask=lambda m: None)
+    tag = {"agent": {"name": "reviewer", "model": "p:m"}}
+    await f.render(Event(seq=1, session_id="s", kind="user_message", data={"text": "go", "attachments": []}))
+    await f.render(Event(seq=2, session_id="s", kind="context", data={
+        "tokens": 1, "window": 10, "turn": {"requests": 3, "input_tokens": 1, "output_tokens": 1},
+        "session": {"requests": 3, "input_tokens": 1, "output_tokens": 1}, **tag}))
+    for chunk in ("let me ", "think"):
+        await f.render(Event(seq=3, session_id="s", kind="assistant_thinking_delta", data={"text": chunk, **tag}))
+    assert "reviewer › thinking… 12 chars · request 3" in f._toolbar()
+    await f.render(Event(seq=4, session_id="s", kind="assistant_text_delta", data={"text": "found it", **tag}))
+    assert "reviewer › writing… 8 chars" in f._toolbar()
+    await f.render(Event(seq=5, session_id="s", kind="tool_call",
+                         data={"id": "reviewer.1", "tool": "grep", "args": {}, **tag}))
+    assert "reviewer › running grep…" in f._toolbar()
+    await f.render(Event(seq=6, session_id="s", kind="tool_result",
+                         data={"id": "1", "tool": "run_agent", "ok": True, "content": "report"}))
+    assert "reviewer" not in f._toolbar()
+    out = f.console.file.getvalue()
+    assert "let me think" not in out and "found it" not in out

@@ -67,6 +67,7 @@
   .reasoning { margin: 8px auto; color: var(--dim); font-size: 13px; }
   .reasoning > summary { cursor: pointer; font-size: 12px; }
   .reasoning > div { white-space: pre-wrap; padding: 4px 0 0 12px; border-left: 2px solid var(--line); margin-top: 4px; }
+  .reasoning .agent-text { color: var(--fg); margin-top: 6px; }
   .card { margin: 8px auto; border: 1px solid var(--line); background: var(--tool); border-radius: 8px; overflow: hidden; }
   .card > summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 8px; align-items: baseline;
                     font: 12px ui-monospace, Menlo, monospace; list-style: none; }
@@ -221,6 +222,26 @@ function scroll() { const near = log.scrollHeight - log.scrollTop - log.clientHe
 function add(node) { endThinking(); log.append(node); scroll(); return node; }
 // Reasoning stays open while it streams and folds away once the model moves on.
 function endThinking() { if (thinkSeg) { thinkSeg.open = false; thinkSeg = null; } }
+// A running agent's thinking and text: one collapsed line per step saying what it is doing, which expands to the text.
+const AGENT_PROGRESS = new Set(["assistant_thinking_delta", "assistant_text_delta", "context"]);
+let agentStep = null, agentRequests = 0;
+function agentLine(s, done) {
+  const n = s.chars.toLocaleString();
+  s.sum.textContent = `${s.name} › ${done ? `${s.phase === "writing" ? "wrote" : "thought"} ${n} chars` : `${s.phase}… ${n} chars`}`
+    + (agentRequests ? ` · request ${agentRequests}` : "");
+}
+function agentProgress(kind, d) {
+  if (kind === "context") { agentRequests = d.turn.requests; if (agentStep) agentLine(agentStep); return; }
+  if (!agentStep) {
+    const det = add(el("details", "reasoning")), sum = el("summary"), body = el("div");
+    det.append(sum, body);
+    agentStep = { sum, body, name: d.agent.name, chars: 0, phase: "", part: null };
+  }
+  const s = agentStep, phase = kind === "assistant_thinking_delta" ? "thinking" : "writing";
+  if (phase !== s.phase) { s.phase = phase; s.part = s.body.appendChild(el("div", phase === "writing" ? "agent-text" : null)); }
+  s.part.textContent += d.text; s.chars += d.text.length; agentLine(s); scroll();
+}
+function endAgentStep() { if (agentStep) { agentLine(agentStep, true); agentStep = null; } }
 
 // Small markdown renderer: fences, headings, lists, quotes, tables, rules, and inline code/bold/italic/links.
 // Built from DOM nodes only (no innerHTML), and links are limited to http(s)/mailto.
@@ -310,6 +331,9 @@ function onEvent(ev) {
     sid.textContent = ev.session_id; sid.hidden = false;
     sid.href = "/trace" + location.search;  // carries the token
   }
+  if (d.agent && AGENT_PROGRESS.has(ev.kind)) { agentProgress(ev.kind, d); return; }
+  if (d.agent && ev.kind === "tool_call") endAgentStep();
+  if (!d.agent && (ev.kind === "tool_result" || ev.kind === "run_finished")) { endAgentStep(); agentRequests = 0; }
   switch (ev.kind) {
     case "user_message": {
       seg = null; const m = add(el("div", "msg user" + (d.steer ? " steer" : ""), d.text));
@@ -433,7 +457,7 @@ function showApproval(req) {
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  ws.onopen = () => { log.replaceChildren(); cards.clear(); seg = null; modelLists = {}; setRunning(false); };  // history is replayed
+  ws.onopen = () => { log.replaceChildren(); cards.clear(); seg = null; agentStep = null; agentRequests = 0; modelLists = {}; setRunning(false); };  // history is replayed
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.type === "event") onEvent(msg.event);

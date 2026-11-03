@@ -169,7 +169,7 @@ function render(events, bad, name) {
   const nErr = count("error") + events.filter((e) => e.kind === "tool_result" && !e.data.ok).length;
   const status = events.find((e) => e.kind === "status");
   const agents = [...new Set(events.filter((e) => e.data.agent).map((e) => e.data.agent.name))];
-  const ctx = events.filter((e) => e.kind === "context" && e.data.window);
+  const ctx = events.filter((e) => e.kind === "context" && e.data.window && !e.data.agent);
   const peak = ctx.reduce((m, e) => Math.max(m, e.data.tokens / e.data.window), 0);
 
   const bar = $("#bar");
@@ -207,6 +207,30 @@ function render(events, bad, name) {
   // Build turns.
   let turn = null, seg = null, segStreamed = false, think = null, lastStatus = status && status.data;
   const cards = new Map();
+  const agentSteps = new Map();  // agent name -> the thinking and text rows of its current step
+  const agentDelta = (ev) => {
+    const d = ev.data, name = d.agent.name;
+    let s = agentSteps.get(name);
+    if (!s) agentSteps.set(name, (s = {}));
+    if (ev.kind === "assistant_thinking_delta") {
+      if (!s.think) {
+        s.think = el("details", "think"); s.think.dataset.text = ""; s.text = null;
+        s.count = el("span");
+        const sm = el("summary"); sm.append(agentTag(d), " thinking ", s.count);
+        s.think.append(sm, el("div"));
+        row("", ev, s.think, "thinking");
+      }
+      s.think.dataset.text += d.text; s.think.lastChild.textContent = s.think.dataset.text;
+      s.count.textContent = `(${s.think.dataset.text.length.toLocaleString()} chars)`;
+    } else {
+      if (!s.text) {
+        const b = el("div"); s.text = el("span"); s.text.dataset.text = ""; s.think = null;
+        b.append(agentTag(d), " ", s.text);
+        row("assistant", ev, b);
+      }
+      s.text.dataset.text += d.text; s.text.textContent = s.text.dataset.text;
+    }
+  };
   const lastInstructions = new Map();  // by agent name; "" is the main session
   const newTurn = () => { turn = el("section", "turn"); out.append(turn); seg = null; segStreamed = false; think = null; };
   const row = (cls, ev, node, kind) => {
@@ -220,6 +244,9 @@ function render(events, bad, name) {
 
   for (const ev of events) {
     const d = ev.data;
+    if (d.agent && (ev.kind === "assistant_thinking_delta" || ev.kind === "assistant_text_delta")) { agentDelta(ev); continue; }
+    if (d.agent && ev.kind === "context") continue;  // the agent's request count; the header is the main session's
+    if (d.agent && ev.kind === "tool_call") agentSteps.delete(d.agent.name);
     switch (ev.kind) {
       case "user_message": {
         if (!d.steer) newTurn();
@@ -341,6 +368,18 @@ function render(events, bad, name) {
         }
         det.append(section("full text", el("pre", null, d.text)));
         row("", ev, det, "instructions");
+        break;
+      }
+      case "agent_report": {
+        seg = null; segStreamed = false; think = null;
+        const det = el("details", "card");
+        const sm = el("summary");
+        sm.append(agentTag(d), el("span", "name", "report"), el("span", "sum", clip(d.text, 140)),
+                  el("span", "badge " + (d.ok ? "ok" : d.cancelled ? "warn" : "err"),
+                     d.ok ? "done" : d.cancelled ? "stopped" : "failed"));
+        det.append(sm, section(`${d.agent.name} (${d.agent.model})`, el("pre", d.ok ? null : "err", d.text)));
+        det.open = true;
+        row("tool", ev, det, "tool");
         break;
       }
       case "wrap_up": {

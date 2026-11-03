@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 RESERVED_PREFIX = "jimbo-"
 FORWARDED = {"tool_call", "tool_result", "compaction", "wrap_up", "instructions", "error"}
+# Also passed on, so an agent's progress can be shown and logged. Frontends show these as a status line, not as
+# the parent's own text or context.
+PROGRESS = {"assistant_thinking_delta", "assistant_text_delta", "context"}
 
 
 @dataclass
@@ -114,4 +117,6 @@ class ForwardSink:
                 self._parent.last_output = d["content"]
             if "id" in d:  # agents and their parent number tool calls separately
                 d = {**d, "id": f"{self._tag['name']}.{d['id']}"}
+            await self._parent.emit(event.kind, **d, agent=self._tag)
+        if event.kind in PROGRESS:
             await self._parent.emit(event.kind, **d, agent=self._tag)

@@ -25,7 +25,8 @@ from pydantic_ai.messages import BinaryContent
 from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
 from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
-from ..core.stats import agent_prefix, format_stats, output_preview
+from ..core.agents import PROGRESS
+from ..core.stats import AgentProgress, agent_prefix, format_stats, output_preview
 from ..tools.search import list_files
 from .clipboard import clipboard_png
 
@@ -243,6 +244,7 @@ class TuiFrontend:
         self._status: dict | None = None  # model and modes, shown in the prompt toolbar
         self._session_id = ""  # shown in the prompt toolbar; changes on /clear and /resume
         self._busy: str | None = None  # a slow command outside a run, e.g. "compacting"
+        self._agent: AgentProgress | None = None  # a running agent, shown in the toolbar instead of its thinking
         self._interrupted = False
 
     def _prompt_session(self) -> PromptSession:
@@ -277,7 +279,8 @@ class TuiFrontend:
     def _toolbar(self) -> str | None:
         stats = self._state() + self._stats
         if self._running:
-            return f"working… {stats}  (Esc stops · type to steer)"
+            doing = f"{self._agent.line()} · " if self._agent else ""
+            return f"working… {doing}{stats}  (Esc stops · type to steer)"
         return (f"{self._busy}… {stats}" if self._busy else stats) or None
 
     def _message(self) -> str:
@@ -396,6 +399,15 @@ class TuiFrontend:
         d = event.data
         c = self.console
         self._session_id = event.session_id
+        if agent := d.get("agent"):
+            if self._agent is None or self._agent.name != agent["name"]:
+                self._agent = AgentProgress(agent["name"])
+            self._agent.update(event.kind, d)
+            self._invalidate()
+            if event.kind in PROGRESS:  # a status only; the agent's thinking and text are in the trace
+                return
+        elif event.kind in ("tool_result", "run_finished"):  # the agent's run_agent call returned
+            self._agent = None
         match event.kind:
             case "status":
                 if self._status is None:

@@ -185,9 +185,14 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         if report is None:
             why = "stopped" if sink.cancelled else sink.reason or "it failed"
             text = f"agent {spec.name} didn't finish: {why}" + (f"\n\nIts last text:\n{sink.text}" if sink.text else "")
-            return AgentResult(False, text, cancelled=sink.cancelled)
-        parent.last_output = report
-        return AgentResult(True, report)
+            result = AgentResult(False, text, cancelled=sink.cancelled)
+        else:
+            parent.last_output = report
+            result = AgentResult(True, report)
+        # in full: the run_agent tool result the model gets may be cut
+        await parent.emit("agent_report", ok=result.ok, text=result.text, agent={"name": spec.name, "model": choice.spec},
+                          **({"cancelled": True} if result.cancelled else {}))
+        return result
 
     deps.spawn_agent = spawn_agent
     agent = build_agent(settings, router.resolve("main"))

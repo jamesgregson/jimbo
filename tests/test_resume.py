@@ -138,3 +138,25 @@ async def test_trace_without_logging(tmp_path):
     s = build_session(st, fe, model=TestModel())
     await s.commands.dispatch(s, "/trace")
     assert not fe.events[-1].data["ok"] and "log_sessions = false" in fe.events[-1].data["text"]
+
+
+async def test_resume_shows_runs_as_finished(tmp_path):
+    s1, fe1, sink1 = make(tmp_path, ["hello"])
+    await run_frontend(s1, fe1)
+    sink1.close()
+    s2, fe2, _ = make(tmp_path, [])
+    await s2.resume(s1.session_id)
+    assert [e.kind for e in fe2.events if e.kind in ("user_message", "run_finished")] == ["user_message", "run_finished"]
+
+
+async def test_resume_closes_a_run_the_log_cut_off(tmp_path):
+    s1, fe1, sink1 = make(tmp_path, ["hello"])
+    await run_frontend(s1, fe1)
+    sink1.close()
+    log = s1.store.log_path(s1.session_id)
+    lines = log.read_text().splitlines()
+    log.write_text("\n".join(l for l in lines if '"kind":"run_finished"' not in l) + "\n")  # as if jimbo was killed
+    s2, fe2, _ = make(tmp_path, [])
+    await s2.resume(s1.session_id)
+    assert fe2.events[-1].kind == "context" and [e.data for e in fe2.events if e.kind == "run_finished"] == [{"ok": False}]
+    assert '"kind":"run_finished"' not in log.read_text()  # only the UI is told

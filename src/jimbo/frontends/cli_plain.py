@@ -5,6 +5,7 @@ import getpass
 import sys
 import threading
 
+from ..core.agents import PROGRESS
 from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
 from ..core.events import Event
 from ..core.stats import agent_prefix, format_stats, output_preview
@@ -61,6 +62,8 @@ class PlainFrontend:
 
     async def render(self, event: Event) -> None:
         d = event.data
+        if d.get("agent") and event.kind in PROGRESS:  # an agent's thinking and text: only in the trace
+            return
         match event.kind:
             case "status":
                 sandbox = "sandboxed" if d["sandboxed"] else "NOT sandboxed"

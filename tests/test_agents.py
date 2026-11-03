@@ -302,6 +302,7 @@ async def test_failed_agent_returns_its_last_text_and_the_reason(tmp_path):
     assert await s.send("go") == "it failed"
     report = next(r for r in kinds(fe, "tool_result") if r["tool"] == "run_agent")["content"]
     assert "server died" in report and "looking into it" in report
+    assert kinds(fe, "agent_report") == [{"ok": False, "text": report, "agent": {"name": "worker", "model": "t:fast"}}]
 
 
 async def test_agent_todos_and_skill_scopes_stay_separate(tmp_path):
@@ -364,6 +365,7 @@ async def test_report_is_cut_for_the_model_and_full_in_output(tmp_path):
     s, fe = make(tmp_path, call("run_agent", agent="worker", task="t"), "done", models={"t:fast": scripted(report)})
     await s.send("go")
     assert len(kinds(fe, "tool_result")[0]["content"]) < 21_000
+    assert kinds(fe, "agent_report")[0]["text"] == report  # the trace keeps it all
     await s.commands.dispatch(s, "/output")
     assert kinds(fe, "command_output")[-1]["text"] == report
 
@@ -377,6 +379,7 @@ async def test_at_name_joins_the_conversation(tmp_path):
     assert kinds(fe, "user_message")[0]["text"] == "@worker check this"
     assert isinstance(s.history[-1], ModelResponse) and s.history[-1].parts[0] == TextPart("the report")
     assert kinds(fe, "run_finished")[-1] == {"ok": True}
+    assert kinds(fe, "agent_report")[0]["text"] == "the report"
 
 
 async def test_task_goes_to_the_agent_unchanged(tmp_path):
@@ -685,3 +688,12 @@ async def test_agent_wrap_up_reaches_the_parent(tmp_path):
     await s.commands.dispatch(s, "@worker go")
     assert kinds(fe, "wrap_up") == [{"left": 2, "agent": {"name": "worker", "model": "t:fast"}},
                                     {"left": 1, "agent": {"name": "worker", "model": "t:fast"}}]
+
+
+async def test_agent_thinking_text_and_context_reach_the_parent_tagged(tmp_path):
+    write_agent(tmp_path, "worker", "---\nmodel: fast\n---\nWork.")
+    s, fe = make(tmp_path, models={"t:fast": scripted(call("glob", pattern="*"), "the report")})
+    await s.commands.dispatch(s, "@worker go")
+    tag = {"name": "worker", "model": "t:fast"}
+    assert "".join(e["text"] for e in kinds(fe, "assistant_text_delta") if e.get("agent") == tag) == "the report"
+    assert [e["turn"]["requests"] for e in kinds(fe, "context") if e.get("agent") == tag] == [1, 2, 2]

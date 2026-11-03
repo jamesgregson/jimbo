@@ -1,4 +1,6 @@
 import asyncio
+import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -79,6 +81,16 @@ async def test_shell_timeout_and_cap(tmp_path):
     assert out.startswith("timed out after 1s") and time.monotonic() - t0 < 10
     out = await shell(ctx(tmp_path), "yes line | head -c 200000")
     assert "bytes omitted" in out and len(out) < 40_000
+
+
+async def test_shell_background_process_needs_its_output_redirected(tmp_path):
+    # what the tool description tells the model: a redirected background process lets the call return
+    t0 = time.monotonic()
+    out = await shell(ctx(tmp_path), "sleep 30 >/dev/null 2>&1 & echo $! > pid; echo started")
+    assert out == "exit code 0\nstarted" and time.monotonic() - t0 < 10
+    os.kill(int((tmp_path / "pid").read_text()), signal.SIGKILL)
+    out = await shell(ctx(tmp_path, shell_timeout=1), "sleep 30 & echo started")  # still holds the output
+    assert out.startswith("timed out after 1s")
 
 
 async def test_shell_cancel_kills_process(tmp_path):

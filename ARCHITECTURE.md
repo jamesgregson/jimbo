@@ -162,6 +162,7 @@ as usual.
 | `todos` | the agent's task list changed |
 | `compaction` | older history was replaced by a summary |
 | `instructions` | `text`: what the model is told besides the conversation; logged on the first request of a log and whenever it changes |
+| `agent_report` | `ok`, `text`, `agent`: an agent's final report in full (the model's `run_agent` result may be cut), or why it failed |
 | `wrap_up` | `left`: this request told the model to wrap up, with this many requests left in the turn |
 | `command_output`, `commands` | slash command results; the command list for completion |
 | `error`, `run_finished` | failure; end of turn (`ok`, `cancelled`) |
@@ -335,8 +336,10 @@ agents run one at a time. `AgentSession.delegate()` calls it directly for `@name
   plan mode apply unchanged. `Deps.agent` adds the agent's name to approval summaries.
 - **Checkpoints.** Nested sessions skip `checkpoints.begin()`, so an agent's edits belong to the turn that started
   it, and one `/undo` covers them. `delegate()` calls `begin()` itself because no parent turn is running.
-- **Events.** `ForwardSink` passes the child's `tool_call`, `tool_result`, `compaction`, `wrap_up` and `error` events to the
-  parent, tagged `agent={name, model}`, and drops the rest. Frontends only add a prefix.
+- **Events.** `ForwardSink` passes the child's `tool_call`, `tool_result`, `compaction`, `wrap_up`, `instructions` and
+  `error` events to the parent, tagged `agent={name, model}`, and drops the rest. Frontends only add a prefix. The
+  child's thinking, text deltas and `context` are passed on too, as progress: the TUI shows them as a status in its
+  toolbar, the web UI as a collapsed line per step that expands to the thinking, and plain shows nothing.
 - **Models.** Each model an agent uses is checked once with `inspect_model`, and its context window applies to
   the child. An agent on the main model uses the main session's window.
 - **Limits.** Child usage is added to the parent's, so `request_limit` stays a per-turn total. `run_agent` keeps 5

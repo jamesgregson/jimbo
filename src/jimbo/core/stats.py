@@ -27,3 +27,25 @@ def format_stats(d: dict) -> str:
     t, s = d["turn"], d["session"]
     return (f"{ctx} · turn {_n(t['input_tokens'])} in {_n(t['output_tokens'])} out"
             f" · session {_n(s['input_tokens'])} in {_n(s['output_tokens'])} out · {s['requests']} req")
+
+
+class AgentProgress:
+    """What a running agent is doing, from its forwarded events, as one status line."""
+
+    def __init__(self, name: str) -> None:
+        self.name, self.phase, self.chars, self.requests = name, "starting", 0, 0
+
+    def update(self, kind: str, d: dict) -> None:
+        if kind == "context":
+            self.requests = d["turn"]["requests"]
+        elif kind == "tool_call":
+            self.phase, self.chars = f"running {d['tool']}", 0
+        elif kind in ("assistant_thinking_delta", "assistant_text_delta"):
+            phase = "thinking" if kind == "assistant_thinking_delta" else "writing"
+            if phase != self.phase:
+                self.phase, self.chars = phase, 0
+            self.chars += len(d["text"])
+
+    def line(self) -> str:
+        what = f"{self.phase}… {self.chars:,} chars" if self.phase in ("thinking", "writing") else f"{self.phase}…"
+        return f"{self.name} › {what}" + (f" · request {self.requests}" if self.requests else "")
