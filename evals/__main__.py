@@ -28,10 +28,12 @@ def task_models(pairs: list[str]) -> dict[str, str]:
 
 
 def config(args) -> RunConfig:
+    if args.requests_per_minute is not None and args.requests_per_minute < 0:
+        raise ValueError(f"--requests-per-minute must be 0 or more, got {args.requests_per_minute}")
     return RunConfig(model=args.model, task_models=task_models(args.set), trials=getattr(args, "trials", 1),
                      jobs=args.jobs, sandbox=not getattr(args, "no_sandbox", False),
                      network=not getattr(args, "no_network", False), keep=getattr(args, "keep", False),
-                     user_config=args.config)
+                     user_config=args.config, requests_per_minute=args.requests_per_minute)
 
 
 def model_args(p: argparse.ArgumentParser) -> None:
@@ -41,6 +43,8 @@ def model_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--config", type=Path, help="config.toml to read providers and aliases from "
                                                "(default: ~/.jimbo/config.toml)")
     p.add_argument("--jobs", type=int, default=4, help="trials or cases at once (default 4)")
+    p.add_argument("--requests-per-minute", type=int, metavar="N",
+                   help="cap requests to each provider, replacing requests_per_minute in the config; 0 for no cap")
 
 
 async def cmd_run(args) -> int:

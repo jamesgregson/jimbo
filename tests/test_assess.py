@@ -51,8 +51,8 @@ class Assessor:
                 await asyncio.sleep(self.delay)
             if self.garbage:
                 return ModelResponse(parts=[TextPart("I refuse to use tools")])
-            return ModelResponse(parts=[ToolCallPart("final_result", {
-                "summary": self.summary, "risk": self.risk, "reasons": ["why"]})])
+            return ModelResponse(parts=[TextPart(json.dumps({
+                "summary": self.summary, "risk": self.risk, "reasons": ["why"]}))])
 
         return FunctionModel(run)
 

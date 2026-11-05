@@ -99,6 +99,7 @@ base_url = "https://llm.internal/v1"
 api_key_env = "WORK_LLM_KEY"
 require_key = true            # fail at startup rather than send a dummy key
 send_num_ctx = true           # send Ollama-style options.num_ctx; off except for the ollama provider
+requests_per_minute = 20      # wait rather than send more than this; unset: no limit
 ```
 
 ## Providers and API keys
@@ -186,6 +187,18 @@ Then read it from your config, replacing `you` with your username:
 ```toml
 [providers.openrouter]
 api_key_cmd = ["security", "find-generic-password", "-a", "you", "-s", "OPENROUTER_API_KEY", "-w"]
+```
+
+**Request limits:** `requests_per_minute` caps how many requests jimbo starts to a provider in any 60 seconds.
+When the cap is reached, the next request waits until the oldest one is a minute old. The cap covers every model of
+that provider in one jimbo process: the main model, agents, shell assessment, compaction and, in evals, the judge.
+Separate jimbo processes each have their own cap. Use it when a provider refuses bursts, for example OpenRouter's
+limit of 20 requests a minute per model for new accounts. Time spent waiting counts toward a task's `timeout`, so
+shell assessment can time out while it waits.
+
+```toml
+[providers.openrouter]
+requests_per_minute = 20
 ```
 
 **Changing providers in jimbo:** these commands save to `~/.jimbo/config.toml` and apply at once. Your comments

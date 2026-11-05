@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource
 
 from .tools.sandbox import SandboxMode
@@ -58,6 +58,7 @@ class ProviderConfig(BaseModel):
     fallback_key_envs: list[str] = []  # env vars tried when no explicit source is set
     require_key: bool = False  # fail at build time instead of sending the dummy "unused" key
     send_num_ctx: bool = False  # Ollama-style options.num_ctx in the request body; other APIs may reject it
+    requests_per_minute: int | None = Field(None, gt=0)  # client-side cap, shared by every model of this provider
 
     @model_validator(mode="after")
     def _one_source(self) -> "ProviderConfig":

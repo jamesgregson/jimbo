@@ -78,8 +78,11 @@ async def test_rejected_key_is_a_problem(tmp_path):
 
 
 async def test_hosted_context_and_unlisted_model(tmp_path):
-    listing = replying(data=[{"id": "m", "context_length": 200000}])
-    assert (await hosted(tmp_path, listing)).context == 200000
+    listing = replying(data=[{"id": "m", "context_length": 200000,
+                              "pricing": {"prompt": "0.00000015", "completion": "0.00000047", "discount": 0}}])
+    facts = await hosted(tmp_path, listing)
+    assert facts.context == 200000
+    assert facts.prices == {"prompt": 1.5e-7, "completion": 4.7e-7, "discount": 0.0}
     facts = await hosted(tmp_path, listing, "work:typo")
     assert facts.problem is None and "doesn't list" in facts.notes[0]
 

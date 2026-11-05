@@ -13,14 +13,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from jimbo.config import USER_DIR_ENV, Settings
+from pydantic_ai.usage import RunUsage
+
+from jimbo.config import USER_DIR_ENV, ProviderConfig, Settings
 from jimbo.core.approval import ApprovalDecision, ApprovalRequest
 from jimbo.core.events import Event
 from jimbo.core.jsonl import JsonlSink
 from jimbo.core.models import KNOWN_TASKS, MAIN, ModelRouter
 from jimbo.core.trace import trace_page
 from jimbo.providers.preflight import ModelFacts, inspect_model
-from jimbo.providers.registry import build_model_from_spec
+from jimbo.providers.registry import all_providers, build_model_from_spec, provider_config
 from jimbo.tools.sandbox import available as sandbox_available
 from jimbo.wiring import build_session
 
@@ -44,6 +46,7 @@ class RunConfig:
     sandbox: bool = True
     network: bool = True
     keep: bool = False  # keep each trial's temp workspace
+    requests_per_minute: int | None = None  # every provider's cap, replacing the config's; 0 removes it
     user_config: Path | None = None  # config.toml with providers and aliases; default ~/.jimbo/config.toml
     model_builder: object = None  # tests: a fake model builder for build_session and the judge
     main_model: object = None  # tests: a ready-made main model
@@ -92,6 +95,12 @@ def make_settings(cfg: RunConfig, task: Task | None, workspace: Path, user_dir: 
     if cfg.model:
         s.model_aliases[MAIN] = s.model_aliases.get(cfg.model, cfg.model)
     s.models.update(cfg.task_models)
+    if cfg.requests_per_minute is not None:
+        rpm = cfg.requests_per_minute or None
+        for name in all_providers(s):
+            user = s.providers.get(name)
+            s.providers[name] = (user.model_copy(update={"requests_per_minute": rpm}) if user
+                                 else ProviderConfig(requests_per_minute=rpm))
     return s
 
 
@@ -125,6 +134,22 @@ def metrics(events: list[Event]) -> dict:
         "hit_request_limit": any(e.data.get("type") == "UsageLimitExceeded" for e in errors),
         "compactions": sum(1 for e in events if e.kind == "compaction"),
     }
+
+
+def trial_cost(usage: RunUsage | None, prices: dict[str, float] | None) -> float | None:
+    """pydantic-ai's estimate from its price tables; failing that, one from the per-token prices the
+    provider lists for the main model. None when neither can price it."""
+    if usage is None:
+        return None
+    if usage.cost is not None:
+        return float(usage.cost)
+    if not prices or not usage.requests:
+        return None
+    cached = usage.cache_read_tokens + usage.cache_write_tokens
+    return (max(usage.input_tokens - cached, 0) * prices["prompt"]
+            + usage.cache_read_tokens * prices.get("input_cache_read", prices["prompt"])
+            + usage.cache_write_tokens * prices.get("input_cache_write", prices["prompt"])
+            + usage.output_tokens * prices["completion"])
 
 
 def final_answer(events: list[Event]) -> str:
@@ -201,8 +226,7 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
         "task": task.id, "trial": trial, "pass": error is None and bool(outcomes) and all(o.ok for o in outcomes),
         "check_exit": command_exit, "requests": usage.requests if usage else 0,
         "input_tokens": usage.input_tokens if usage else 0, "output_tokens": usage.output_tokens if usage else 0,
-        # pydantic-ai's estimate from its price tables; None when no response could be priced
-        "cost": float(usage.cost) if usage and usage.cost is not None else None,
+        "cost": trial_cost(usage, facts.prices if facts else None),
         "seconds": round(time.monotonic() - started, 1), **metrics(collector.events), "error": error,
         "log": str(log) if log else None, "workspace": str(ws) if cfg.keep else None,
     }
@@ -254,6 +278,12 @@ def model_specs(settings: Settings) -> dict[str, str]:
     return {t: router.explain(t).spec for t in [MAIN, *KNOWN_TASKS, JUDGE_TASK, *settings.models]}
 
 
+def request_limits(settings: Settings, specs: dict[str, str]) -> dict[str, int | None]:
+    """The requests_per_minute cap of each provider the run's models use."""
+    names = sorted({spec.partition(":")[0] for spec in specs.values() if ":" in spec})
+    return {n: provider_config(n, settings).requests_per_minute for n in names}
+
+
 async def run_suite(tasks: list[Task], cfg: RunConfig, results_dir: Path = RESULTS_DIR,
                     on_result=None) -> Path:
     """Run every trial of every task, up to cfg.jobs at once. Returns the run folder."""
@@ -263,7 +293,8 @@ async def run_suite(tasks: list[Task], cfg: RunConfig, results_dir: Path = RESUL
     run_dir = results_dir / run_id
     run_dir.mkdir(parents=True)
     meta = {"id": run_id, **jimbo_commit(), "models": specs, "model_arg": cfg.model, "trials": cfg.trials,
-            "sandbox": cfg.sandbox, "network": cfg.network, "tasks": [t.id for t in tasks],
+            "sandbox": cfg.sandbox, "network": cfg.network, "requests_per_minute": request_limits(settings, specs),
+            "tasks": [t.id for t in tasks],
             "task_settings": {t.id: t.settings for t in tasks if t.settings},
             "started": datetime.now().astimezone().isoformat(timespec="seconds")}
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2) + "\n")

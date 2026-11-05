@@ -96,6 +96,25 @@ pip install --force-reinstall git+https://github.com/jamesgregson/jimbo.git
 
 `--force-reinstall` is needed because the version number does not change between commits.
 
+## Evals
+
+The eval suite runs jimbo on 25 small coding tasks with a real model and checks the results. Use it to see
+whether a change to jimbo, or a different model, does better or worse. It is in the repo, not in the
+installed package, so run it from a clone with [uv](https://docs.astral.sh/uv/):
+
+```bash
+git clone https://github.com/jamesgregson/jimbo.git && cd jimbo
+uv run python -m evals run --tag smoke        # 5 tasks, on the main model in ~/.jimbo/config.toml
+uv run python -m evals run                    # all tasks
+uv run python -m evals run --model <name>     # another model
+uv run python -m evals compare <run-a> <run-b>
+```
+
+It uses your `~/.jimbo/config.toml` and API key, and each task costs model requests. Each task runs in a temp copy of
+its files. On macOS, shell commands run in the sandbox; on other systems, add `--no-sandbox`. Each run saves its results to `evals/results/<run-id>/`. Open
+`report.html` there to see each task's result, the judge's verdict, the changes jimbo made and a link to the
+trace. [evals/README.md](evals/README.md) covers every option and how to add a task.
+
 ## More
 
 [docs/reference.md](docs/reference.md) lists every setting and command, and covers other providers such as

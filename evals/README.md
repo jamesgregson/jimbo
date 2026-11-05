@@ -4,8 +4,6 @@ The eval suite runs jimbo on coding tasks with a real model and checks the resul
 change to the system prompt, the tools or the model makes jimbo better or worse. It needs network access and
 an API key, so it is not part of `uv run pytest`.
 
-The plan is in [docs/plans/evals.md](../docs/plans/evals.md).
-
 ## Run
 
 Run these from the repo root:
@@ -25,6 +23,12 @@ Other options: `--jobs N` (trials at once, default 4), `--keep` (keep each trial
 (block network access for shell commands), `--no-sandbox` (needed where there is no sandbox, which is anywhere
 but macOS), `--config <path>` (a different `config.toml`).
 
+Trials at once send many requests. If the provider refuses them with HTTP 429, set `requests_per_minute` for
+that provider in `config.toml` (see [docs/reference.md](../docs/reference.md#providers-and-api-keys)), or pass
+`--requests-per-minute N`. The flag sets the cap for every provider in this run and replaces the one in
+`config.toml`; `--requests-per-minute 0` removes it. All trials in a run share the cap, and `run.json` records the
+cap of each provider the run's models use.
+
 Each trial:
 
 1. Copies the task's fixture to a temp folder and commits it to a new git repo.
@@ -35,6 +39,26 @@ Each trial:
 
 Only your `config.toml` is copied into the trial. Your skills, commands, agents and `~/.jimbo/AGENTS.md` are not
 loaded, so they don't change the results. Bundled files are loaded.
+
+## Grading
+
+After the run, each check that the task has runs. They are set in `task.toml` (see [Add a task](#add-a-task)):
+
+- **Check command** (`[check] command`): the files in the task's `check/` folder are copied over the workspace,
+  then the command runs there with a shell, outside the sandbox. Exit code 0 is a pass. Most tasks use this to
+  run hidden tests, which jimbo never sees.
+- **Event checks** (`[[check.events]]`): count the session's events of one kind with matching fields, such as
+  successful `edit_file` results, and compare the count with `min` and `max`. Plan mode tasks use this to check
+  that no file was changed and that `exit_plan` was called.
+- **Repeated denials** (`[check] no_repeated_denials`): fail if a call that was denied is made again with the
+  same arguments.
+- **Judge** (`[judge] rubric`): a model gets the prompt, the rubric, jimbo's final answer, the diff and any
+  plans given to `exit_plan`. It returns pass or fail with a reason. It runs as the task `evals-judge`, which
+  uses the main model unless you pass `--set evals-judge=<model>`. Tasks whose answer is text use this.
+
+A trial passes when the run ends without an error (a failed turn or the trial timeout) and every check passes.
+The output of each check, and the judge's reason, are saved in the trial's `check.txt` and shown in
+`report.html`.
 
 ## Results
 
@@ -51,7 +75,9 @@ Each run writes `evals/results/<run-id>/`. `<run-id>` is the date, the time and 
 | `<task>/<trial>/check.txt` | the output of each check |
 
 `cost` is in USD. It is pydantic-ai's estimate from its price tables (the `genai-prices` package), not the amount
-the provider billed, and it is empty when no response could be priced. It covers jimbo's requests, including agents,
+the provider billed. When those tables don't have the model, the cost comes from the per-token prices that the
+provider's `/models` list gives for the main model (OpenRouter lists them), and agents on other models are priced as
+the main model. It is empty when neither source has a price. It covers jimbo's requests, including agents,
 but not the judge's. The estimate can be wrong when a price table is out of date, when OpenRouter sends the request
 to an upstream provider with a different price, or when cached tokens are billed at a lower rate.
 
@@ -98,8 +124,6 @@ evals/tasks/<id>/
 ```
 
 Put hidden tests in `check/eval_check/`. `{python}` in the command is the Python that runs the evals.
-
-A trial passes when the run ends without an error and every check that the task has passes.
 
 Then run:
 

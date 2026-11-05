@@ -4,6 +4,7 @@ from pydantic_ai.models import Model
 from ..config import ProviderConfig, Settings
 from .base import ProviderSpec
 from .openai_compat import OpenAICompatProvider
+from .ratelimit import RateLimitedModel, limiter_for
 
 ADAPTERS: dict[str, ProviderSpec] = {"openai_compat": OpenAICompatProvider()}
 
@@ -54,4 +55,7 @@ def build_model_from_spec(spec: str, settings: Settings) -> Model:
         adapter = ADAPTERS[cfg.type]
     except KeyError:
         raise ValueError(f"provider {provider!r}: unknown type {cfg.type!r}; known: {sorted(ADAPTERS)}") from None
-    return adapter.build_model(name, provider, cfg, settings)
+    model = adapter.build_model(name, provider, cfg, settings)
+    if cfg.requests_per_minute is not None:
+        model = RateLimitedModel(model, limiter_for(provider, cfg.requests_per_minute))
+    return model

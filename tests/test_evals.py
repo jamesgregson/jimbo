@@ -3,10 +3,11 @@ import json
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.usage import RunUsage
 
 from evals.grading import check_events, repeated_denials
 from evals.report import compare_report, cost, run_report
-from evals.runner import RunConfig, run_suite
+from evals.runner import RunConfig, make_settings, request_limits, run_suite, trial_cost
 from evals.side_tasks import load_compaction_cases, load_shell_cases
 from evals.tasks import Task, load_task, load_tasks
 from evals.validate import check_task
@@ -90,3 +91,26 @@ def test_cost_column():
     assert cost([{"cost": 0.001}, {"cost": 0.003}, {"cost": None}]) == "$0.0020"
     assert cost([{"cost": 0.001}, {"cost": 0.003}], total=True) == "$0.0040"
     assert cost([{}]) == "-"  # results written before cost was recorded
+
+
+def test_trial_cost_falls_back_to_listed_prices():
+    prices = {"prompt": 1e-6, "completion": 2e-6, "input_cache_read": 1e-7}
+    usage = RunUsage(requests=1, input_tokens=1000, cache_read_tokens=400, output_tokens=100)
+    assert trial_cost(usage, prices) == pytest.approx(600e-6 + 400e-7 + 200e-6)
+    assert trial_cost(usage, None) is None
+    assert trial_cost(RunUsage(), prices) is None  # no requests: nothing to price
+    assert trial_cost(None, prices) is None
+
+
+def test_requests_per_minute_override(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('[providers.work]\nbase_url = "http://x/v1"\nrequests_per_minute = 5\n')
+
+    def limits(rpm):
+        s = make_settings(RunConfig(user_config=config, requests_per_minute=rpm), None, tmp_path,
+                          tmp_path / f"home-{rpm}", tmp_path / "logs")
+        return request_limits(s, {"main": "work:m", "judge": "openrouter:j"})
+
+    assert limits(None) == {"work": 5, "openrouter": None}
+    assert limits(20) == {"work": 20, "openrouter": 20}
+    assert limits(0) == {"work": None, "openrouter": None}

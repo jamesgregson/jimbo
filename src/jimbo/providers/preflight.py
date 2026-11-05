@@ -25,6 +25,20 @@ class ModelFacts:
     notes: list[str] = field(default_factory=list)  # worth telling the user
     context: int | None = None  # the context window it really has
     vision: bool | None = None
+    prices: dict[str, float] | None = None  # USD per token, as OpenRouter's /models lists them
+
+
+def _prices(raw: object) -> dict[str, float] | None:
+    """Per-token prices from a /models entry's `pricing` (OpenRouter's format: numbers as strings)."""
+    if not isinstance(raw, dict):
+        return None
+    prices = {}
+    for k, v in raw.items():
+        try:
+            prices[k] = float(v)
+        except (TypeError, ValueError):
+            pass
+    return prices if "prompt" in prices and "completion" in prices else None
 
 
 async def _ollama(http: aiohttp.ClientSession, base: str, name: str) -> ModelFacts:
@@ -84,7 +98,7 @@ async def _openai_compat(http: aiohttp.ClientSession, base: str, provider: str, 
     if found is None:
         # a warning only: gateways often serve models they don't list
         return ModelFacts(notes=[f"{provider} doesn't list model {name!r}"] if models else [])
-    return ModelFacts(context=found.get("context_length"))
+    return ModelFacts(context=found.get("context_length"), prices=_prices(found.get("pricing")))
 
 
 def _client(key: SecretStr | None, timeout: float) -> aiohttp.ClientSession:
