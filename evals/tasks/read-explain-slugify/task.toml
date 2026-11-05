@@ -1,0 +1,22 @@
+prompt = "Why does slugify(\"Hello  World\") (two spaces) return \"hello--world\"? Explain, but don't change any files."
+fixture = "shop"
+tags = ["read"]
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[judge]
+rubric = """
+1. split(" ") splits on each single space, so two spaces give an empty string between the words.
+2. The empty string is joined with hyphens, which gives two hyphens.
+3. A fix is suggested, such as split() with no argument, or filtering out empty words.
+"""

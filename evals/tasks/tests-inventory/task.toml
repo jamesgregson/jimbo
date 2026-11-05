@@ -1,0 +1,6 @@
+prompt = "Add tests for shop/inventory.py in tests/test_inventory.py, including the error cases. Don't change shop/inventory.py."
+fixture = "shop"
+tags = ["tests", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider tests/test_inventory.py && cp eval_check/broken_inventory.py shop/inventory.py && ! {python} -m pytest -q -p no:cacheprovider tests/test_inventory.py"

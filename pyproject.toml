@@ -30,3 +30,5 @@ packages = ["src/jimbo"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]  # not evals/: its fixtures hold tests that fail on purpose
+pythonpath = ["."]  # so tests can import evals

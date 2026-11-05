@@ -1,0 +1,24 @@
+prompt = "How does this project decide where orders are stored, and what are the options? Don't change any files."
+fixture = "shop"
+tags = ["read"]
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[judge]
+rubric = """
+1. The storage setting (settings["storage"], from load_settings) picks the backend.
+2. get_backend in shop/storage.py looks it up in BACKENDS.
+3. The options are memory (MemoryStore), json (JsonStore) and sqlite (SqliteStore).
+4. The default is memory.
+5. The json path comes from the json_path setting (default orders.json); the sqlite path from the SHOP_DB_PATH environment variable (default shop.db).
+"""

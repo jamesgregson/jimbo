@@ -1,0 +1,6 @@
+prompt = "read_catalog fails with KeyError: 'sku' on data/excel_export.csv, which was exported from Excel. data/catalog.csv works. Fix read_catalog so both work."
+fixture = "shop"
+tags = ["bug-fix", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

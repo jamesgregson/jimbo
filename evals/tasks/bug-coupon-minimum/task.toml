@@ -1,0 +1,6 @@
+prompt = "A customer with an order of exactly $50.00 used coupon SAVE10 and didn't get the discount. Fix it."
+fixture = "shop"
+tags = ["bug-fix", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

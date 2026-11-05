@@ -1,9 +1,10 @@
 import platform
 
 from pydantic_ai import Agent, RunContext, Tool
-from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.capabilities import PrepareTools, ProcessHistory
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
+from pydantic_ai.tools import ToolDefinition
 
 from .config import Settings
 from .core.agents import AgentSpec, format_agent_index
@@ -67,7 +68,7 @@ def wrap_up_notice(deps: Deps, requests_made: int) -> str | None:
     left = deps.request_limit - requests_made
     if left > WRAP_UP_REQUESTS:
         return None
-    last = "This is the last request: reply with text only, no tool calls." if left <= 1 else ""
+    last = "This is the last request: no tools are available, so reply with text only." if left <= 1 else ""
     return WRAP_UP_PROMPT.format(left=left, last=last).rstrip()
 
 
@@ -92,6 +93,13 @@ def project_context(ctx: RunContext[Deps]) -> str:
         parts.append(notice)
         deps.wrap_up_left = deps.request_limit - ctx.usage.requests
     return "\n\n".join(parts)
+
+
+async def last_request_tools(ctx: RunContext[Deps], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
+    """No tools on the turn's last request. The wrap-up notice asks for a text reply, but a model can ignore it,
+    and a tool call there ends the turn with a request-limit error and no final message."""
+    limit = ctx.deps.request_limit
+    return [] if limit is not None and limit - ctx.usage.requests <= 1 else tool_defs
 
 
 async def midrun_history(ctx: RunContext[Deps], messages: list[ModelMessage]) -> list[ModelMessage]:
@@ -126,5 +134,5 @@ def build_agent(settings: Settings, model: Model, spec: AgentSpec | None = None)
         instructions=[*instructions, project_context],
         tools=tools,
         retries=settings.tool_retries,
-        capabilities=[ProcessHistory(midrun_history)],
+        capabilities=[ProcessHistory(midrun_history), PrepareTools(last_request_tools)],
     )

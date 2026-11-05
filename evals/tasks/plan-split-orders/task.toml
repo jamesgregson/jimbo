@@ -1,0 +1,28 @@
+prompt = "submit_order in shop/orders.py does too much. Split it so validation, pricing and notification can each be tested on their own."
+fixture = "shop"
+tags = ["plan-mode"]
+mode = "plan"
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_call"
+tool = "exit_plan"
+min = 1
+
+[judge]
+rubric = """
+1. The plan has concrete steps that name the functions to create or change.
+2. It keeps submit_order working for its callers.
+3. It includes running or adding tests.
+"""

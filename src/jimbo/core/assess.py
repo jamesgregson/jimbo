@@ -42,6 +42,7 @@ class Assessment(BaseModel):
     risk: Risk
     reasons: list[str] = []
     model: str | None = None  # spec of the model that wrote the summary; None if only the checks ran
+    model_risk: Risk | None = None  # the model's own answer, before the checks could raise it
     raised: bool = False  # the deterministic checks put the risk above the model's answer
     error: str | None = None  # why there is no model answer: timed out, unusable answer, ...
 
@@ -182,5 +183,5 @@ async def assess_shell(router: ModelRouter | None, command: str, workspace: Path
     risk = max(out.risk, floor, key=RANK.__getitem__)
     reasons = list(dict.fromkeys([*out.reasons, *why]))
     spec = router.explain(TASK).spec if router else None
-    return Assessment(summary=out.summary.strip(), risk=risk, reasons=reasons, model=spec,
+    return Assessment(summary=out.summary.strip(), risk=risk, reasons=reasons, model=spec, model_risk=out.risk,
                       raised=RANK[floor] > RANK[out.risk])

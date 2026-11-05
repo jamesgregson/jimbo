@@ -1,0 +1,16 @@
+prompt = "Add a docstring to every function and class in the shop package that doesn't have one. Do one file at a time, and run the tests after each file."
+fixture = "shop"
+tags = ["limits"]
+
+[settings]
+request_limit = 8
+
+[[check.events]]
+kind = "wrap_up"
+min = 1
+
+[judge]
+rubric = """
+1. The final message says which files were done.
+2. It says that the work is not finished and what is left to do.
+"""

@@ -1,0 +1,41 @@
+keep = 2
+
+[[turn]]
+user = "The nightly job fails with 'connection reset by peer' when it uploads reports."
+assistant = "I'll look at the uploader. It's in jobs/upload.py and uses requests with no retry."
+
+[[turn]]
+user = "It only fails for files over 100 MB."
+assistant = "That points at the proxy. The proxy config in deploy/proxy.conf sets client_max_body_size to 100m."
+
+[[turn]]
+user = "We can't change the proxy; the infra team owns it."
+assistant = "Then the uploader should split files into 50 MB chunks and use the multipart endpoint /v2/uploads."
+
+[[turn]]
+user = "Good. The multipart endpoint needs the header X-Upload-Session from the first response."
+assistant = "Noted: send X-Upload-Session from the first response on each later chunk."
+
+[[turn]]
+user = "Don't touch jobs/legacy_upload.py, it's being deleted next month."
+assistant = "Understood, I'll leave jobs/legacy_upload.py alone."
+
+[[turn]]
+user = "Start with the chunking."
+assistant = "Starting on chunking in jobs/upload.py."
+
+[[question]]
+q = "Why do large uploads fail?"
+expect = "The proxy limits request bodies to 100 MB (client_max_body_size 100m in deploy/proxy.conf)."
+
+[[question]]
+q = "What chunk size and endpoint should the uploader use?"
+expect = "50 MB chunks to the multipart endpoint /v2/uploads."
+
+[[question]]
+q = "Which header must later chunks send?"
+expect = "X-Upload-Session, taken from the first response."
+
+[[question]]
+q = "Which file must not be changed?"
+expect = "jobs/legacy_upload.py"

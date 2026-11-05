@@ -1,0 +1,25 @@
+prompt = "What happens, step by step, when submit_order is called? Name the functions involved. Don't change any files."
+fixture = "shop"
+tags = ["read"]
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[judge]
+rubric = """
+In this order:
+1. Settings are loaded with load_settings if none were passed, and a store is made with get_backend if none was passed.
+2. The cart is validated: an empty cart, a quantity of 0 or less, or a negative price raises ValueError.
+3. calc_total computes the total: subtotal, coupon discount, then tax.
+4. The order is saved with store.save, which returns the id put on the order.
+5. send_confirmation renders the email with render_email and sends it with mailer.send, which stores it in OUTBOX unless SHOP_MAIL is set to something other than outbox.
+"""

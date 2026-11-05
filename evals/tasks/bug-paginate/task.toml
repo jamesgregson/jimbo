@@ -1,0 +1,6 @@
+prompt = "Pagination drops the last item on each page. Fix it."
+fixture = "shop"
+tags = ["bug-fix", "python", "smoke"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

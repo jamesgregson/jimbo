@@ -1,0 +1,7 @@
+prompt = "Add tests for shop/money.py in tests/test_money.py. Cover plain amounts, commas, one and two decimals, negative amounts and invalid input. Don't change shop/money.py."
+fixture = "shop"
+tags = ["tests", "python"]
+
+[check]
+# The new tests must pass, and must fail when money.py is replaced by a broken copy.
+command = "{python} -m pytest -q -p no:cacheprovider tests/test_money.py && cp eval_check/broken_money.py shop/money.py && ! {python} -m pytest -q -p no:cacheprovider tests/test_money.py"

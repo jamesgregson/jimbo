@@ -1,0 +1,6 @@
+prompt = "Add a currency setting with the default \"USD\". Like the other settings, it can be set in shop.toml or with an environment variable."
+fixture = "shop"
+tags = ["feature", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

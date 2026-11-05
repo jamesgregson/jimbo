@@ -1,0 +1,47 @@
+# A conversation where facts from early turns are needed later. keep = 2 keeps only the last two
+# messages verbatim, so the questions can only be answered from the summary.
+keep = 2
+
+[[turn]]
+user = "We're building a CLI called ledgerly that imports bank CSV files. Use Python 3.12 and keep it dependency-free apart from click."
+assistant = "Understood: ledgerly, Python 3.12, click as the only dependency."
+
+[[turn]]
+user = "The ANZ export puts the amount in column 5 and uses DD/MM/YYYY dates. The Kiwibank export uses ISO dates and has separate debit and credit columns."
+assistant = "Noted. I'll write one parser per bank: ANZ reads column 5 and DD/MM/YYYY dates; Kiwibank uses ISO dates and combines the debit and credit columns."
+
+[[turn]]
+user = "Store amounts as integer cents, never floats."
+assistant = "Agreed: all amounts are integer cents."
+
+[[turn]]
+user = "I added src/ledgerly/parsers/anz.py. The tests are in tests/test_anz.py and use the fixture file tests/data/anz_sample.csv."
+assistant = "Thanks. I read anz.py; it parses the sample correctly."
+
+[[turn]]
+user = "We decided duplicates are detected by (date, amount, description), not by the bank's transaction id, because Kiwibank ids change between exports."
+assistant = "Got it: the duplicate key is (date, amount, description)."
+
+[[turn]]
+user = "Let's call the output file ledger.jsonl, one transaction per line."
+assistant = "Okay, output goes to ledger.jsonl."
+
+[[turn]]
+user = "What's left on the list?"
+assistant = "The Kiwibank parser, duplicate detection and the ledger.jsonl writer."
+
+[[question]]
+q = "Which column holds the amount in the ANZ export, and what date format does it use?"
+expect = "Column 5, dates in DD/MM/YYYY."
+
+[[question]]
+q = "How are duplicate transactions detected, and why not by transaction id?"
+expect = "By (date, amount, description), because Kiwibank transaction ids change between exports."
+
+[[question]]
+q = "How are amounts stored?"
+expect = "As integer cents, never floats."
+
+[[question]]
+q = "Where is the ANZ test fixture file?"
+expect = "tests/data/anz_sample.csv"

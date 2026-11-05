@@ -20,5 +20,8 @@ dist/
 .idea/
 .DS_Store
 
+# Eval results
+evals/results/
+
 # Jimbo session logs (if written inside the workspace)
 #*.jsonl

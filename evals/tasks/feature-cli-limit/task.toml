@@ -1,0 +1,6 @@
+prompt = "Add a --limit N option to the shop list command (shop/cli.py) that prints at most N items. Without it, all items are printed as now."
+fixture = "shop"
+tags = ["feature", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

@@ -1,0 +1,29 @@
+prompt = "Use the explore agent to find every place in this project that reads an environment variable, then list them with the variable names."
+fixture = "shop"
+tags = ["agents"]
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_call"
+tool = "run_agent"
+min = 1
+
+[judge]
+rubric = """
+The answer lists all of these, and no made-up ones:
+1. shop/config.py: SHOP_<KEY> for each default setting (SHOP_STORAGE, SHOP_TAX_RATE, SHOP_PAGE_SIZE, SHOP_SENDER).
+2. shop/storage.py: SHOP_DB_PATH.
+3. shop/mailer.py: SHOP_MAIL and SMTP_HOST.
+4. shop/cli.py: SHOP_DEBUG.
+"""

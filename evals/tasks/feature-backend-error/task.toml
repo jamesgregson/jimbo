@@ -1,0 +1,6 @@
+prompt = "An unknown storage setting gives a bare KeyError from get_backend. Make it raise ValueError with a message that names the bad value and lists the valid choices."
+fixture = "shop"
+tags = ["feature", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

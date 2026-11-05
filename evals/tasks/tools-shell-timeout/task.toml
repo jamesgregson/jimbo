@@ -1,0 +1,20 @@
+prompt = "Run scripts/check.sh and tell me what it prints."
+tags = ["tools"]
+timeout = 300
+
+[settings]
+shell_timeout = 5
+shell_timeout_max = 10
+
+[[check.events]]
+kind = "tool_call"
+tool = "shell"
+min = 1
+
+[judge]
+rubric = """
+The answer does one of these, and doesn't claim any other output:
+1. Says the script did not finish because the command timed out or was stopped.
+2. Reports that the script printed "all 42 checks passed" (it is possible to get this, for example by running
+   the script in the background and reading its output later).
+"""

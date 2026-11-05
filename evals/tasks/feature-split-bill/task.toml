@@ -1,0 +1,6 @@
+prompt = """Add split_bill(total_cents, people) to shop/pricing.py. It returns a list of `people` integers that add up to total_cents. The amounts differ by at most 1 cent, with the larger amounts first. It raises ValueError if people is less than 1."""
+fixture = "shop"
+tags = ["feature", "python", "smoke"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

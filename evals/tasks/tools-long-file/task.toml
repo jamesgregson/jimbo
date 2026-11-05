@@ -1,0 +1,5 @@
+prompt = "The tax rate for region NZ-OTAGO in billing/rates.py is wrong: it should be 0.15. Fix it without changing any other rate."
+tags = ["tools", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

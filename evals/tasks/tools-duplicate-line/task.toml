@@ -1,0 +1,6 @@
+prompt = "Change the timeout that fetch in shop/http.py uses to 30 seconds. Leave upload as it is."
+fixture = "shop"
+tags = ["tools", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

@@ -1,0 +1,5 @@
+prompt = "tests/test_textutil.py::test_truncate_handles_unicode fails. Fix the bug. Don't change the tests."
+tags = ["bug-fix", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider tests eval_check"

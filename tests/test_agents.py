@@ -677,9 +677,24 @@ async def test_model_is_told_to_wrap_up_near_the_request_limit(tmp_path):
     s, fe = make(tmp_path, models={"t:main": FunctionModel(stream_function=stream)}, request_limit=5)
     assert await s.send("go") == "summary"
     assert ["# Wrap up now" in i for i in seen] == [False, False, True, True, True]
-    assert "1 model request(s) left" in seen[-1] and "no tool calls" in seen[-1]
-    assert "no tool calls" not in seen[-2]
+    assert "1 model request(s) left" in seen[-1] and "no tools are available" in seen[-1]
+    assert "no tools are available" not in seen[-2]
     assert kinds(fe, "wrap_up") == [{"left": 3}, {"left": 2}, {"left": 1}]  # the trace shows what the model was told
+
+
+async def test_last_request_has_no_tools(tmp_path):
+    tools = []
+
+    async def stream(messages, info):
+        tools.append([t.name for t in info.function_tools])
+        if info.function_tools:
+            yield {0: DeltaToolCall(name="glob", json_args='{"pattern": "*"}')}
+        else:  # a model that would keep calling tools has to answer instead
+            yield "summary"
+    s, fe = make(tmp_path, models={"t:main": FunctionModel(stream_function=stream)}, request_limit=3)
+    assert await s.send("go") == "summary"
+    assert [bool(t) for t in tools] == [True, True, False] and "glob" in tools[0]
+    assert kinds(fe, "run_finished") == [{"ok": True}] and not kinds(fe, "error")
 
 
 async def test_agent_wrap_up_reaches_the_parent(tmp_path):

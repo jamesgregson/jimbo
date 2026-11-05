@@ -1,0 +1,6 @@
+prompt = "submit_order crashes with an AttributeError when the customer has no email address. Customers without an email should get no confirmation email, and the order should still be saved."
+fixture = "shop"
+tags = ["bug-fix", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider eval_check"

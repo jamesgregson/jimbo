@@ -1,0 +1,22 @@
+prompt = "In what order are settings applied in this project, and which source wins? Don't change any files."
+fixture = "shop"
+tags = ["read", "smoke"]
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[judge]
+rubric = """
+1. Built-in DEFAULTS come first, then values from shop.toml, then SHOP_* environment variables. Environment variables win.
+2. Only keys in DEFAULTS can be set from the environment (SHOP_ plus the key in upper case).
+3. Environment values are converted to the type of the default value.
+"""

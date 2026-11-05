@@ -99,7 +99,7 @@ Key properties:
 
 - **Bounded.** `request_limit` (default 50) caps model requests per turn via `UsageLimits`. For the last 3
   requests, `project_context` adds a notice telling the model to stop starting new work, leave the workspace
-  in a sensible state and end with a summary. On the last request it is told to reply without tool calls.
+  in a sensible state and end with a summary. On the last request it gets no tools (a `PrepareTools` capability) and is told to reply with text only.
 - **Cancellable.** `send()` runs the turn in its own `asyncio.Task` so `cancel()` (Ctrl+C, or the web UI's
   Stop button) cancels the run without cancelling the caller. In the runner's SIGINT handler a second
   Ctrl+C within 2 seconds of one that cancelled a run escalates to quitting. On cancel, the partial turn is kept in
@@ -351,3 +351,11 @@ agents run one at a time. `AgentSession.delegate()` calls it directly for `@name
 `uv run pytest`. Tests build sessions through `build_session()` with a scripted model from
 `tests/helpers.py` and assert on emitted events, so they cover the loop, approvals, commands and tools
 without any network or UI.
+
+### Evals
+
+[evals/](evals/README.md) runs jimbo on coding tasks with a real model: `uv run python -m evals run`. Each trial
+copies a fixture to a temp git repo, builds a session with `build_session()` and an approval chain of `rules`
+then allow-all, runs the prompt, and grades the result with a check command (hidden tests copied in after the
+run), counts of events, and a judge model (task `evals-judge`). Results, session logs and diffs go to
+`evals/results/`. `assess` and `compaction` evaluate the `jimbo-shell-assess` and `jimbo-compaction` tasks.

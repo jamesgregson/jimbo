@@ -1,0 +1,28 @@
+prompt = "Add a way to export all stored orders to a CSV file, with one row per order item."
+fixture = "shop"
+tags = ["plan-mode", "smoke"]
+mode = "plan"
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_call"
+tool = "exit_plan"
+min = 1
+
+[judge]
+rubric = """
+1. The answer or the plan names where the export code goes (a new module, or an existing one such as shop/storage.py or shop/cli.py) and how it gets the orders (store.all() or get_backend).
+2. It says what the CSV columns are, with one row per item.
+3. It includes adding tests.
+"""

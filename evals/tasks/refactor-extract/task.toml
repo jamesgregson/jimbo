@@ -1,0 +1,6 @@
+prompt = "Move the cart checks in submit_order (shop/orders.py) into a new function validate_cart(cart) in the same file, and have submit_order call it. Behaviour must not change."
+fixture = "shop"
+tags = ["refactor", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider tests eval_check"
