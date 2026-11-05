@@ -140,7 +140,7 @@ async def test_model_show_switch_and_reject(tmp_path, monkeypatch):
 async def test_usage(tmp_path):
     s, fe = make(tmp_path, context_window=100_000)
     await s.commands.dispatch(s, "/usage")
-    assert last(fe)["text"] == "0 requests · 0 in · 0 out\ncontext: 0 / 100000 tokens (0%)"
+    assert last(fe)["text"] == "0 requests · 0 in · 0 out · $0.0000 estimated\ncontext: 0 / 100000 tokens (0%)"
     await s.send("hi")
     await s.commands.dispatch(s, "/usage")
     u = s.total_usage

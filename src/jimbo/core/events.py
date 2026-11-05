@@ -30,6 +30,7 @@ EventKind = Literal[
     "status",
     "busy",
     "config",
+    "session_end",
 ]
 
 

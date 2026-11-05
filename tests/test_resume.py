@@ -160,3 +160,41 @@ async def test_resume_closes_a_run_the_log_cut_off(tmp_path):
     await s2.resume(s1.session_id)
     assert fe2.events[-1].kind == "context" and [e.data for e in fe2.events if e.kind == "run_finished"] == [{"ok": False}]
     assert '"kind":"run_finished"' not in log.read_text()  # only the UI is told
+
+
+PRICES = {"prompt": 1e-6, "completion": 2e-6}
+
+
+async def test_cost_is_logged_saved_and_restored_on_resume(tmp_path):
+    s1, fe1, sink1 = make(tmp_path, ["hello"])
+    s1.prices = PRICES  # TestModel isn't in pydantic-ai's price tables, so the listed prices are used
+    await run_frontend(s1, fe1)
+    await s1.close()
+    sink1.close()
+    usage = [e for e in s1.store.events(s1.session_id) if e.kind == "usage"][-1].data
+    assert usage["cost"] == pytest.approx(usage["input_tokens"] * 1e-6 + usage["output_tokens"] * 2e-6)
+    end = [e for e in s1.store.events(s1.session_id) if e.kind == "session_end"][-1].data
+    assert end["run"] == end["session"] and end["run"]["cost"] == pytest.approx(usage["cost"])
+    assert SessionStore(tmp_path / "logs").load(s1.session_id).spend["cost"] == pytest.approx(usage["cost"])
+
+    s2, fe2, _ = make(tmp_path, ["again"])
+    s2.prices = PRICES
+    await s2.resume(s1.session_id)
+    await run_frontend(s2, fe2)
+    assert s2.spend.requests == 2 and s2.run_spend.requests == 1  # the session counts the turn before the resume
+    assert s2.spend.cost == pytest.approx(usage["cost"] + s2.run_spend.cost)
+    assert SessionStore(tmp_path / "logs").load(s2.session_id).spend["requests"] == 2
+
+
+async def test_unpriced_turns_are_counted_not_guessed(tmp_path):
+    s, fe, _ = make(tmp_path, ["hello"])  # no prices
+    await run_frontend(s, fe)
+    assert [e.data["cost"] for e in fe.events if e.kind == "usage"] == [None]
+    assert s.spend.unpriced == s.spend.requests == 1 and "cost unknown" in s.spend.summary()
+
+
+async def test_clear_starts_a_new_session_total_but_not_a_new_run_total(tmp_path):
+    s, fe, _ = make(tmp_path, ["hello", "/clear"])
+    s.prices = PRICES
+    await run_frontend(s, fe)
+    assert s.spend.requests == 0 and s.run_spend.requests == 1

@@ -154,8 +154,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
         return "\n".join(["Tasks:", *rows, *(["Aliases:", *aliases] if aliases else []), "Providers:", *provs])
 
     async def usage(session: AgentSession, args: str) -> str:
-        u = session.total_usage
-        lines = [f"{u.requests} requests · {u.input_tokens} in · {u.output_tokens} out"]
+        lines = [session.spend.summary()]  # this session id, including before a resume
         if session.context_window:
             pct = 100 * session.context_tokens / session.context_window
             lines.append(f"context: {session.context_tokens} / {session.context_window} tokens ({pct:.0f}%)")
@@ -278,7 +277,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
                  "| alias <name> <spec> | alias <name> --rm]", models)
     registry.add("providers", "list or change model providers: /providers [add|url|key|rm|test <name> ...]", providers)
     registry.add("usage", "token usage and context fill for this session", usage)
-    registry.add("approve", "show or set approval chain: /approve [auto|yolo|default]", approve)
+    registry.add("approve", "show or set approval chain: /approve [auto|yolo|default]", approve, midrun=True)
     registry.add("plan", "toggle plan mode (read-only until you approve a plan): /plan [on|off]", plan)
     registry.add("todos", "show the agent's task list", todos)
     registry.add("skills", "list available skills", skills)

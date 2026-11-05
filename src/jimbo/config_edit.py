@@ -189,6 +189,7 @@ class ConfigControl:
         found = facts.context if facts else None
         session.context_window = s.context_window or found or s.num_ctx
         session.vision = s.vision and not (facts and facts.vision is False)
+        session.prices = facts.prices if facts else None  # later turns are priced as the new model
         await session.emit_context()
 
     async def set_alias(self, session: "AgentSession", name: str, spec: str) -> str:

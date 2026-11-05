@@ -1,10 +1,11 @@
 import asyncio
 
+import pytest
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from helpers import ScriptedFrontend, settings
-from jimbo.core.approval import ApprovalDecision
+from jimbo.core.approval import MODE_WARNING, YOLO_CHAIN, ApprovalDecision
 from jimbo.core.runner import run_frontend
 from jimbo.wiring import build_session
 
@@ -145,6 +146,76 @@ async def test_runner_refuses_commands_during_a_run(tmp_path):
     await asyncio.wait_for(run_frontend(s, fe), 5)
     assert any(e.kind == "command_output" and "can't run while" in e.data["text"] for e in fe.events)
     assert s.history  # /clear did not run
+
+
+@pytest.mark.parametrize("yes", [True, False])
+async def test_runner_runs_approve_during_a_run(tmp_path, yes):
+    """/approve is a command, not a steer, mid-run; it asks to confirm through the frontend that is still reading."""
+    seen, gate, asked = [], asyncio.Event(), []
+
+    class Fe(ScriptedFrontend):
+        supports_steering = True
+
+        reading = False
+
+        async def next_user_input(self):
+            if not self.inputs:
+                self.reading = True
+                await gate.wait()
+                return None
+            if len(self.inputs) == 1:
+                await asyncio.sleep(0.05)
+            return self.inputs.pop(0)
+
+        async def confirm(self, message):
+            asked.append((message, self.reading))
+            return yes
+
+        async def render(self, event):
+            await super().render(event)
+            if event.kind == "run_finished":
+                gate.set()
+
+    fe = Fe(["go", "/approve yolo"])
+    s = build_session(settings(tmp_path), fe, model=model(seen))
+    before = list(s.approval_modes.names)
+    real = s.deps.authorize
+
+    async def slow(*a, **k):
+        await asyncio.sleep(0.2)
+        return await real(*a, **k)
+    s.deps.authorize = slow
+    await asyncio.wait_for(run_frontend(s, fe), 5)
+    assert asked == [(MODE_WARNING, True)]  # the prompt was up to take the answer
+    assert s.approval_modes.names == (YOLO_CHAIN if yes else before)
+    assert all("/approve yolo" not in texts for texts in seen)  # never sent to the model
+
+
+async def test_runner_reads_input_before_a_command_asks_to_confirm(tmp_path):
+    """Like tui, a steering frontend takes a confirm answer through its prompt, so the prompt must be up first.
+    Starting the command before the read opened a second prompt ("Application is already running")."""
+    asked = []
+
+    class Fe(ScriptedFrontend):
+        supports_steering = True
+        reading = False
+
+        async def next_user_input(self):
+            if self.inputs:
+                return self.inputs.pop(0)
+            self.reading = True
+            await asyncio.sleep(0.1)
+            return None
+
+        async def confirm(self, message):
+            asked.append(self.reading)
+            return True
+
+    fe = Fe(["/approve yolo"])
+    s = build_session(settings(tmp_path), fe, model=model([]))
+    await asyncio.wait_for(run_frontend(s, fe), 5)
+    assert asked == [True]
+    assert s.approval_modes.names == YOLO_CHAIN
 
 
 async def test_denial_note_reaches_the_model(tmp_path):

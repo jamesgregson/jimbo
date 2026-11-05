@@ -66,6 +66,7 @@ def main() -> None:
             session.context_window = facts.context
         if facts.vision is False:
             session.vision = False
+        session.prices = facts.prices
 
     async def one_shot(prompt: str) -> None:
         await session.emit_status(initial=True)
@@ -101,8 +102,15 @@ def main() -> None:
             else:
                 await run_frontend(session, frontend)
         finally:
+            spent = session.run_spend
+            if spent.requests:
+                await session.close()
             if stop := getattr(frontend, "stop", None):
                 await stop()
+            if spent.requests and settings.ui != "json":  # json: the session_end event says it
+                print(f"jimbo: this run: {spent.summary()}", file=sys.stderr)
+                if session.spend.requests > spent.requests:  # resumed: the session cost more before this run
+                    print(f"jimbo: session {session.session_id}: {session.spend.summary()}", file=sys.stderr)
 
     try:
         asyncio.run(go())

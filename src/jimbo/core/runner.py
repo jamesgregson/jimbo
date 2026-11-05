@@ -1,8 +1,9 @@
 import asyncio
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from contextlib import contextmanager
+from typing import Any
 
 from .approval import MODE_WARNING
 from .attachments import UserMessage, build_content
@@ -105,6 +106,16 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
     with _interrupt_cancels_run(session):
         run: asyncio.Task | None = None
         read: asyncio.Task | None = None
+        side: set[asyncio.Task] = set()  # commands typed mid-run, such as /approve
+
+        def start(coro: Coroutine[Any, Any, bool]) -> asyncio.Task:
+            """Start a turn or a mid-run command. Input is read first, so the frontend's prompt is up to take
+            the answer if it asks to confirm; a frontend like tui can't show a second prompt beside it."""
+            nonlocal read
+            if read is None:
+                read = asyncio.ensure_future(frontend.next_user_input())
+            return asyncio.ensure_future(coro)
+
         try:
             while True:
                 if read is None:
@@ -121,13 +132,15 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
                     if msg is None:
                         return
                     if run is not None:  # only reachable with steering: a run is in flight
-                        await _steer_or_refuse(session, msg)
+                        if cmd := await _steer_or_refuse(session, msg):
+                            side.add(task := start(cmd))
+                            task.add_done_callback(side.discard)
                     elif steering:
-                        run = asyncio.ensure_future(_handle(session, msg))
+                        run = start(_handle(session, msg))
                     elif not await _handle(session, msg):
                         return
         finally:
-            for t in (run, read):
+            for t in (run, read, *side):
                 if t is not None and not t.done():
                     t.cancel()
             if run is not None:
@@ -162,12 +175,20 @@ async def config_request(session: AgentSession, msg: dict) -> None:
     await session.emit_status()
 
 
-async def _steer_or_refuse(session: AgentSession, msg: str | UserMessage) -> None:
+async def _steer_or_refuse(session: AgentSession, msg: str | UserMessage) -> Coroutine[Any, Any, bool] | None:
+    """Queue a message typed mid-run for the model. A command marked midrun is returned for the caller to run
+    as a task instead, so the frontend keeps reading input: the command may ask to confirm, and the answer comes
+    through that prompt."""
     msg = UserMessage(msg) if isinstance(msg, str) else msg
     if not msg.text.strip() and not msg.images:
-        return
+        return None
+    if not msg.images and session.commands.runs_midrun(msg.text):
+        return session.commands.dispatch(session, msg.text)
     if (msg.text.lstrip().startswith("/") or agent_call(session, msg.text)) and not msg.images:
+        allowed = ", ".join(f"/{n}" for n in session.commands.midrun_names())
         await session.emit("command_output", command="steer", ok=False,  # they change session state mid-run
-                           text="commands can't run while the agent is working; Esc stops it")
+                           text="commands can't run while the agent is working"
+                                + (f" (except {allowed})" if allowed else "") + "; Esc stops it")
     else:
         session.steer(build_content(msg.text, msg.images))
+    return None

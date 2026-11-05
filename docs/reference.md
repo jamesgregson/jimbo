@@ -340,7 +340,8 @@ doesn't allow nesting.
   `--auto` or `--yolo`. If you don't answer `y`, the mode stays as it was, or the session starts in the default
   mode. `plain`, `json` and one-shot runs don't ask.
 - **Steering (`tui`, `web`):** type while the agent works and your message reaches the model at its next
-  step. Slash commands are refused mid-run.
+  step. Slash commands are refused mid-run, except `/approve`, which changes the approval mode for the calls
+  that follow. A call already waiting for your answer keeps the mode it started with.
 - **`tui`:** Enter submits, Shift+Enter or Alt+Enter inserts a newline, and Ctrl+D quits. Pastes over 10 lines
   collapse to `[pasted #1: 240 lines]` and expand on submit. `@path` completes workspace files and inlines
   them for the model. Ctrl+V attaches a clipboard image (needs `pngpaste` or `osascript`).
@@ -360,8 +361,8 @@ doesn't allow nesting.
 | `/model [<alias\|provider:name>] [--save]` | show or switch the model; `--save` writes it to the config |
 | `/models` | show or set which model runs each task, and add or remove aliases |
 | `/providers` | list, add or change providers and their keys |
-| `/usage` | tokens used and context fill |
-| `/approve [auto\|yolo\|default]` | show or set the approval mode |
+| `/usage` | tokens used, estimated cost and context fill |
+| `/approve [auto\|yolo\|default]` | show or set the approval mode; works while the agent is running |
 | `/plan [on\|off]` | read-only mode: the agent presents a plan for you to approve |
 | `/todos` | show the agent's task list |
 | `/skills` | list available skills |
@@ -516,6 +517,23 @@ Each session is logged to `~/.jimbo/sessions/<session_id>.jsonl`, and its histor
 so `--resume` can continue it. `--resume` with no id takes the latest session from the current project, and
 an id loads any session. `/clear` starts a new session, so the old one stays resumable. Change the location
 with `log_dir`, or turn logging off with `log_sessions = false`, which also disables resume.
+
+**Cost:** each turn gets an estimated cost in USD. It comes from pydantic-ai's price tables (the `genai-prices`
+package) or, when those don't have the model, from the per-token prices the provider's `/models` list gives for
+the main model (OpenRouter lists them). Each turn is priced as the main model at the time, and agents on other
+models are priced as the main model. A turn neither source can price is counted as unpriced, not as free. The
+estimate is not what the provider billed. The cost is recorded in these places:
+
+- the `usage` event at the end of each turn (`cost`, or `null` if unpriced), so the trace shows each turn's
+  cost and the total in its header
+- the saved history (`<session_id>.messages.json`, under `spend`): requests, tokens, cost and unpriced
+  requests for that session, including turns before a `--resume`
+- a `session_end` event logged when jimbo exits, with the totals for the session and for this run
+- a line printed to stderr when jimbo exits (not with `--ui json`), e.g.
+  `jimbo: this run: 12 requests · 40.1k in · 3.2k out · $0.0123 estimated`. After a `--resume`, a second
+  line gives the session's total.
+
+`/usage` shows the session's total so far.
 
 `/undo` only covers `write_file` and `edit_file`, not shell commands, and only for the current run of jimbo.
 

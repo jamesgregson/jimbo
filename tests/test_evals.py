@@ -8,7 +8,8 @@ from pydantic_ai.usage import RunUsage
 from evals.grading import check_events, repeated_denials
 from evals.html_report import write_html_report
 from evals.report import compare_report, cost, passes, run_report
-from evals.runner import RunConfig, make_settings, request_limits, run_suite, trial_cost
+from evals.runner import RunConfig, make_settings, request_limits, run_suite
+from jimbo.core.cost import estimate_cost
 from evals.side_tasks import load_compaction_cases, load_shell_cases
 from evals.tasks import Task, load_task, load_tasks
 from evals.validate import check_task
@@ -117,13 +118,13 @@ def test_cost_column():
     assert cost([{}]) == "-"  # results written before cost was recorded
 
 
-def test_trial_cost_falls_back_to_listed_prices():
+def test_estimate_cost_falls_back_to_listed_prices():
     prices = {"prompt": 1e-6, "completion": 2e-6, "input_cache_read": 1e-7}
     usage = RunUsage(requests=1, input_tokens=1000, cache_read_tokens=400, output_tokens=100)
-    assert trial_cost(usage, prices) == pytest.approx(600e-6 + 400e-7 + 200e-6)
-    assert trial_cost(usage, None) is None
-    assert trial_cost(RunUsage(), prices) is None  # no requests: nothing to price
-    assert trial_cost(None, prices) is None
+    assert estimate_cost(usage, prices) == pytest.approx(600e-6 + 400e-7 + 200e-6)
+    assert estimate_cost(usage, None) is None
+    assert estimate_cost(RunUsage(), prices) is None  # no requests: nothing to price
+    assert estimate_cost(None, prices) is None
 
 
 def test_requests_per_minute_override(tmp_path):

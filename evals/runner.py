@@ -13,10 +13,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from pydantic_ai.usage import RunUsage
-
 from jimbo.config import USER_DIR_ENV, ProviderConfig, Settings
 from jimbo.core.approval import ApprovalDecision, ApprovalRequest
+from jimbo.core.cost import estimate_cost
 from jimbo.core.events import Event
 from jimbo.core.jsonl import JsonlSink
 from jimbo.core.models import KNOWN_TASKS, MAIN, ModelRouter
@@ -137,22 +136,6 @@ def metrics(events: list[Event]) -> dict:
     }
 
 
-def trial_cost(usage: RunUsage | None, prices: dict[str, float] | None) -> float | None:
-    """pydantic-ai's estimate from its price tables; failing that, one from the per-token prices the
-    provider lists for the main model. None when neither can price it."""
-    if usage is None:
-        return None
-    if usage.cost is not None:
-        return float(usage.cost)
-    if not prices or not usage.requests:
-        return None
-    cached = usage.cache_read_tokens + usage.cache_write_tokens
-    return (max(usage.input_tokens - cached, 0) * prices["prompt"]
-            + usage.cache_read_tokens * prices.get("input_cache_read", prices["prompt"])
-            + usage.cache_write_tokens * prices.get("input_cache_write", prices["prompt"])
-            + usage.output_tokens * prices["completion"])
-
-
 def final_answer(events: list[Event]) -> str:
     texts = [e.data.get("text", "") for e in events if e.kind == "assistant_text"]
     return texts[-1] if texts else ""
@@ -180,6 +163,7 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
         try:
             session = build_session(settings, EvalFrontend([]), [collector, sink],
                                     model=cfg.main_model, model_builder=cfg.model_builder)
+            session.prices = facts.prices if facts else None  # so session.jsonl carries costs too
             if facts and facts.context and settings.context_window is None:
                 session.context_window = facts.context
             if facts and facts.vision is False:
@@ -227,7 +211,7 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
         "task": task.id, "trial": trial, "pass": error is None and bool(outcomes) and all(o.ok for o in outcomes),
         "check_exit": command_exit, "requests": usage.requests if usage else 0,
         "input_tokens": usage.input_tokens if usage else 0, "output_tokens": usage.output_tokens if usage else 0,
-        "cost": trial_cost(usage, facts.prices if facts else None),
+        "cost": estimate_cost(usage, facts.prices if facts else None),
         "seconds": round(time.monotonic() - started, 1), **metrics(collector.events), "error": error,
         "log": str(log) if log else None, "workspace": str(ws) if cfg.keep else None,
     }

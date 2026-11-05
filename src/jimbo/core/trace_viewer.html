@@ -127,6 +127,7 @@ function section(title, node) {
 const agentTag = (d) => d.agent ? el("span", "agent", d.agent.name) : null;
 const fmtBytes = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 const fmtTok = (n) => n < 1000 ? String(n) : n < 1e6 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1e6).toFixed(2)}M`;
+const fmtCost = (usd) => `$${usd.toFixed(4)}`;
 
 // Line diff of two texts, as unified-style "+"/"-"/" " lines (LCS; instructions are a few hundred lines at most).
 function lineDiff(a, b) {
@@ -166,6 +167,8 @@ function render(events, bad, name) {
   const usage = events.filter((e) => e.kind === "usage");
   const tokIn = usage.reduce((n, e) => n + (e.data.input_tokens || 0), 0);
   const tokOut = usage.reduce((n, e) => n + (e.data.output_tokens || 0), 0);
+  const cost = usage.reduce((n, e) => n + (e.data.cost || 0), 0);  // logs from before costs were recorded have none
+  const unpriced = usage.filter((e) => e.data.cost == null && e.data.requests).length;
   const nErr = count("error") + events.filter((e) => e.kind === "tool_result" && !e.data.ok).length;
   const status = events.find((e) => e.kind === "status");
   const agents = [...new Set(events.filter((e) => e.data.agent).map((e) => e.data.agent.name))];
@@ -184,6 +187,7 @@ function render(events, bad, name) {
     stat("turns", count("user_message")), stat("tool calls", count("tool_call")),
     stat("errors", nErr, nErr ? "err" : ""), stat("tokens", `${fmtTok(tokIn)} in / ${fmtTok(tokOut)} out`),
   );
+  if (usage.some((e) => e.data.cost != null)) bar.append(stat("est. cost", fmtCost(cost) + (unpriced ? ` (+${unpriced} unpriced turns)` : "")));
   if (status) bar.append(stat("model", status.data.model), stat("workspace", status.data.workspace));
   if (ctx.length) bar.append(stat("peak context", `${Math.round(peak * 100)}%`, peak > 0.8 ? "warn" : ""));
   if (count("compaction")) bar.append(stat("compactions", count("compaction")));
@@ -418,8 +422,16 @@ function render(events, bad, name) {
         break;
       }
       case "usage":
-        row("", ev, el("div", "usage", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`), "usage");
+        row("", ev, el("div", "usage", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`
+                                        + (d.cost != null ? ` · ${fmtCost(d.cost)} est.` : "")), "usage");
         break;
+      case "session_end": {
+        const r = d.run;
+        row("", ev, el("div", "usage", `jimbo exited · this run: ${r.requests} request(s) · ${r.input_tokens} in · ${r.output_tokens} out`
+                                       + (r.requests > r.unpriced ? ` · ${fmtCost(r.cost)} est.` : "")
+                                       + (r.unpriced ? ` · ${r.unpriced} request(s) unpriced` : "")), "usage");
+        break;
+      }
       case "error": {
         const b = el("div", "errbox");
         const tag = agentTag(d);

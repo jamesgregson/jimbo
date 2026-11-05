@@ -31,6 +31,7 @@ from .approval import ApprovalModes
 from .attachments import build_content, expand_mentions, image_meta
 from .commands import CommandRegistry
 from .compaction import compact as compact_history, render_transcript
+from .cost import Spend, estimate_cost
 from .deps import Deps
 from .events import Event, EventKind, EventSink
 from .store import REPLAY_KINDS, SessionStore
@@ -69,6 +70,9 @@ class AgentSession:
         self.context_tokens = 0  # size of the last model request + response
         self.total_usage = RunUsage()  # whole session; updated live during a run
         self.turn_usage = RunUsage()  # the current (or most recent) prompt
+        self.prices: dict[str, float] | None = None  # the main model's listed prices, when the provider gives them
+        self.spend = Spend()  # this session id, across resumes; saved with its history
+        self.run_spend = Spend()  # this jimbo process, across /clear and /resume
         self._limits = UsageLimits(request_limit=request_limit)
         self.deps.request_limit = request_limit  # so the prompt can warn the model before it runs out
         self._seq = 0
@@ -118,7 +122,8 @@ class AgentSession:
         if self.store is None:
             return
         try:
-            self.store.save(self.session_id, self.history, [t.model_dump() for t in self.deps.todos])
+            self.store.save(self.session_id, self.history, [t.model_dump() for t in self.deps.todos],
+                            self.spend.to_dict())
         except OSError:
             pass
 
@@ -126,6 +131,7 @@ class AgentSession:
         """Later turns save under a new id, so the conversation so far stays resumable."""
         self.session_id = uuid.uuid4().hex[:12]
         self._seq = 0
+        self.spend = Spend()
         self._instructions_sent = None
 
     async def resume(self, prefix: str) -> str:
@@ -144,6 +150,7 @@ class AgentSession:
         self._todos_sent = list(self.deps.todos)
         self.context_tokens = 0
         self.turn_usage, self.total_usage = RunUsage(), RunUsage()
+        self.spend = Spend.from_dict(saved.spend)
         if self.replay_sink is not None:
             replayed = [ev for ev in events if ev.kind in REPLAY_KINDS]
             for ev in replayed:
@@ -315,10 +322,23 @@ class AgentSession:
             await self.emit("assistant_text", text=result.text)
         elif not result.cancelled:
             await self.emit("error", type="AgentError", message=result.text)
-        u = self.turn_usage
-        await self.emit("usage", requests=u.requests, input_tokens=u.input_tokens, output_tokens=u.output_tokens)
+        await self._emit_usage()
         await self.emit_context()
         await self.emit("run_finished", ok=result.ok, **({"cancelled": True} if result.cancelled else {}))
+
+    async def _emit_usage(self) -> None:
+        """Price the turn that just ended and add it to the totals. Prices are the main model's at this
+        point, so a later model switch doesn't reprice earlier turns."""
+        u = self.turn_usage
+        cost = estimate_cost(u, self.prices)
+        self.spend.add(u, cost)
+        self.run_spend.add(u, cost)
+        await self.emit("usage", requests=u.requests, input_tokens=u.input_tokens, output_tokens=u.output_tokens,
+                        cost=cost)
+
+    async def close(self) -> None:
+        """Log what the session cost, as jimbo exits."""
+        await self.emit("session_end", session=self.spend.to_dict(), run=self.run_spend.to_dict())
 
     async def refresh_agents(self) -> None:
         """Pick up changes to agent files, so a new or edited agent works from the next input."""
@@ -381,6 +401,7 @@ class AgentSession:
             if run is not None:  # keep what happened so far; repair closes out unanswered tool calls
                 self.history = repair_messages(run.all_messages())
                 self.turn_usage, self.total_usage = run.usage, base + run.usage
+                await self._emit_usage()
             await self.emit_context()
             await self._drop_steers()
             await self.emit("run_finished", ok=False, cancelled=True)
@@ -389,6 +410,7 @@ class AgentSession:
             if run is not None:  # the work is done, so the model must remember it, as when cancelled
                 self.history = repair_messages(run.all_messages())
                 self.turn_usage, self.total_usage = run.usage, base + run.usage
+                await self._emit_usage()
             await self.emit("error", type=type(e).__name__, message=str(e))
             await self._drop_steers()
             await self.emit("run_finished", ok=False)
@@ -397,8 +419,7 @@ class AgentSession:
         u = self.turn_usage = result.usage
         self.total_usage = base + u
         await self.emit("assistant_text", text=result.output)
-        await self.emit("usage", requests=u.requests, input_tokens=u.input_tokens,
-                        output_tokens=u.output_tokens)
+        await self._emit_usage()
         await self.emit_context()
         await self.emit("run_finished", ok=True)
         return result.output
