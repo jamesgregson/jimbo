@@ -98,8 +98,11 @@ user input
 Key properties:
 
 - **Bounded.** `request_limit` (default 50) caps model requests per turn via `UsageLimits`. For the last 3
-  requests, `project_context` adds a notice telling the model to stop starting new work, leave the workspace
-  in a sensible state and end with a summary. On the last request it gets no tools (a `PrepareTools` capability) and is told to reply with text only.
+  requests, the `WrapUp` capability adds a notice to the end of the request telling the model to stop starting
+  new work, leave the workspace in a sensible state and end with a summary. The notice is not saved in the history.
+  On the last request the tools stay but `tool_choice` is `"none"`, and the model is told to reply with text only.
+  Any tool call in that reply, real or written as text, is removed; if no text is left, a note says the turn
+  ended without a final message.
 - **Cancellable.** `send()` runs the turn in its own `asyncio.Task` so `cancel()` (Ctrl+C, or the web UI's
   Stop button) cancels the run without cancelling the caller. In the runner's SIGINT handler a second
   Ctrl+C within 2 seconds of one that cancelled a run escalates to quitting. On cancel, the partial turn is kept in

@@ -4,7 +4,7 @@ import html
 import json
 from pathlib import Path
 
-from .report import by_task, cost, load_results, mean, passes, tokens
+from .report import by_task, cost, load_results, mean, passed_line, passes, retried, task_passed, tokens
 from .tasks import TASKS_DIR, Task, load_task
 
 DIFF_LIMIT = 20_000  # characters of a diff shown inline
@@ -88,10 +88,10 @@ def trial_html(run_dir: Path, r: dict) -> str:
     return "\n".join(parts)
 
 
-def task_html(run_dir: Path, task_id: str, rs: list[dict]) -> str:
+def task_html(run_dir: Path, task_id: str, rs: list[dict], retry: bool = False) -> str:
     task = task_info(task_id)
-    ok = all(r["pass"] for r in rs)
-    parts = [f'<section class="task" id="{esc(task_id)}">', f"<h3>{esc(task_id)}</h3> {status(ok, passes(rs))}"]
+    ok = task_passed(rs, retry)
+    parts = [f'<section class="task" id="{esc(task_id)}">', f"<h3>{esc(task_id)}</h3> {status(ok, passes(rs, retry))}"]
     if task:
         tags = ", ".join(task.tags)
         parts.append(f'<p class="muted">{esc(tags)}{" · plan mode" if task.mode == "plan" else ""}'
@@ -115,18 +115,19 @@ def write_html_report(run_dir: Path) -> Path:
         meta = json.loads((run_dir / "run.json").read_text())
     except (OSError, ValueError):
         meta = {}
-    n = sum(r["pass"] for r in results)
-    failed_first = sorted(groups, key=lambda t: (all(r["pass"] for r in groups[t]), t))
+    retry = retried(run_dir)
+    failed_first = sorted(groups, key=lambda t: (task_passed(groups[t], retry), t))
     rows = "\n".join(
-        f'<tr><td><a href="#{esc(t)}">{esc(t)}</a></td><td>{status(all(r["pass"] for r in rs), passes(rs))}</td>'
+        f'<tr><td><a href="#{esc(t)}">{esc(t)}</a></td><td>{status(task_passed(rs, retry), passes(rs, retry))}</td>'
         f'<td class="n">{mean(rs, "requests"):.1f}</td><td class="n">{sum(map(tokens, rs)) / len(rs):,.0f}</td>'
         f'<td class="n">{cost(rs)}</td><td class="n">{mean(rs, "seconds"):.0f}s</td></tr>'
         for t in failed_first for rs in [groups[t]])
     models = meta.get("models", {})
-    meta_rows = [("Passed", f"{n}/{len(results)} trials ({100 * n / max(len(results), 1):.0f}%)"),
+    meta_rows = [("Passed", passed_line(groups, retry).replace(" passed", "")),
                  ("Tokens", f"{sum(map(tokens, results)):,}"), ("Estimated cost", cost(results, total=True)),
                  ("Main model", models.get("main", "?")), ("Judge model", models.get("evals-judge", "?")),
-                 ("Trials per task", meta.get("trials", "?")),
+                 ("Trials per task", f'{"up to " if retry else ""}{meta.get("trials", "?")}'
+                                     f'{", stopping at the first pass" if retry else ""}'),
                  ("jimbo commit", f'{(meta.get("commit") or "?")[:12]}{" (with uncommitted changes)" if meta.get("dirty") else ""}'),
                  ("Started", meta.get("started", "?")), ("Finished", meta.get("finished", "not finished"))]
     page = f"""<!doctype html>
@@ -142,7 +143,7 @@ read from evals/tasks/ as they are now.</p>
 <th class="n">cost</th><th class="n">time</th></tr>
 {rows}</table></div>
 <h2>Details</h2>
-{"".join(task_html(run_dir, t, groups[t]) for t in failed_first)}
+{"".join(task_html(run_dir, t, groups[t], retry) for t in failed_first)}
 </main></body></html>
 """
     out = run_dir / "report.html"

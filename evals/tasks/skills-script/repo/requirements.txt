@@ -1,0 +1,4 @@
+requests==2.32.3
+padkit==1.0.0
+fastjson==3.1.0
+attrs==24.2.0

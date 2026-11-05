@@ -6,7 +6,8 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.usage import RunUsage
 
 from evals.grading import check_events, repeated_denials
-from evals.report import compare_report, cost, run_report
+from evals.html_report import write_html_report
+from evals.report import compare_report, cost, passes, run_report
 from evals.runner import RunConfig, make_settings, request_limits, run_suite, trial_cost
 from evals.side_tasks import load_compaction_cases, load_shell_cases
 from evals.tasks import Task, load_task, load_tasks
@@ -85,6 +86,29 @@ async def test_run_suite_with_scripted_model(tmp_path):
     assert "1/2 trials passed" in report and "bug-coupon-minimum #1" in report
     assert "A pass" in compare_report(run_dir, run_dir)
 
+
+
+async def test_retry_failed_only_stops_at_the_first_pass(tmp_path):
+    cfg = RunConfig(sandbox=False, user_config=tmp_path / "none.toml", main_model=fixing_model(), trials=3,
+                    retry_failed_only=True)
+    run_dir = await run_suite(load_tasks(["bug-paginate", "bug-coupon-minimum"]), cfg, results_dir=tmp_path)
+    results = list(map(json.loads, (run_dir / "results.jsonl").read_text().splitlines()))
+    trials = sorted((r["task"], r["trial"], r["pass"]) for r in results)
+    assert trials == [("bug-coupon-minimum", 1, False), ("bug-coupon-minimum", 2, False),
+                      ("bug-coupon-minimum", 3, False), ("bug-paginate", 1, True)]
+    assert json.loads((run_dir / "run.json").read_text())["retry_failed_only"] is True
+    report = run_report(run_dir)
+    assert "1/2 tasks passed (50%) in 4 trials" in report and "FAIL x3" in report
+    assert "of tasks" in compare_report(run_dir, run_dir)
+    assert "1/2 tasks (50%) in 4 trials" in write_html_report(run_dir).read_text()
+
+
+def test_retry_pass_labels():
+    t = lambda n, ok: {"trial": n, "pass": ok}
+    assert passes([t(1, True)], retry=True) == "pass"
+    assert passes([t(1, False), t(2, True)], retry=True) == "pass on #2"
+    assert passes([t(1, False)], retry=True) == "FAIL"
+    assert passes([t(1, False), t(2, True)]) == "1/2"
 
 def test_cost_column():
     assert cost([{"cost": None}]) == "-"

@@ -12,8 +12,10 @@ Run these from the repo root:
 uv run python -m evals run                         # every task, once, on the main model in ~/.jimbo/config.toml
 uv run python -m evals run --model <alias-or-spec> # another main model
 uv run python -m evals run --tag smoke             # a small set of 5 tasks
+uv run python -m evals run --tag skills            # the tasks that check skills are loaded and followed
 uv run python -m evals run --task bug-paginate     # one task
 uv run python -m evals run --trials 3              # each task 3 times
+uv run python -m evals run --trials 3 --retry-failed-only   # each task up to 3 times, until it passes
 uv run python -m evals run --set evals-judge=<model>   # the model that grades text answers
 uv run python -m evals compare <run-a> <run-b>     # two runs side by side
 uv run python -m evals report [<run>]              # print a run's table and write its report.html (default: latest run)
@@ -22,6 +24,11 @@ uv run python -m evals report [<run>]              # print a run's table and wri
 Other options: `--jobs N` (trials at once, default 4), `--keep` (keep each trial's workspace), `--no-network`
 (block network access for shell commands), `--no-sandbox` (needed where there is no sandbox, which is anywhere
 but macOS), `--config <path>` (a different `config.toml`).
+
+With `--retry-failed-only`, a task's trials run one after another and stop at the first pass. Different tasks
+still run at the same time. A task passes if any of its trials passes, and the reports count tasks instead of
+trials: the pass column shows `pass on #2` or `FAIL x3`. Use it to find tasks a model can't do at all, not
+to measure how often it passes.
 
 Trials at once send many requests. If the provider refuses them with HTTP 429, set `requests_per_minute` for
 that provider in `config.toml` (see [docs/reference.md](../docs/reference.md#providers-and-api-keys)), or pass
@@ -39,6 +46,9 @@ Each trial:
 
 Only your `config.toml` is copied into the trial. Your skills, commands, agents and `~/.jimbo/AGENTS.md` are not
 loaded, so they don't change the results. Bundled files are loaded.
+
+Tasks tagged `skills` check that jimbo calls `load_skill` when a skill fits the prompt, and doesn't when none fits.
+They use the bundled skills, or skills in the task's `repo/.jimbo/skills/`.
 
 ## Grading
 
@@ -108,6 +118,12 @@ kind = "tool_result"
 tool = "edit_file"
 ok = true
 max = 0
+
+[[check.events]]
+kind = "tool_call"
+tool = "load_skill"
+args = {name = "debug"}       # a table matches only if it is equal to the whole field
+min = 1
 
 [judge]                        # optional: a model grades the final answer and the diff
 rubric = "1. The answer names ..."

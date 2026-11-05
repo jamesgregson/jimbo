@@ -1,0 +1,32 @@
+prompt = "Can we ship with the dependencies in requirements.txt, license-wise? Don't change any files."
+tags = ["skills"]
+
+[[check.events]]
+kind = "tool_call"
+tool = "load_skill"
+args = {name = "licenses"}
+min = 1
+
+[[check.events]]
+kind = "tool_call"
+tool = "shell"
+min = 1
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[judge]
+rubric = """
+1. The answer says we can't ship as is.
+2. It names padkit (GPL-3.0) and fastjson (SSPL-1.0) as the packages whose licenses are not allowed.
+3. It doesn't say that requests or attrs are a problem.
+"""

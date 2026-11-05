@@ -42,6 +42,7 @@ class RunConfig:
     model: str | None = None  # main model: an alias or <provider>:<name>; None uses the config's
     task_models: dict[str, str] = field(default_factory=dict)  # like /models set
     trials: int = 1
+    retry_failed_only: bool = False  # run a task's trials one after another, stopping at its first pass
     jobs: int = 4
     sandbox: bool = True
     network: bool = True
@@ -293,7 +294,7 @@ async def run_suite(tasks: list[Task], cfg: RunConfig, results_dir: Path = RESUL
     run_dir = results_dir / run_id
     run_dir.mkdir(parents=True)
     meta = {"id": run_id, **jimbo_commit(), "models": specs, "model_arg": cfg.model, "trials": cfg.trials,
-            "sandbox": cfg.sandbox, "network": cfg.network, "requests_per_minute": request_limits(settings, specs),
+            "retry_failed_only": cfg.retry_failed_only, "sandbox": cfg.sandbox, "network": cfg.network, "requests_per_minute": request_limits(settings, specs),
             "tasks": [t.id for t in tasks],
             "task_settings": {t.id: t.settings for t in tasks if t.settings},
             "started": datetime.now().astimezone().isoformat(timespec="seconds")}
@@ -310,8 +311,16 @@ async def run_suite(tasks: list[Task], cfg: RunConfig, results_dir: Path = RESUL
             on_result(r)
         return r
 
+    async def until_pass(task: Task) -> None:
+        for n in range(1, cfg.trials + 1):
+            if (await one(task, n))["pass"]:
+                break
+
     try:
-        await asyncio.gather(*(one(t, n) for t in tasks for n in range(1, cfg.trials + 1)))
+        if cfg.retry_failed_only:  # tasks still run in parallel; each task's trials run in turn
+            await asyncio.gather(*(until_pass(t) for t in tasks))
+        else:
+            await asyncio.gather(*(one(t, n) for t in tasks for n in range(1, cfg.trials + 1)))
     finally:
         lines.close()
     meta["finished"] = datetime.now().astimezone().isoformat(timespec="seconds")

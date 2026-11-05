@@ -53,23 +53,64 @@ def cost(rs: list[dict], total: bool = False) -> str:
     return f"${sum(known) if total else sum(known) / len(known):.4f}"
 
 
-def rate(rs: list[dict]) -> float:
+def load_meta(run_dir: Path) -> dict:
+    try:
+        return json.loads((run_dir / "run.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def retried(run_dir: Path) -> bool:
+    """Whether the run used --retry-failed-only: then a task passes if any of its trials does."""
+    return bool(load_meta(run_dir).get("retry_failed_only"))
+
+
+def task_passed(rs: list[dict], retry: bool = False) -> bool:
+    return any(r["pass"] for r in rs) if retry else all(r["pass"] for r in rs)
+
+
+def rate(rs: list[dict], retry: bool = False) -> float:
+    """The share of trials that passed; with retry, 1 or 0 for whether the task passed."""
+    if retry:
+        return float(any(r["pass"] for r in rs))
     return sum(r["pass"] for r in rs) / len(rs) if rs else 0.0
 
 
-def passes(rs: list[dict]) -> str:
+def passes(rs: list[dict], retry: bool = False) -> str:
+    if retry:
+        first = next((r["trial"] for r in rs if r["pass"]), None)
+        if first is None:
+            return "FAIL" if len(rs) == 1 else f"FAIL x{len(rs)}"
+        return "pass" if first == 1 else f"pass on #{first}"
     n = sum(r["pass"] for r in rs)
     return ("pass" if n else "FAIL") if len(rs) == 1 else f"{n}/{len(rs)}"
+
+
+def overall_rate(groups: dict[str, list[dict]], retry: bool) -> float:
+    """The share of tasks that passed with retry, else of trials."""
+    if retry:
+        return sum(map(rate, groups.values(), [True] * len(groups))) / max(len(groups), 1)
+    return rate([r for rs in groups.values() for r in rs])
+
+
+def passed_line(groups: dict[str, list[dict]], retry: bool) -> str:
+    """'3/4 trials passed (75%)', or with retry '2/3 tasks passed (67%) in 5 trials'."""
+    trials = sum(map(len, groups.values()))
+    if retry:
+        n = sum(task_passed(rs, True) for rs in groups.values())
+        return f"{n}/{len(groups)} tasks passed ({100 * n / max(len(groups), 1):.0f}%) in {trials} trials"
+    n = sum(r["pass"] for rs in groups.values() for r in rs)
+    return f"{n}/{trials} trials passed ({100 * n / max(trials, 1):.0f}%)"
 
 
 def run_report(run_dir: Path) -> str:
     results = load_results(run_dir)
     groups = by_task(results)
-    rows = [[task, passes(rs), f"{mean(rs, 'requests'):.1f}", f"{sum(map(tokens, rs)) / len(rs):,.0f}",
+    retry = retried(run_dir)
+    rows = [[task, passes(rs, retry), f"{mean(rs, 'requests'):.1f}", f"{sum(map(tokens, rs)) / len(rs):,.0f}",
              cost(rs), f"{mean(rs, 'seconds'):.0f}s"] for task, rs in groups.items()]
     out = [table(["task", "pass", "requests", "tokens", "cost", "time"], rows)]
-    n = sum(r["pass"] for r in results)
-    out.append(f"\n{n}/{len(results)} trials passed ({100 * n / max(len(results), 1):.0f}%), "
+    out.append(f"\n{passed_line(groups, retry)}, "
                f"{sum(map(tokens, results)):,} tokens, {cost(results, total=True)} estimated, run {run_dir.name}")
     failed = [r for r in results if not r["pass"]]
     if failed:
@@ -83,11 +124,13 @@ def run_report(run_dir: Path) -> str:
 
 def compare_report(a_dir: Path, b_dir: Path) -> str:
     a, b = by_task(load_results(a_dir)), by_task(load_results(b_dir))
-    shared = sorted(a.keys() & b.keys(), key=lambda t: (rate(b[t]) - rate(a[t]) >= 0, t))  # worse first
+    a_retry, b_retry = retried(a_dir), retried(b_dir)
+    change = lambda t: rate(b[t], b_retry) - rate(a[t], a_retry)
+    shared = sorted(a.keys() & b.keys(), key=lambda t: (change(t) >= 0, t))  # worse first
     rows = []
     for t in shared:
-        d = rate(b[t]) - rate(a[t])
-        rows.append([t, passes(a[t]), passes(b[t]), f"{d:+.0%}" if d else "",
+        d = change(t)
+        rows.append([t, passes(a[t], a_retry), passes(b[t], b_retry), f"{d:+.0%}" if d else "",
                      f"{mean(a[t], 'requests'):.1f}", f"{mean(b[t], 'requests'):.1f}",
                      f"{sum(map(tokens, a[t])) / len(a[t]):,.0f}", f"{sum(map(tokens, b[t])) / len(b[t]):,.0f}",
                      cost(a[t]), cost(b[t])])
@@ -96,7 +139,9 @@ def compare_report(a_dir: Path, b_dir: Path) -> str:
                  rows)]
     ra = [r for t in shared for r in a[t]]
     rb = [r for t in shared for r in b[t]]
-    out.append(f"\nshared tasks: A {rate(ra):.0%}, B {rate(rb):.0%} of trials passed; "
+    what = lambda retry: "of tasks" if retry else "of trials"
+    out.append(f"\nshared tasks: A {overall_rate({t: a[t] for t in shared}, a_retry):.0%} {what(a_retry)}, "
+               f"B {overall_rate({t: b[t] for t in shared}, b_retry):.0%} {what(b_retry)} passed; "
                f"tokens per trial A {sum(map(tokens, ra)) / max(len(ra), 1):,.0f}, "
                f"B {sum(map(tokens, rb)) / max(len(rb), 1):,.0f}; estimated cost A {cost(ra, total=True)}, "
                f"B {cost(rb, total=True)}")

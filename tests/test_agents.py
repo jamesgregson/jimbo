@@ -3,7 +3,7 @@ import json
 from io import StringIO
 
 import pytest
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from rich.console import Console
 
@@ -668,33 +668,61 @@ async def test_agent_approvals_match_the_forwarded_id(tmp_path):
     assert kinds(fe, "approval_resolved")[0]["call_id"] == kinds(fe, "tool_call")[0]["id"]
 
 
+def notices(messages):
+    """The wrap-up notices in the request the model gets."""
+    return [p.content for p in messages[-1].parts if isinstance(p, UserPromptPart) and "# Wrap up now" in p.content]
+
+
 async def test_model_is_told_to_wrap_up_near_the_request_limit(tmp_path):
     seen, steps = [], iter([call("glob", pattern="*")] * 4 + ["summary"])
 
     async def stream(messages, info):
-        seen.append(next(m.instructions for m in reversed(messages) if isinstance(m, ModelRequest)))
+        seen.append((notices(messages), messages[-1].instructions))
         yield next(steps)
     s, fe = make(tmp_path, models={"t:main": FunctionModel(stream_function=stream)}, request_limit=5)
     assert await s.send("go") == "summary"
-    assert ["# Wrap up now" in i for i in seen] == [False, False, True, True, True]
-    assert "1 model request(s) left" in seen[-1] and "no tools are available" in seen[-1]
-    assert "no tools are available" not in seen[-2]
+    assert [len(n) for n, _ in seen] == [0, 0, 1, 1, 1]
+    assert not any("# Wrap up now" in i for _, i in seen)  # in the conversation, not the instructions
+    assert "1 model request(s) left" in seen[-1][0][0] and "tools are turned off" in seen[-1][0][0]
+    assert "tools are turned off" not in seen[-2][0][0]
     assert kinds(fe, "wrap_up") == [{"left": 3}, {"left": 2}, {"left": 1}]  # the trace shows what the model was told
+    assert not any("# Wrap up now" in str(m) for m in s.history)  # each request gets a fresh one; none is saved
 
 
-async def test_last_request_has_no_tools(tmp_path):
-    tools = []
+async def test_last_request_keeps_tools_but_turns_them_off(tmp_path):
+    seen = []
 
     async def stream(messages, info):
-        tools.append([t.name for t in info.function_tools])
-        if info.function_tools:
+        seen.append(((info.model_settings or {}).get("tool_choice"), [t.name for t in info.function_tools]))
+        if len(seen) < 3:
             yield {0: DeltaToolCall(name="glob", json_args='{"pattern": "*"}')}
-        else:  # a model that would keep calling tools has to answer instead
+        else:
             yield "summary"
     s, fe = make(tmp_path, models={"t:main": FunctionModel(stream_function=stream)}, request_limit=3)
     assert await s.send("go") == "summary"
-    assert [bool(t) for t in tools] == [True, True, False] and "glob" in tools[0]
+    assert [c for c, _ in seen] == [None, None, "none"] and all("glob" in t for _, t in seen)
     assert kinds(fe, "run_finished") == [{"ok": True}] and not kinds(fe, "error")
+
+
+async def test_tool_calls_on_the_last_request_are_dropped(tmp_path):
+    async def stream(messages, info):  # a model that ignores tool_choice "none"
+        yield {0: DeltaToolCall(name="glob", json_args='{"pattern": "*"}')}
+    s, fe = make(tmp_path, models={"t:main": FunctionModel(stream_function=stream)}, request_limit=2)
+    assert "before the model wrote a final message" in await s.send("go")
+    assert len(kinds(fe, "tool_call")) == 1
+    assert kinds(fe, "run_finished") == [{"ok": True}] and not kinds(fe, "error")
+
+
+async def test_tool_calls_written_as_text_are_removed_on_the_last_request(tmp_path):
+    steps = iter([call("glob", pattern="*"),
+                  "Done: a.py. Left: b.py.<tool_call>read_file<arg_key>path</arg_key><arg_value>b.py</arg_value>"
+                  "</tool_call><tool_call>read_file<arg_key>path"])
+
+    async def stream(messages, info):
+        yield next(steps)
+    s, fe = make(tmp_path, models={"t:main": FunctionModel(stream_function=stream)}, request_limit=2)
+    assert await s.send("go") == "Done: a.py. Left: b.py."
+    assert s.history[-1].parts == [TextPart("Done: a.py. Left: b.py.")]
 
 
 async def test_agent_wrap_up_reaches_the_parent(tmp_path):

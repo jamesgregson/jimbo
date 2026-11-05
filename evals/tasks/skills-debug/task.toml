@@ -1,0 +1,11 @@
+prompt = "tests/test_invoice.py::test_march_total fails: the total is a few cents short. Debug it. Don't change the tests."
+tags = ["skills", "bug-fix", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider tests eval_check"
+
+[[check.events]]
+kind = "tool_call"
+tool = "load_skill"
+args = {name = "debug"}
+min = 1

@@ -31,6 +31,7 @@ def config(args) -> RunConfig:
     if args.requests_per_minute is not None and args.requests_per_minute < 0:
         raise ValueError(f"--requests-per-minute must be 0 or more, got {args.requests_per_minute}")
     return RunConfig(model=args.model, task_models=task_models(args.set), trials=getattr(args, "trials", 1),
+                     retry_failed_only=getattr(args, "retry_failed_only", False),
                      jobs=args.jobs, sandbox=not getattr(args, "no_sandbox", False),
                      network=not getattr(args, "no_network", False), keep=getattr(args, "keep", False),
                      user_config=args.config, requests_per_minute=args.requests_per_minute)
@@ -58,10 +59,11 @@ async def cmd_run(args) -> int:
     def progress(r: dict) -> None:
         done["n"] += 1
         why = f"  {r['error']}" if r.get("error") else ""
-        print(f"[{done['n']}/{total}] {r['task']} #{r['trial']}: {'pass' if r['pass'] else 'FAIL'} "
+        print(f"[{done['n']}/{'<=' if cfg.retry_failed_only else ''}{total}] {r['task']} #{r['trial']}: {'pass' if r['pass'] else 'FAIL'} "
               f"({r['requests']} requests, {r['seconds']:.0f}s){why}", file=sys.stderr, flush=True)
 
-    print(f"running {len(tasks)} task(s) x {cfg.trials} trial(s)", file=sys.stderr)
+    until = " until one passes" if cfg.retry_failed_only else ""
+    print(f"running {len(tasks)} task(s) x {'up to ' if until else ''}{cfg.trials} trial(s){until}", file=sys.stderr)
     run_dir = await run_suite(tasks, cfg, on_result=progress)
     print(run_report(run_dir))
     print(f"\nreport: {write_html_report(run_dir)}")
@@ -131,6 +133,8 @@ def main() -> None:
     p.add_argument("--task", action="append", default=[], help="run this task (repeatable)")
     p.add_argument("--tag", action="append", default=[], help="run tasks with this tag (repeatable)")
     p.add_argument("--trials", type=int, default=1, help="attempts per task (default 1)")
+    p.add_argument("--retry-failed-only", action="store_true",
+                   help="run each task's trials one at a time and stop at the first pass")
     p.add_argument("--no-sandbox", action="store_true", help="run where there is no sandbox (not macOS)")
     p.add_argument("--no-network", action="store_true", help="block network access for shell commands")
     p.add_argument("--keep", action="store_true", help="keep each trial's workspace")

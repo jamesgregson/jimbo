@@ -1,10 +1,11 @@
 import platform
+import re
+from dataclasses import dataclass, replace
 
 from pydantic_ai import Agent, RunContext, Tool
-from pydantic_ai.capabilities import PrepareTools, ProcessHistory
-from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models import Model
-from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, UserPromptPart
+from pydantic_ai.models import Model, ModelRequestContext
 
 from .config import Settings
 from .core.agents import AgentSpec, format_agent_index
@@ -60,21 +61,75 @@ You have {left} model request(s) left in this turn, including this one; after th
 Do not start new work. Leave the workspace in a sensible state: finish or undo any half-made edit,
 and update the todo list. Then end with a message saying what is done, what is not, and what to do next.
 {last}"""
+LAST_REQUEST_NOTE = "This is the last request: tools are turned off, so reply with text only."
+NO_FINAL_MESSAGE = ("[The turn reached its request limit before the model wrote a final message. "
+                    "Send a message to continue.]")
+# Tool calls some models write as text when they can't make a real one, e.g. <tool_call>read_file<arg_key>...
+TOOL_CALL_TEXT = re.compile(r"<\|?(tool_call|function_call)\|?>.*?(</\1>|$)", re.DOTALL)
 
 
-def wrap_up_notice(deps: Deps, requests_made: int) -> str | None:
-    if deps.request_limit is None:
+def requests_left(ctx: RunContext[Deps]) -> int | None:
+    """Model requests left in the turn, including the one about to be made."""
+    limit = ctx.deps.request_limit
+    return None if limit is None else limit - ctx.usage.requests
+
+
+def wrap_up_notice(left: int | None) -> str | None:
+    if left is None or left > WRAP_UP_REQUESTS:
         return None
-    left = deps.request_limit - requests_made
-    if left > WRAP_UP_REQUESTS:
-        return None
-    last = "This is the last request: no tools are available, so reply with text only." if left <= 1 else ""
-    return WRAP_UP_PROMPT.format(left=left, last=last).rstrip()
+    return WRAP_UP_PROMPT.format(left=left, last=LAST_REQUEST_NOTE if left <= 1 else "").rstrip()
+
+
+def text_only(response: ModelResponse) -> ModelResponse:
+    """`response` without tool calls, real or written as text. Says so if no text is left."""
+    parts = []
+    for part in response.parts:
+        if isinstance(part, ToolCallPart):
+            continue
+        if isinstance(part, TextPart):
+            if not (text := TOOL_CALL_TEXT.sub("", part.content).strip()):
+                continue
+            part = replace(part, content=text)
+        parts.append(part)
+    if not any(isinstance(p, TextPart) for p in parts):
+        parts.append(TextPart(NO_FINAL_MESSAGE))
+    return replace(response, parts=parts)
+
+
+@dataclass
+class WrapUp(AbstractCapability[Deps]):
+    """Near the turn's request limit, tell the model to wrap up, and make its last reply text only.
+
+    The notice is added to the request's last message, not the instructions, because a model deep in a tool loop
+    follows recent messages more than the system prompt. It is not saved in the history. The last request keeps
+    its tools but sets tool_choice "none": some models that see the tools vanish write their calls as text. A
+    call made there anyway, or written as text, is removed, because it would end the turn with no final message.
+    """
+
+    def get_model_settings(self):
+        def settings(ctx: RunContext[Deps]):
+            left = requests_left(ctx)
+            return {"tool_choice": "none"} if left is not None and left <= 1 else {}
+        return settings
+
+    async def before_model_request(self, ctx: RunContext[Deps], request_context: ModelRequestContext
+                                   ) -> ModelRequestContext:
+        messages = request_context.messages
+        notice = wrap_up_notice(left := requests_left(ctx))
+        if notice and messages and isinstance(last := messages[-1], ModelRequest):
+            request_context.messages = [*messages[:-1], replace(last, parts=[*last.parts, UserPromptPart(notice)])]
+            ctx.deps.wrap_up_left = left
+        return request_context
+
+    async def after_model_request(self, ctx: RunContext[Deps], *, request_context: ModelRequestContext,
+                                  response: ModelResponse) -> ModelResponse:
+        left = requests_left(ctx)  # this request is counted only once its response is committed
+        return text_only(response) if left is not None and left <= 1 else response
 
 
 def project_context(ctx: RunContext[Deps]) -> str:
-    """Dynamic instructions: AGENTS.md contents, the skill and agent indexes, and a wrap-up warning when the
-    turn is nearly out of requests, read from deps on every request."""
+    """Dynamic instructions: AGENTS.md contents and the skill and agent indexes, read from deps on every
+    request."""
     deps, parts = ctx.deps, []
     if deps.mode == "plan":
         parts.append(AGENT_PLAN_PROMPT if deps.agent else PLAN_PROMPT)
@@ -84,22 +139,13 @@ def project_context(ctx: RunContext[Deps]) -> str:
         if skill := deps.skills.get(name):
             parts.append(f"# Skill {name}\nSkill directory: {skill.path.parent}\n\n{skill.body}")
     if deps.skills and deps.can_load_skills:
-        parts.append("# Skills\nCall load_skill(name) to get a skill's full instructions when its "
-                     "description matches the task:\n" + format_skill_index(deps.skills))
+        parts.append("# Skills\nBefore you start a task, check this list. If a skill's description fits the "
+                     "task, even partly, call load_skill(name) first and follow its instructions:\n"
+                     + format_skill_index(deps.skills))
     if index := format_agent_index(deps.agents):
         parts.append("# Agents\nCall run_agent(agent, task) to hand a self-contained task to an agent. It starts "
                      "with no conversation history and returns one report:\n" + index)
-    if notice := wrap_up_notice(deps, ctx.usage.requests):  # last, so the parts above stay cacheable
-        parts.append(notice)
-        deps.wrap_up_left = deps.request_limit - ctx.usage.requests
     return "\n\n".join(parts)
-
-
-async def last_request_tools(ctx: RunContext[Deps], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
-    """No tools on the turn's last request. The wrap-up notice asks for a text reply, but a model can ignore it,
-    and a tool call there ends the turn with a request-limit error and no final message."""
-    limit = ctx.deps.request_limit
-    return [] if limit is not None and limit - ctx.usage.requests <= 1 else tool_defs
 
 
 async def midrun_history(ctx: RunContext[Deps], messages: list[ModelMessage]) -> list[ModelMessage]:
@@ -134,5 +180,5 @@ def build_agent(settings: Settings, model: Model, spec: AgentSpec | None = None)
         instructions=[*instructions, project_context],
         tools=tools,
         retries=settings.tool_retries,
-        capabilities=[ProcessHistory(midrun_history), PrepareTools(last_request_tools)],
+        capabilities=[ProcessHistory(midrun_history), WrapUp()],
     )

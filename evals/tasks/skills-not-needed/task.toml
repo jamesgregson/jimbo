@@ -1,0 +1,26 @@
+prompt = "Which function formats prices for display, and what does it return for 1234 cents and for 5 cents? Don't change any files."
+fixture = "shop"
+tags = ["skills", "read"]
+
+[[check.events]]
+kind = "tool_call"
+tool = "load_skill"
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[judge]
+rubric = """
+1. The answer names format_price in shop/pricing.py.
+2. It says format_price(1234) returns "$12.34" and format_price(5) returns "$0.05".
+"""

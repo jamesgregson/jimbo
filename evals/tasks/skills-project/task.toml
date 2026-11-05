@@ -1,0 +1,11 @@
+prompt = "Add fahrenheit_to_celsius(f) to units.py."
+tags = ["skills", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider tests eval_check"
+
+[[check.events]]
+kind = "tool_call"
+tool = "load_skill"
+args = {name = "changelog"}
+min = 1

@@ -8,7 +8,7 @@ from ..core.skills import apply_skill_models
 async def load_skill(ctx: RunContext[Deps], name: str) -> str:
     """Return the full instructions of the skill `name` (see the skill list in your instructions).
 
-    Load a skill when its description matches the task, then follow it.
+    Load a skill before starting a task its description fits, then follow it.
     """
     skill = ctx.deps.skills.get(name)
     if skill is None:

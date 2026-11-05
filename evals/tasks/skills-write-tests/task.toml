@@ -1,0 +1,13 @@
+prompt = "Add tests for JsonStore in shop/storage.py, in tests/test_storage.py. Don't change shop/storage.py."
+fixture = "shop"
+tags = ["skills", "tests", "python"]
+
+[check]
+# The new tests must pass, and must fail on each broken copy of storage.py.
+command = "{python} -m pytest -q -p no:cacheprovider tests/test_storage.py && cp eval_check/broken_save.py shop/storage.py && ! {python} -m pytest -q -p no:cacheprovider tests/test_storage.py && cp eval_check/broken_missing.py shop/storage.py && ! {python} -m pytest -q -p no:cacheprovider tests/test_storage.py"
+
+[[check.events]]
+kind = "tool_call"
+tool = "load_skill"
+args = {name = "write-tests"}
+min = 1
