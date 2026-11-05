@@ -1,0 +1,6 @@
+prompt = "load_ledger throws \"expected 3 fields\" on the line `cash,$5.00,` even though it has an empty memo. Fix it."
+fixture = "ledger"
+tags = ["bug-fix", "cpp"]
+
+[check]
+command = "make -s test && mkdir -p build && ${CXX:-c++} -std=c++17 -Iinclude -Itests -o build/eval_check src/*.cpp tests/main.cpp eval_check/*.cpp && ./build/eval_check"

@@ -1,0 +1,6 @@
+prompt = "Rename Ledger::balance to Ledger::balance_of everywhere in this project, including the tests."
+fixture = "ledger"
+tags = ["refactor", "cpp"]
+
+[check]
+command = "make -s test && mkdir -p build && ${CXX:-c++} -std=c++17 -Iinclude -Itests -o build/eval_check src/*.cpp tests/main.cpp eval_check/*.cpp && ./build/eval_check && ! grep -rn 'balance(' src include tests"

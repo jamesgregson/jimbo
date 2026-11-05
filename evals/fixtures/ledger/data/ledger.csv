@@ -1,0 +1,5 @@
+account,amount,memo
+cash,$100.00,opening balance
+cash,-$12.50,lunch
+savings,"$1,000.00",transfer in
+cash,-$3.07,"coffee, large"

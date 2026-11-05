@@ -1,0 +1,6 @@
+prompt = "Add a method Ledger::balances() that returns a std::map<std::string, long long> from each account name to its balance in cents. Add a test for it."
+fixture = "ledger"
+tags = ["feature", "cpp"]
+
+[check]
+command = "make -s test && mkdir -p build && ${CXX:-c++} -std=c++17 -Iinclude -Itests -o build/eval_check src/*.cpp tests/main.cpp eval_check/*.cpp && ./build/eval_check"

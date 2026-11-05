@@ -13,6 +13,7 @@ uv run python -m evals run                         # every task, once, on the ma
 uv run python -m evals run --model <alias-or-spec> # another main model
 uv run python -m evals run --tag smoke             # a small set of 5 tasks
 uv run python -m evals run --tag skills            # the tasks that check skills are loaded and followed
+uv run python -m evals run --tag cpp               # the C++ tasks, on the ledger fixture
 uv run python -m evals run --task bug-paginate     # one task
 uv run python -m evals run --trials 3              # each task 3 times
 uv run python -m evals run --trials 3 --retry-failed-only   # each task up to 3 times, until it passes

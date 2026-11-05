@@ -1,0 +1,22 @@
+prompt = "Why does format_money(-307) return \"-$-3.-7\" instead of \"-$3.07\"? Explain, but don't change any files."
+fixture = "ledger"
+tags = ["read", "cpp"]
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[judge]
+rubric = """
+1. In C++, / and % truncate toward zero, so -307 / 100 is -3 and -307 % 100 is -7. Both parts are negative.
+2. The code writes its own "-$" prefix and then the negative numbers, so the minus sign appears three times.
+3. A fix is suggested, such as formatting the absolute value of cents and adding the sign once.
+"""

@@ -1,0 +1,7 @@
+prompt = "Add tests for parse_money in tests/test_money.cpp, using the harness in tests/test.h. Cover plain amounts, commas, one and two decimals, negative amounts and invalid input. Don't change src/money.cpp."
+fixture = "ledger"
+tags = ["tests", "cpp"]
+
+[check]
+# The new tests must pass, and must fail when money.cpp is replaced by a broken copy.
+command = "test -f tests/test_money.cpp && make -s test && cp eval_check/broken_money.cpp src/money.cpp && ! make -s -B test"
