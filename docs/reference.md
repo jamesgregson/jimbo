@@ -8,6 +8,7 @@ Look things up here. To get started, see the [README](../README.md).
 - [Models per task](#models-per-task)
 - [Approvals](#approvals)
 - [Sandbox (macOS)](#sandbox-macos)
+- [Language servers](#language-servers)
 - [Interfaces](#interfaces)
 - [Slash commands](#slash-commands)
 - [Custom commands](#custom-commands)
@@ -28,8 +29,8 @@ Settings are read from these sources, highest priority first:
 A workspace config arrives with whatever repo you cloned, so it can't loosen security. These keys are
 ignored there, with a warning, and only read from `~/.jimbo/config.toml`: `model`, `api_key`, the
 `*_base_url` settings, `providers`, `model_aliases`, `models`, `tasks`, `web_host`, `approval`,
-`approval_allow`, `log_dir`, `user_dir`, `workspace` and the `sandbox*` settings. Its `approval_deny` rules
-are added to yours.
+`approval_allow`, `log_dir`, `user_dir`, `workspace`, `lsp_servers` and the `sandbox*` settings. Its
+`approval_deny` rules and `lsp_disabled` list are added to yours.
 
 ## All settings
 
@@ -69,6 +70,13 @@ shell_timeout_max = 600       # the most the model may ask for
 sandbox = "auto"              # auto | on (refuse to run without it) | off
 sandbox_writable = []         # extra writable paths
 sandbox_network = true        # false blocks outbound network from shell commands
+
+# ---- Language servers (see Language servers) --------------------------------------------------
+lsp = true                    # false: start no language servers and hide the lsp_* tools
+lsp_disabled = []             # server names not to use, e.g. ["rust-analyzer"]
+lsp_diagnostics = true        # false: write_file and edit_file don't report errors
+lsp_wait = 3.0                # seconds to wait for errors after an edit
+lsp_timeout = 60.0            # seconds to wait for a server's answer to one request
 
 # ---- Web UI -----------------------------------------------------------------------------------
 web_host = "127.0.0.1"        # keep on localhost: the page can approve file writes
@@ -282,8 +290,8 @@ Reading and searching never ask. `write_file`, `edit_file` and `shell` ask first
 
 At a prompt, answer `y`, `n` or `a`. Only those exact answers (or `yes`, `no`, `always`) count: anything else
 denies the call and gives your text to the model as the reason, so a half-typed sentence can't approve
-anything. `a` (always) allows that exact shell command for the rest of the session, or the whole tool for
-`write_file` and `edit_file`. In `json` mode, or when stdin is closed, calls that need a prompt are denied.
+anything. `a` (always) allows that exact shell command for the rest of the session, that one language
+server, or the whole tool for `write_file` and `edit_file`. In `json` mode, or when stdin is closed, calls that need a prompt are denied.
 
 A rule is `tool` or `tool:<glob>`, matched against the call's first argument (the command or path):
 
@@ -298,6 +306,8 @@ approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:secrets/*"]
 - An allow rule never matches a compound shell command (pipes, `;`, `&&`, redirects, `$...`), so
   `shell:git status*` can't approve `git status; rm -rf ~`.
 - Deny rules are best effort: `bash -c "sudo …"` slips past them. The sandbox is the real boundary.
+- Starting a language server asks once per session, as `lsp_start`. `approval_allow = ["lsp_start:clangd"]`
+  skips the prompt for one server, and `lsp_start` for all of them. See Language servers.
 
 **Auto mode:** `jimbo --auto` or `/approve auto` makes file writes and edits without asking, and runs shell
 commands without asking when the `jimbo-shell-assess` model rates them low or medium risk. Commands that
@@ -325,6 +335,73 @@ sandbox.
 Git in a workspace that is a subdirectory of a repo can't write the repo's `.git` unless you add it to
 `sandbox_writable`. If jimbo itself runs inside a sandbox, `auto` falls back to unsandboxed, because macOS
 doesn't allow nesting.
+
+## Language servers
+
+jimbo starts language servers for the languages in your project and gives the model tools that use them.
+It doesn't install servers. `/lsp` lists which it found.
+
+| Language | Extensions | Servers, first found on `PATH` is used |
+|---|---|---|
+| Python | `.py` `.pyi` | `basedpyright`, `pyright`, `pylsp` |
+| C, C++ | `.c` `.h` `.cc` `.cpp` `.cxx` `.hh` `.hpp` `.hxx` | `clangd` |
+| Rust | `.rs` | `rust-analyzer` |
+| Go | `.go` | `gopls` |
+| TypeScript, JavaScript | `.ts` `.tsx` `.js` `.jsx` `.mjs` `.cjs` | `typescript-language-server` |
+
+The tools:
+
+| Tool | What it returns |
+|---|---|
+| `lsp_definition` | where a symbol is defined, with its type and docs |
+| `lsp_references` | every place a symbol is used |
+| `lsp_symbols` | a file's outline, or symbols in the project matching a name |
+| `lsp_diagnostics` | errors and warnings for a file, or for every open file |
+| `lsp_rename` | renames a symbol in every file; you approve one diff, and one `/undo` reverts it |
+
+The model names a position by line number and symbol name. After `write_file` and `edit_file`, the result
+lists errors the edit introduced, if the server reports any within `lsp_wait` seconds. Errors that were there
+before the edit are only counted.
+
+**Starting a server** asks first, once per session: `start language server clangd for C, C++?`. Some servers
+run project code: `rust-analyzer` runs build scripts and proc macros, and `typescript-language-server` loads
+plugins named in `tsconfig.json`. If you answer no, jimbo doesn't ask again for that server until you type
+`/lsp start <name>`. To skip the prompt, see Approvals. Plan mode allows server starts, and denies
+`lsp_rename`. Servers run in the sandbox, like `shell`. Each server's stderr goes to
+`<log_dir>/<session id>.lsp-<name>.log`.
+
+**Commands:** `/lsp` lists servers and their state. `/lsp start|stop|restart <name>` starts, stops or restarts
+one. A server that exits is started again on the next call; after 3 exits it stays off until `/lsp restart`.
+
+**Notes per server:**
+- `clangd` needs a `compile_commands.json` to index the whole project, which `lsp_references` and
+  `lsp_rename` need. Tools such as CMake (`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`) or `bear -- make` write one.
+  With only `compile_flags.txt`, references come from open files. It keeps its index in `.cache/clangd/`
+  in the project; add `.cache/` to `.gitignore`.
+- `clangd` stops checking a file at a header it can't find. jimbo then tells the model to add include paths to
+  `compile_flags.txt`. `clangd` reads `compile_commands.json`, `compile_flags.txt` and `.clangd` only when it
+  starts, so jimbo restarts it, without asking, when one of them changes in the project root.
+- `basedpyright` runs in `standard` mode unless your `pyproject.toml` or `pyrightconfig.json` says otherwise.
+- `rust-analyzer` can take a minute to index a project. jimbo waits for indexing, up to `lsp_timeout`.
+- `typescript-language-server` needs `typescript` installed in the project or globally.
+
+**Another language**, or a different command for a built-in server, goes in `~/.jimbo/config.toml`:
+
+```toml
+[lsp_servers.ruby-lsp]
+command = ["ruby-lsp"]        # argv, no shell
+extensions = [".rb"]
+language_id = "ruby"          # sent to the server; default: the extension without the dot
+env = {}                      # added to the environment
+init_options = {}             # sent as initializationOptions
+settings = {}                 # returned when the server asks for its configuration
+
+[lsp_servers.pyright]         # the name of a built-in server: replaces it, keeping its extensions
+command = ["/opt/node/bin/pyright-langserver", "--stdio"]
+```
+
+`lsp = false` turns language servers off, and `lsp_disabled = ["rust-analyzer"]` turns off one. A workspace
+`.jimbo/config.toml` can set both, but not `lsp_servers`.
 
 ## Interfaces
 
@@ -390,6 +467,7 @@ doesn't allow nesting.
 | `/diff` | show the file changes from the latest turn that made any |
 | `/undo` | restore the files that turn changed; repeat to go further back |
 | `/output` | show the latest shell output or agent report in full |
+| `/lsp [start\|stop\|restart <name>]` | list language servers, or start, stop or restart one |
 | `/quit` | exit |
 
 Tab completes commands in `tui` and `web`. Every skill and custom command is also a `/name` command.

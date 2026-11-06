@@ -46,6 +46,7 @@ class RunConfig:
     jobs: int = 4
     sandbox: bool = True
     network: bool = True
+    lsp: bool = True  # False: no language servers, to compare runs with and without them
     keep: bool = False  # keep each trial's temp workspace
     requests_per_minute: int | None = None  # every provider's cap, replacing the config's; 0 removes it
     user_config: Path | None = None  # config.toml with providers and aliases; default ~/.jimbo/config.toml
@@ -90,7 +91,7 @@ def make_settings(cfg: RunConfig, task: Task | None, workspace: Path, user_dir: 
     if (src := user_config_path(cfg)).is_file() and not (user_dir / "config.toml").exists():
         shutil.copy(src, user_dir / "config.toml")
     s = Settings(workspace=workspace, user_dir=user_dir, log_dir=log_dir, ui="plain", approval=list(EVAL_CHAIN),
-                 sandbox="on" if cfg.sandbox else "off", sandbox_network=cfg.network,
+                 sandbox="on" if cfg.sandbox else "off", sandbox_network=cfg.network, lsp=cfg.lsp,
                  **(task.settings if task else {}))
     s.approval_deny = [*s.approval_deny, *BASE_DENY, *(task.deny if task else [])]
     if cfg.model:
@@ -111,10 +112,16 @@ def git(cwd: Path, *args: str) -> str:
                           cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
+WORKSPACE_VAR = "${WORKSPACE}"  # in a fixture's compile_commands.json: the trial's workspace, which must be absolute
+
+
 def prepare_workspace(task: Task, ws: Path) -> None:
     shutil.copytree(task.repo, ws)
+    if (cdb := ws / "compile_commands.json").is_file():
+        cdb.write_text(cdb.read_text().replace(WORKSPACE_VAR, str(ws.resolve())))
     git(ws, "init", "-q")
-    (ws / ".git" / "info" / "exclude").write_text("__pycache__/\n*.pyc\n.pytest_cache/\n")
+    # .cache/: clangd's index
+    (ws / ".git" / "info" / "exclude").write_text("__pycache__/\n*.pyc\n.pytest_cache/\n.cache/\n")
     git(ws, "add", "-A")
     git(ws, "commit", "-q", "-m", "fixture", "--allow-empty")
 
@@ -161,6 +168,7 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
         await asyncio.to_thread(prepare_workspace, task, ws)
         settings = make_settings(cfg, task, ws, tmp / "home" / ".jimbo", out)
         sink = JsonlSink(out)
+        session = None
         try:
             session = build_session(settings, EvalFrontend([]), [collector, sink],
                                     model=cfg.main_model, model_builder=cfg.model_builder)
@@ -186,6 +194,8 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
                     error = (errors[-1] if errors else "run failed")[:500]
                     break
         finally:
+            if session is not None and session.deps.lsp:
+                await session.deps.lsp.close()
             sink.close()
         diff = await asyncio.to_thread(workspace_diff, ws)
         (out / "diff.patch").write_text(diff)
@@ -280,7 +290,7 @@ async def run_suite(tasks: list[Task], cfg: RunConfig, results_dir: Path = RESUL
     run_dir = results_dir / run_id
     run_dir.mkdir(parents=True)
     meta = {"id": run_id, **jimbo_commit(), "models": specs, "model_arg": cfg.model, "trials": cfg.trials,
-            "retry_failed_only": cfg.retry_failed_only, "sandbox": cfg.sandbox, "network": cfg.network, "requests_per_minute": request_limits(settings, specs),
+            "retry_failed_only": cfg.retry_failed_only, "sandbox": cfg.sandbox, "network": cfg.network, "lsp": cfg.lsp, "requests_per_minute": request_limits(settings, specs),
             "tasks": [t.id for t in tasks],
             "task_settings": {t.id: t.settings for t in tasks if t.settings},
             "started": datetime.now().astimezone().isoformat(timespec="seconds")}

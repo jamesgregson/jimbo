@@ -1,0 +1,74 @@
+[
+ {
+  "directory": "${WORKSPACE}",
+  "file": "src/csv.cpp",
+  "arguments": [
+   "c++",
+   "-std=c++17",
+   "-Iinclude",
+   "-Itests",
+   "-c",
+   "src/csv.cpp"
+  ]
+ },
+ {
+  "directory": "${WORKSPACE}",
+  "file": "src/ledger.cpp",
+  "arguments": [
+   "c++",
+   "-std=c++17",
+   "-Iinclude",
+   "-Itests",
+   "-c",
+   "src/ledger.cpp"
+  ]
+ },
+ {
+  "directory": "${WORKSPACE}",
+  "file": "src/money.cpp",
+  "arguments": [
+   "c++",
+   "-std=c++17",
+   "-Iinclude",
+   "-Itests",
+   "-c",
+   "src/money.cpp"
+  ]
+ },
+ {
+  "directory": "${WORKSPACE}",
+  "file": "tests/main.cpp",
+  "arguments": [
+   "c++",
+   "-std=c++17",
+   "-Iinclude",
+   "-Itests",
+   "-c",
+   "tests/main.cpp"
+  ]
+ },
+ {
+  "directory": "${WORKSPACE}",
+  "file": "tests/test_csv.cpp",
+  "arguments": [
+   "c++",
+   "-std=c++17",
+   "-Iinclude",
+   "-Itests",
+   "-c",
+   "tests/test_csv.cpp"
+  ]
+ },
+ {
+  "directory": "${WORKSPACE}",
+  "file": "tests/test_ledger.cpp",
+  "arguments": [
+   "c++",
+   "-std=c++17",
+   "-Iinclude",
+   "-Itests",
+   "-c",
+   "tests/test_ledger.cpp"
+  ]
+ }
+]

@@ -5,6 +5,7 @@ from pydantic_ai.messages import BinaryContent
 
 from ..core.attachments import IMAGE_SUFFIXES, check_image
 from ..core.deps import Deps, ToolDenied
+from .lsp import errors_after_edit
 from .paths import PathEscape, resolve_in_workspace, resolve_readable
 
 MAX_READ_BYTES = 64_000
@@ -79,10 +80,11 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
         raise ModelRetry(f"{path!r} is not valid UTF-8 text") from None
     if p.is_dir():
         raise ModelRetry(f"{path!r} is a directory")
+    existed = p.is_file()
     ctx.deps.checkpoints.record(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, "utf-8")
-    return f"wrote {len(content)} chars to {path}"
+    return f"wrote {len(content)} chars to {path}" + await errors_after_edit(ctx, [(p, old if existed else None)])
 
 
 async def edit_file(ctx: RunContext[Deps], path: str, old: str, new: str, replace_all: bool = False) -> str:
@@ -106,7 +108,7 @@ async def edit_file(ctx: RunContext[Deps], path: str, old: str, new: str, replac
         raise ModelRetry(f"{path!r} is not valid UTF-8 text") from None
     ctx.deps.checkpoints.record(p)
     p.write_text(updated, "utf-8")
-    return f"edited {path} ({n if replace_all else 1} replacement(s))"
+    return f"edited {path} ({n if replace_all else 1} replacement(s))" + await errors_after_edit(ctx, [(p, text)])
 
 
 FS_TOOLS = [read_file, list_dir, write_file, edit_file]

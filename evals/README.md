@@ -24,7 +24,8 @@ uv run python -m evals report [<run>]              # print a run's table and wri
 
 Other options: `--jobs N` (trials at once, default 4), `--keep` (keep each trial's workspace), `--no-network`
 (block network access for shell commands), `--no-sandbox` (needed where there is no sandbox, which is anywhere
-but macOS), `--config <path>` (a different `config.toml`).
+but macOS), `--no-lsp` (start no language servers, to compare a run with one that has them), `--config <path>`
+(a different `config.toml`).
 
 With `--retry-failed-only`, a task's trials run one after another and stop at the first pass. Different tasks
 still run at the same time. A task passes if any of its trials passes, and the reports count tasks instead of
@@ -39,14 +40,16 @@ cap of each provider the run's models use.
 
 Each trial:
 
-1. Copies the task's fixture to a temp folder and commits it to a new git repo.
+1. Copies the task's fixture to a temp folder and commits it to a new git repo. In a `compile_commands.json`,
+   `${WORKSPACE}` becomes the temp folder's path, so `clangd` can index the project.
 2. Runs the prompt (and any follow-ups) in a session built with `build_session()`, as the tests do. Approvals
    use the chain `rules`, then allow everything. Deny rules still apply: `shell:git push*`, `shell:sudo *`, the
    task's `deny`, and those in your config. Shell commands run in the sandbox.
 3. Grades the result (see [Grading](#grading)).
 
 Only your `config.toml` is copied into the trial. Your skills, commands, agents and `~/.jimbo/AGENTS.md` are not
-loaded, so they don't change the results. Bundled files are loaded.
+loaded, so they don't change the results. Bundled files are loaded. Language servers on your `PATH` are used,
+and start without asking.
 
 Tasks tagged `skills` check that jimbo calls `load_skill` when a skill fits the prompt, and doesn't when none fits.
 They use the bundled skills, or skills in the task's `repo/.jimbo/skills/`.

@@ -6,6 +6,7 @@ from jimbo.core.approval import ApprovalDecision
 
 def settings(tmp_path, **kw):
     kw.setdefault("bundled", False)
+    kw.setdefault("lsp", False)  # never start a language server found on the developer's PATH
     return Settings(workspace=tmp_path, user_dir=tmp_path / "user", **kw)
 
 

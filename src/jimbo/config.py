@@ -20,7 +20,7 @@ BUNDLED_DIR = Path(__file__).parent / "bundled"
 UNTRUSTED_KEYS = {"model", "api_key", "ollama_base_url", "openai_base_url", "openrouter_base_url",
                   "workspace", "web_host", "approval", "approval_allow", "sandbox", "sandbox_writable",
                   "sandbox_network", "log_dir", "user_dir", "providers", "model_aliases", "models", "tasks",
-                  "secret_files"}
+                  "secret_files", "lsp_servers"}
 RENAMED_TASKS = {"shell_assess": "jimbo-shell-assess", "compaction": "jimbo-compaction"}
 
 
@@ -84,6 +84,19 @@ class TaskConfig(BaseModel):
     timeout: float = 30.0  # seconds to wait for the model before carrying on without its answer
 
 
+class ServerConfig(BaseModel):
+    """A language server. With the name of a built-in server, unset fields keep the built-in's values."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: list[str] | None = None  # argv, no shell
+    extensions: list[str] | None = None  # e.g. [".rb"]
+    language_id: str | None = None  # sent in didOpen; default: the extension without the dot
+    env: dict[str, str] = {}  # added to the environment
+    init_options: dict = {}  # sent as initializationOptions
+    settings: dict = {}  # returned for workspace/configuration requests
+
+
 class Settings(BaseSettings):
     """Runtime configuration. Precedence: CLI flags > USER_DIR_ENV > <workspace>/.jimbo/config.toml >
     ~/.jimbo/config.toml > defaults."""
@@ -129,6 +142,13 @@ class Settings(BaseSettings):
     bundled: bool = True  # False: load nothing from BUNDLED_DIR. A repo may set this; it only removes files
     tool_retries: int = 3
 
+    lsp: bool = True  # False: start no language servers and hide the lsp_* tools
+    lsp_disabled: list[str] = []  # server names not to use; a workspace config adds to the user's list
+    lsp_diagnostics: bool = True  # write_file and edit_file report the errors an edit introduced
+    lsp_wait: float = 3.0  # seconds to wait for a server's errors after an edit
+    lsp_timeout: float = 60.0  # seconds to wait for a server's answer to one request
+    lsp_servers: dict[str, ServerConfig] = {}  # name -> server; replaces a built-in server of the same name
+
     shell_timeout: int = 120  # seconds, default per command; the model may ask for up to shell_timeout_max
     shell_timeout_max: int = 600
     sandbox: SandboxMode = "auto"  # auto: sandbox-exec when available (macOS); on: refuse to run without it
@@ -156,6 +176,8 @@ class Settings(BaseSettings):
         merged = {**user, **{k: v for k, v in project.items() if k not in UNTRUSTED_KEYS}}
         if deny := [*user.get("approval_deny", []), *project.get("approval_deny", [])]:
             merged["approval_deny"] = deny  # project deny rules add to the user's, never replace them
+        if off := [*user.get("lsp_disabled", []), *project.get("lsp_disabled", [])]:
+            merged["lsp_disabled"] = off
         return init_settings, InitSettingsSource(settings_cls, env), InitSettingsSource(settings_cls, merged)
 
     def task(self, name: str) -> TaskConfig:

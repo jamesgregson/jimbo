@@ -1,0 +1,6 @@
+prompt = """Change calc_total in shop/pricing.py to return a Breakdown instead of an int. Breakdown is a dataclass in shop/pricing.py with the fields subtotal, discount, tax and total, all in cents. Update every caller so the shop works as before: an order still has its total in cents under "total". Update the tests."""
+fixture = "shop"
+tags = ["feature", "python"]
+
+[check]
+command = "{python} -m pytest -q -p no:cacheprovider tests eval_check"

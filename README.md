@@ -60,6 +60,7 @@ In a session, type `/help` to list commands. Useful ones:
 - `/review` review your uncommitted changes
 - `/skills` list the skills jimbo can load
 - `/trace` see everything that happened in this session, in the browser
+- `/lsp` list the language servers jimbo found
 - `/quit` exit
 
 Ctrl+C stops the current task.
@@ -80,6 +81,23 @@ approval_deny  = ["shell:sudo *", "shell:rm -rf*"]
 
 On macOS, commands run in a sandbox that can only write inside your project and temp folders. On other
 systems there is no sandbox.
+
+## Language servers
+
+If a language server is installed, jimbo uses it to find definitions and references, list symbols and
+rename across files. After each edit it tells the model about errors the edit introduced. jimbo asks
+before it starts a server.
+
+| Language | Servers |
+|---|---|
+| Python | `basedpyright`, `pyright` or `pylsp` |
+| C, C++ | `clangd` |
+| Rust | `rust-analyzer` |
+| Go | `gopls` |
+| TypeScript, JavaScript | `typescript-language-server` |
+
+`/lsp` shows which servers jimbo found. See [Language servers](docs/reference.md#language-servers) to add
+another language or turn them off.
 
 ## Project instructions
 
@@ -135,6 +153,7 @@ uv run python -m evals run                    # all tasks
 uv run python -m evals run --tag cpp          # only the C++ tasks
 uv run python -m evals run --tag skills       # only the tasks that check skills are used
 uv run python -m evals run --model <name>     # another model
+uv run python -m evals run --no-lsp           # without language servers
 uv run python -m evals compare <run-a> <run-b>
 ```
 

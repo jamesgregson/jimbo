@@ -1,0 +1,29 @@
+prompt = "List every place that calls Ledger::add, with file and line. Leave out its declaration and definition. Don't change any files."
+fixture = "ledger"
+tags = ["read", "cpp", "lsp"]
+
+# Fails with --no-lsp: this check measures whether the model uses the language server
+[[check.events]]
+kind = "tool_call"
+tool = "lsp_references"
+min = 1
+
+[[check.events]]
+kind = "tool_result"
+tool = "write_file"
+ok = true
+max = 0
+
+[[check.events]]
+kind = "tool_result"
+tool = "edit_file"
+ok = true
+max = 0
+
+[judge]
+rubric = """
+The answer lists exactly these four calls, and no other place:
+1. src/ledger.cpp line 49, in load_ledger.
+2. tests/test_ledger.cpp lines 8, 9 and 10.
+Line numbers may be off by one. The declaration in include/ledger/ledger.h and the definition in src/ledger.cpp line 11 are not listed as calls.
+"""

@@ -264,6 +264,11 @@ async def test_always_covers_one_shell_command_but_all_of_other_tools():
     await au.evaluate(call("edit_file", path="a"))
     await au.evaluate(call("edit_file", path="b"))
     assert len(asked) == 3 and asked[2].always == "edit_file this session"
+    await au.evaluate(call("lsp_start", server="clangd"))
+    await au.evaluate(call("lsp_start", server="clangd"))
+    assert len(asked) == 4 and asked[3].always == "language server clangd this session"
+    await au.evaluate(call("lsp_start", server="basedpyright"))  # "always" for one server doesn't start another
+    assert len(asked) == 5
 
 
 # -- failed runs ----------------------------------------------------------------------------------------------

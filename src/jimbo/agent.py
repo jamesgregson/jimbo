@@ -17,6 +17,7 @@ from .tools.compact import COMPACT_TOOLS
 from .tools.memory import MEMORY_TOOLS
 from .tools.skills import RELOAD_TOOLS, SKILL_TOOLS
 from .tools.fs import FS_TOOLS
+from .tools.lsp import LSP_TOOLS
 from .tools.search import SEARCH_TOOLS
 from .tools.plan import PLAN_TOOLS
 from .tools.shell import shell
@@ -25,7 +26,7 @@ from .tools.todos import TODO_TOOLS
 SYSTEM_PROMPT = """\
 You are jimbo, a coding agent working inside a single workspace directory on {os}.
 Use the provided tools to inspect the code before answering; do not guess file contents.
-Find files with glob and search contents with grep; read them with read_file.
+Find files with glob and search text with grep; read them with read_file.
 You can create and modify files with write_file (whole file) and edit_file (exact replace);
 read a file before editing it. Paths are relative to the workspace root.
 Use shell to run commands (tests, builds, git); it is non-interactive and runs in the workspace root.
@@ -55,6 +56,27 @@ Your final message is your report, and it is the only thing returned, so put eve
 AGENT_PLAN_PROMPT = """\
 # Plan mode
 The session is in plan mode: only read-only tools work; edits and shell are denied. Report what you find."""
+
+
+# Tool -> when to use it. Only the tools a session or agent has are listed.
+LSP_USES = {
+    "lsp_symbols": "the functions and classes in a file: lsp_symbols(path)",
+    "lsp_definition": "where something is defined, and its type: lsp_definition(path, line, symbol)",
+    "lsp_references": "every caller or use of something: lsp_references(path, line, symbol)",
+    "lsp_rename": "renaming a function, class or variable: lsp_rename(path, line, symbol, new_name), "
+                  "not edit_file on each file",
+    "lsp_diagnostics": "errors in a file: lsp_diagnostics(path)",
+}
+
+
+def lsp_prompt(deps: Deps) -> str:
+    tools = deps.agent.tools if deps.agent and deps.agent.tools is not None else LSP_USES
+    lines = [f"- {use}" for name, use in LSP_USES.items() if name in tools]
+    text = (f"# Language servers\nFor {'; '.join(deps.lsp.languages())} files, use these instead of grep:\n"
+            + "\n".join(lines) + "\nUse grep for text: strings, comments, config files and other languages.")
+    if deps.lsp.diagnostics:
+        text += "\nwrite_file and edit_file results list errors an edit introduced; fix them."
+    return text
 
 
 WRAP_UP_REQUESTS = 3  # warn the model when this many requests (or fewer) are left in the turn
@@ -146,6 +168,8 @@ def project_context(ctx: RunContext[Deps]) -> str:
         parts.append("# Skills\nBefore you start a task, check this list. If a skill's description fits the "
                      "task, even partly, call load_skill(name) first and follow its instructions:\n"
                      + format_skill_index(deps.skills))
+    if deps.can_use_lsp:
+        parts.append(lsp_prompt(deps))
     if index := format_agent_index(deps.agents):
         parts.append("# Agents\nCall run_agent(agent, task) to hand a self-contained task to an agent. It starts "
                      "with no conversation history and returns one report:\n" + index)
@@ -166,7 +190,7 @@ def _tool_name(tool) -> str:
     return tool.name if isinstance(tool, Tool) else tool.__name__
 
 
-ALL_TOOLS = [*FS_TOOLS, *SEARCH_TOOLS, shell, *TODO_TOOLS, *SKILL_TOOLS]  # what agents may have
+ALL_TOOLS = [*FS_TOOLS, *SEARCH_TOOLS, shell, *TODO_TOOLS, *SKILL_TOOLS, *LSP_TOOLS]  # what agents may have
 AGENT_TOOL_NAMES = {_tool_name(t) for t in ALL_TOOLS}
 
 

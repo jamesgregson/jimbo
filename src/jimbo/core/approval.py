@@ -83,8 +83,8 @@ class ReadOnlyAllow:
 
 
 class PlanMode:
-    """Head of the chain while planning: read-only calls fall through to the normal policies, everything
-    else is denied. `exit_plan` is decided here by asking the user, so yolo/remembered can't skip it."""
+    """Head of the chain while planning: read-only calls and language server starts fall through to the normal
+    policies, everything else is denied. `exit_plan` is decided here by asking the user, so yolo/remembered can't skip it."""
 
     name = "plan"
 
@@ -105,7 +105,7 @@ class PlanMode:
             return Verdict(action="allow" if d.allow else "deny",
                            reason=None if d.allow else d.note or "plan rejected; revise it or ask what to change",
                            decided_by="user")
-        if call.read_only:
+        if call.read_only or call.tool == "lsp_start":  # a server start, so read-only lsp tools work here too
             return Verdict(action="ask", decided_by=self.name)
         return Verdict(action="deny", reason="plan mode: present a plan instead (call exit_plan)",
                        decided_by=self.name)
@@ -113,20 +113,28 @@ class PlanMode:
 
 class RememberedDecisions:
     """Session-scoped 'always allow'. Fed by AskUser when the user picks remember. Shell is remembered per
-    exact command, because allowing one command must not allow every other one; other tools as a whole."""
+    exact command, because allowing one command must not allow every other one, and lsp_start per server, for
+    the same reason; other tools as a whole."""
 
     name = "remembered"
 
     def __init__(self) -> None:
         self._allowed: set[tuple[str, str]] = set()
 
-    @staticmethod
-    def _key(call: ToolCallInfo) -> tuple[str, str]:
-        return (call.tool, str(call.args.get("command", "")).strip() if call.tool == "shell" else "")
+    KEYS = {"shell": "command", "lsp_start": "server"}  # tools remembered per value of this argument
+
+    @classmethod
+    def _key(cls, call: ToolCallInfo) -> tuple[str, str]:
+        arg = cls.KEYS.get(call.tool)
+        return (call.tool, str(call.args.get(arg, "")).strip() if arg else "")
 
     @staticmethod
     def scope(call: ToolCallInfo) -> str:
-        return "this exact command" if call.tool == "shell" else f"{call.tool} this session"
+        if call.tool == "shell":
+            return "this exact command"
+        if call.tool == "lsp_start":
+            return f"language server {call.args.get('server')} this session"
+        return f"{call.tool} this session"
 
     def add(self, call: ToolCallInfo) -> None:
         self._allowed.add(self._key(call))

@@ -48,6 +48,9 @@ src/jimbo/
     plan.py            exit_plan (plan mode only)
     compact.py         compact: the model asks for /compact when the user tells it to
     memory.py          remember: saves a note to ~/.jimbo/memory.md or .jimbo/memory.md (main session only)
+    lsp.py             lsp_definition, lsp_references, lsp_symbols, lsp_diagnostics, lsp_rename; errors after edits
+  lsp/               language servers: client.py (JSON-RPC over stdio), servers.py (which server for which files),
+                     manager.py (LspManager: start on first use, restart, keep open files in sync)
   providers/         model selection: "<provider>:<name>" -> Pydantic AI Model; startup checks (preflight.py)
   frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page), json
   bundled/           agents, skills and commands shipped with jimbo, laid out like .jimbo/
@@ -62,7 +65,8 @@ commands) live outside `core` for the same reason.
 [wiring.py](src/jimbo/wiring.py) `build_session()` is the only place everything is assembled:
 
 1. Build the approval policy instances and pick the chain from `settings.approval`.
-2. Build the `Sandbox` (if enabled/available) and `Deps` (workspace, gate, sandbox, timeouts).
+2. Build the `Sandbox` (if enabled/available) and `Deps` (workspace, gate, sandbox, timeouts), and the
+   `LspManager` when `lsp` is on.
 3. Load project instructions and skills from disk into `Deps`.
 4. Build the Pydantic AI `Agent` and wrap it in an `AgentSession` with the sinks: the frontend (through
    `FrontendSink`) plus an optional `JsonlSink`.
@@ -244,10 +248,10 @@ The default chain is:
 
 | Policy | Behavior |
 |--------|----------|
-| `plan` (`PlanMode`) | always first; in plan mode denies non-read-only calls and asks the user to approve `exit_plan` |
+| `plan` (`PlanMode`) | always first; in plan mode denies non-read-only calls except `lsp_start`, and asks the user to approve `exit_plan` |
 | `rules` (`PatternRules`) | `approval_deny` first, then `approval_allow`; a match decides, otherwise `ask` |
 | `readonly` (`ReadOnlyAllow`) | allow calls flagged `read_only` (read, list, glob, grep, todos, load_skill, reload_skills, run_agent, ask_user) |
-| `remembered` (`RememberedDecisions`) | allow what the user chose "always" for: one exact shell command, or a whole other tool |
+| `remembered` (`RememberedDecisions`) | allow what the user chose "always" for: one exact shell command, one language server, or a whole other tool |
 | `ask` (`AskUser`) | terminal policy: ask the frontend; honors "remember for session" |
 
 `--auto` (or `/approve auto`) inserts `auto` (`AutoApprove`) before `ask`. It allows `write_file` and
@@ -279,6 +283,8 @@ Details worth knowing:
   Deny rules are checked against each segment of a compound command. They are best effort, not a
   boundary.
 - `AskUser` holds a lock so parallel tool calls never show two prompts at once.
+- Starting a language server is a call of its own, `lsp_start` with `{"server": <name>}`, made by the tool that
+  needs the server. See [Language servers](#language-servers).
 - Every decision, whoever made it, goes through the gate's observer and is emitted as
   `approval_resolved` with `decided_by`, so logs show why a call ran. Approval events carry the `call_id` of
   their `tool_call`, because parallel calls can be decided in any order.
@@ -336,6 +342,48 @@ Approvals are about intent; separate mechanisms limit what a call can physically
 - **Attachments**: `@path` mentions are inlined (capped) for the model while the logged `user_message`
   keeps the original text; pasted images are validated for type and size and dropped with a warning when
   `vision = false`.
+
+## Language servers
+
+jimbo is an LSP client. [lsp/servers.py](src/jimbo/lsp/servers.py) `resolve_servers` picks one server per
+language: `lsp_servers` from the user config first (a built-in name replaces the built-in), then the built-in
+table, using the first server whose command `shutil.which` finds. `lsp_servers` is in `UNTRUSTED_KEYS`, so a
+cloned repo can't name a command to run.
+
+[lsp/manager.py](src/jimbo/lsp/manager.py) `LspManager` lives on `Deps.lsp`, so agents share it. It holds one
+`LspClient` per server, with the workspace as the root, for the whole process; `/clear` and `/resume` keep them,
+and `main.py` and the eval runner call `close()` on the way out.
+
+- **Start.** `client_for(server, deps, call_id)` starts a server on first use. The first start in a session goes
+  through `Deps.authorize` as `lsp_start`, which is not read-only, so the normal chain asks. A denial is kept in
+  `denied` and not asked about again; `/lsp start` clears it. A server that exits is started again without
+  asking, until it has exited 3 times. A server is also restarted without asking when a file it reads only at
+  start changes in the workspace root (`RESTART_ON` in servers.py: clangd's `compile_commands.json`,
+  `compile_flags.txt` and `.clangd`). The process runs with `start_new_session=True`, through `Sandbox.wrap`
+  when there is a sandbox, with stderr in `<log_dir>/<session id>.lsp-<name>.log`.
+- **Sync.** `sync(client, path)` sends `didOpen`, or `didChange` and `didSave` with the full text, when the file's
+  modification time or size differ from what the server last got. So changes made through `shell` are picked
+  up when a tool next uses the file.
+- **Client.** [lsp/client.py](src/jimbo/lsp/client.py) reads and writes `Content-Length` framed JSON-RPC with
+  plain dicts. It answers the server's own requests (`workspace/configuration` from the server's `settings`, the
+  rest with empty answers), keeps the latest diagnostics per file, and tracks `$/progress` so a request can wait
+  for indexing to end (`wait_idle`). Positions are UTF-16 columns (`utf16_col`, `str_index`).
+
+The tools in [tools/lsp.py](src/jimbo/tools/lsp.py) take a path, a 1-based line and a symbol name; `find_symbol`
+turns the name into a column. They are hidden by `Deps.can_use_lsp` when no server was found. Bad arguments raise
+`ModelRetry`; a server that is missing, declined or slow returns text, so a retry limit is never spent on it.
+`project_context` adds a short section naming the languages that have a server.
+
+**Errors after edits.** `write_file`, `edit_file` and `lsp_rename` end with `errors_after_edit`. For a file the
+server hasn't seen, it first sends the old text to learn which errors were already there. Then it sends every
+changed file, waits up to `lsp_wait` for each file's diagnostics, and lists errors whose message and code
+weren't there before. If there are any, it waits up to 0.5 seconds more, because a server can answer before it
+has seen the other changed files. If the server stopped checking a file (`BLOCKING` in servers.py: clangd after a
+missing header), it adds a note that says how to fix it, even when there are no new errors, because a clean
+result there means nothing. It never fails the edit.
+
+**Rename.** `lsp_rename` applies the server's `WorkspaceEdit` itself (text edits only; file operations are
+refused), after one `authorize` call with the diff of every file. Each file goes through `checkpoints.record`.
 
 ## Editing config
 

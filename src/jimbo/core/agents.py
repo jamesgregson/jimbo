@@ -43,7 +43,8 @@ BUILTIN_AGENTS = {
     "explore": AgentSpec("explore", "Searches and reads code to answer a question. Read-only.",
                          "Search and read the code to answer the task. Report what you found, with file paths. "
                          "Don't change anything.",
-                         tools=["read_file", "list_dir", "glob", "grep", "load_skill"]),
+                         tools=["read_file", "list_dir", "glob", "grep", "load_skill", "lsp_definition",
+                                "lsp_references", "lsp_symbols", "lsp_diagnostics"]),
     "general": AgentSpec("general", "Does multi-step work in its own context, including edits and commands.",
                          "Complete the task, then report what you did and what you found."),
 }

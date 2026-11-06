@@ -9,6 +9,7 @@ from .checkpoints import Checkpoints
 
 if TYPE_CHECKING:
     from .agents import AgentResult, AgentSpec
+    from ..lsp.manager import LspManager
     from .models import ModelRouter
     from .questions import Answers, Question
     from .skills import Skill
@@ -56,6 +57,14 @@ class Deps:
     reload_agents: "Callable[..., list[str] | None] | None" = None  # force=True: reload even if unchanged
     # Set by wiring: reloads skills and their /commands if any SKILL.md changed, or always with force=True.
     reload_skills: "Callable[..., Awaitable[None]] | None" = None
+    lsp: "LspManager | None" = None  # set by wiring when lsp = true; agents share it
+
+    @property
+    def can_use_lsp(self) -> bool:
+        """Whether the lsp_* tools are shown: a server was found, and an agent's tool list doesn't leave them out."""
+        if self.lsp is None or not self.lsp.available:
+            return False
+        return self.agent is None or self.agent.tools is None or any(t.startswith("lsp_") for t in self.agent.tools)
 
     @property
     def can_load_skills(self) -> bool:

@@ -20,6 +20,8 @@ from .core.models import ModelRouter
 from .core.store import SessionStore
 from .core.skills import load_project_instructions, load_skills
 from .core.session import AgentSession
+from .lsp.manager import LspManager
+from .lsp.servers import resolve_servers
 from .providers.preflight import ModelFacts, inspect_model
 from .providers.registry import build_model_from_spec
 from .tools.sandbox import build_sandbox
@@ -114,6 +116,14 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                 shell_timeout=settings.shell_timeout, shell_timeout_max=settings.shell_timeout_max,
                 models=router, secret_files=settings.secret_files,
                 ask_user=getattr(frontend, "ask_questions", None))
+    if settings.lsp:
+        choices, problems = resolve_servers(settings)
+        for warning in problems:
+            print(f"jimbo: {warning}", file=sys.stderr)
+        log_dir = settings.log_dir if settings.log_sessions else None
+        deps.lsp = LspManager(workspace, choices, timeout=settings.lsp_timeout, wait=settings.lsp_wait,
+                              diagnostics=settings.lsp_diagnostics, sandbox=sandbox,
+                              log_path=lambda name: log_dir and log_dir / f"{holder['s'].session_id}.lsp-{name}.log")
     # Lowest to highest precedence. Also reads the cross-tool .agents/.claude skill folders; the user-level
     # ones are derived from user_dir's parent (the home dir by default).
     home = settings.user_dir.parent

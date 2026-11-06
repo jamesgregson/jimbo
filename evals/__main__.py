@@ -33,7 +33,8 @@ def config(args) -> RunConfig:
     return RunConfig(model=args.model, task_models=task_models(args.set), trials=getattr(args, "trials", 1),
                      retry_failed_only=getattr(args, "retry_failed_only", False),
                      jobs=args.jobs, sandbox=not getattr(args, "no_sandbox", False),
-                     network=not getattr(args, "no_network", False), keep=getattr(args, "keep", False),
+                     network=not getattr(args, "no_network", False), lsp=not getattr(args, "no_lsp", False),
+                     keep=getattr(args, "keep", False),
                      user_config=args.config, requests_per_minute=args.requests_per_minute)
 
 
@@ -137,6 +138,7 @@ def main() -> None:
                    help="run each task's trials one at a time and stop at the first pass")
     p.add_argument("--no-sandbox", action="store_true", help="run where there is no sandbox (not macOS)")
     p.add_argument("--no-network", action="store_true", help="block network access for shell commands")
+    p.add_argument("--no-lsp", action="store_true", help="start no language servers (lsp = false)")
     p.add_argument("--keep", action="store_true", help="keep each trial's workspace")
     p.set_defaults(fn=cmd_run)
 

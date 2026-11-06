@@ -105,6 +105,8 @@ def main() -> None:
             spent = session.run_spend
             if spent.requests:
                 await session.close()
+            if session.deps.lsp:
+                await session.deps.lsp.close()
             if stop := getattr(frontend, "stop", None):
                 await stop()
             if spent.requests and settings.ui != "json":  # json: the session_end event says it

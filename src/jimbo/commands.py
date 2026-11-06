@@ -14,6 +14,7 @@ from .core.approval import MODE_WARNING, RISKY_MODES, ApprovalModes
 from .core.commands import NAME_RE, CommandError, CommandRegistry, QuitSession
 from .core.session import AgentSession
 from .core.trace import trace_page
+from .lsp.manager import MAX_EXITS, LspManager, LspUnavailable
 from .core.skills import Skill, format_skill_index, reload_and_describe, load_project_instructions, memory_paths, use_skill
 from .providers.credentials import describe_key_source
 from .providers.registry import all_providers
@@ -285,6 +286,23 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
     async def output(session: AgentSession, args: str) -> str:
         return session.last_output or "No output yet."
 
+    async def lsp(session: AgentSession, args: str) -> str:
+        manager = session.deps.lsp
+        if manager is None:
+            return "Language servers are off (lsp = false)."
+        match args.split():
+            case []:
+                return describe_lsp(manager)
+            case ["start" | "restart" as verb, name]:
+                try:
+                    await manager.start(name)
+                except LspUnavailable as e:
+                    raise CommandError(str(e)) from None
+                return f"Language server {name} {verb}ed."
+            case ["stop", name]:
+                return f"Language server {name} stopped." if await manager.stop(name) else f"{name} isn't running."
+        raise CommandError("usage: /lsp [start|stop|restart <name>]")
+
     async def quit_(session: AgentSession, args: str) -> None:
         raise QuitSession
 
@@ -309,7 +327,30 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
     registry.add("diff", "show the file changes from the latest turn that made any", diff)
     registry.add("undo", "restore the files changed by the latest turn that changed any", undo)
     registry.add("output", "show the latest shell output or agent report in full", output)
+    registry.add("lsp", "list language servers, or start, stop or restart one: /lsp [start|stop|restart <name>]", lsp)
     registry.add("quit", "exit jimbo", quit_)
+
+
+def describe_lsp(manager: LspManager) -> str:
+    rows = []
+    for c in manager.choices:
+        if c.server is None:
+            state = f"not installed (tried {', '.join(c.tried)})" if c.tried else f"disabled ({', '.join(c.disabled)})"
+            rows.append((c.language, "-", state))
+            continue
+        name = c.server.name
+        if client := manager.running(name):
+            state = f"running, {len(client.docs)} file(s) open"
+        elif manager.exits.get(name, 0) >= MAX_EXITS:
+            state = f"off: exited {MAX_EXITS} times (/lsp restart {name})"
+        elif name in manager.denied:
+            state = f"declined this session (/lsp start {name})"
+        else:
+            state = "found, not started"
+        rows.append((c.language, name, state))
+    width = [max((len(r[i]) for r in rows), default=0) for i in (0, 1)]
+    return "\n".join(["Language servers (lsp = true):",
+                      *(f"  {lang:<{width[0]}}  {name:<{width[1]}}  {state}" for lang, name, state in rows)])
 
 
 def register_skill_commands(registry: CommandRegistry, skills: dict[str, Skill]) -> None:
