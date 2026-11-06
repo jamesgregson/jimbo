@@ -20,3 +20,6 @@ class Frontend(Protocol):
     # it is asked before a risky approval mode is turned on (/approve auto|yolo, or --auto/--yolo at start).
     # Optional: `async def ask_secret(self, message: str) -> str | None` asks for a line that isn't echoed or kept
     # in input history (an API key); None means cancelled. Without it, keys can only come from env variables.
+    # Optional: `async def ask_questions(self, questions: list[Question]) -> Answers` asks the model's questions
+    # (ask_user). The user can stop at any point to say something else, returned as `Answers.feedback`. Without
+    # it, the model has no ask_user tool.

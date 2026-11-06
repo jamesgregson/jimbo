@@ -8,6 +8,7 @@ import threading
 from ..core.agents import PROGRESS
 from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
 from ..core.events import Event
+from ..core.questions import Answers, Question, ask_by_line
 from ..core.stats import agent_prefix, format_stats, output_preview
 
 
@@ -123,6 +124,14 @@ class PlainFrontend:
             return await asyncio.to_thread(getpass.getpass, message)
         except (EOFError, KeyboardInterrupt):
             return None
+
+    async def ask_questions(self, questions: list[Question]) -> Answers:
+        def show(i: int, q: Question) -> None:
+            print(f"\nQuestion {i + 1} of {len(questions)}: {q.question}", file=sys.stderr)
+            for n, o in enumerate(q.options, 1):
+                print(f"  {n}. {o}", file=sys.stderr)
+
+        return await ask_by_line(questions, show, self._stdin.line)
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         print(f"\nApprove {req.tool}: {req.summary}", file=sys.stderr)

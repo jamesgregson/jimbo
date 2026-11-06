@@ -26,6 +26,7 @@ from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
 from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
 from ..core.agents import PROGRESS
+from ..core.questions import Answers, Question, ask_by_line
 from ..core.stats import AgentProgress, agent_prefix, format_stats, output_preview
 from ..tools.search import list_files
 from .clipboard import clipboard_png
@@ -40,6 +41,7 @@ for _seq in ("\x1b[13;2u", "\x1b[27;2;13~"):
 PASTE_COLLAPSE_LINES = 10  # pastes longer than this become a [pasted #n: m lines] placeholder
 PASTE_RE = re.compile(r"\[pasted #(\d+): \d+ lines\]")
 IMAGE_RE = re.compile(r"\[image #(\d+)\]")
+PASTE_CMD_RE = re.compile(r"/paste(?:\s+(.*))?", re.S)  # handled here, not by the core: it reads the clipboard
 
 
 def _clip(s: str, n: int = 100) -> str:
@@ -201,6 +203,9 @@ class TuiFrontend:
         self._running = False
         self._prompting = False  # next_user_input is waiting on the main prompt
         self._question: tuple[str, asyncio.Future[str]] | None = None  # asked through the main prompt
+        # One question at a time: a confirm from /approve typed while steering and an approval the model asks for
+        # would otherwise share the prompt, and one would take the other's answer.
+        self._turn = asyncio.Lock()
         self._secret = False  # the prompt is taking a key: hidden, and not kept in history
         self._pastes: dict[int, str] = {}
         self._images: dict[int, BinaryContent] = {}
@@ -211,6 +216,9 @@ class TuiFrontend:
 
         @kb.add(Keys.BracketedPaste)  # newlines in a paste must not submit; long pastes collapse
         def _(event) -> None:
+            if not event.data:  # Cmd+V with only an image on the clipboard: some terminals send an empty paste
+                event.app.create_background_task(self._paste_image(event.current_buffer))
+                return
             event.current_buffer.insert_text(self.collapse_paste(event.data))
 
         @kb.add("c-c")  # during a run: stop it; otherwise: the usual interrupt
@@ -225,7 +233,7 @@ class TuiFrontend:
             if self._cancel:
                 self._cancel()
 
-        @kb.add("c-v")  # image from the clipboard (Cmd+V pastes text via the terminal)
+        @kb.add("c-v")  # image from the clipboard (Cmd+V pastes text via the terminal; /paste also works)
         def _(event) -> None:
             event.app.create_background_task(self._paste_image(event.current_buffer))
 
@@ -292,10 +300,10 @@ class TuiFrontend:
         if self._session is not None:
             self._session.app.invalidate()
 
-    async def _prompt(self, message) -> str:
+    async def _prompt(self, message, default: str = "") -> str:
         if self._ask:
-            return await self._ask(message() if callable(message) else message)
-        return await self._prompt_session().prompt_async(message)
+            return default + await self._ask(message() if callable(message) else message)
+        return await self._prompt_session().prompt_async(message, default=default)
 
     async def _ask_line(self, message: str) -> str:
         """Ask a one-line question. While the main prompt is up (a run is in flight) it takes the answer;
@@ -320,17 +328,23 @@ class TuiFrontend:
         self._pastes[i] = text
         return f"[pasted #{i}: {n} lines]"
 
-    async def _paste_image(self, buffer) -> None:
+    async def _clipboard_chip(self) -> str | None:
+        """Take the clipboard image as an `[image #n]` chip, or say why there is none."""
         data = await clipboard_png()
         if data is None:
-            self.console.print(Text("no image on the clipboard", style="dim yellow"))
-            return
+            self.console.print(Text("no image on the clipboard (copy the image itself, not the file; on macOS "
+                                    "`brew install pngpaste` helps)", style="dim yellow"))
+            return None
         if err := check_image("image/png", data):
             self.console.print(Text(err, style="red"))
-            return
+            return None
         i = max(self._images, default=0) + 1
         self._images[i] = BinaryContent(data, media_type="image/png")
-        buffer.insert_text(f"[image #{i}]")
+        return f"[image #{i}]"
+
+    async def _paste_image(self, buffer) -> None:
+        if chip := await self._clipboard_chip():
+            buffer.insert_text(chip)
 
     def expand(self, text: str) -> str | UserMessage:
         """Replace paste placeholders with their text and lift image chips out as attachments."""
@@ -345,14 +359,16 @@ class TuiFrontend:
         return UserMessage(text, images)
 
     async def next_user_input(self) -> str | UserMessage | None:
+        prefill = ""  # what the next prompt starts with: the chip /paste made
         while True:
             self._prompting = True
             try:
                 if self._ask:
-                    text = await self._prompt(self._message)
+                    text = await self._prompt(self._message, prefill)
                 else:
                     with patch_stdout(raw=True):  # run output prints above the prompt, not through it
-                        text = await self._prompt(self._message)
+                        text = await self._prompt(self._message, prefill)
+                prefill = ""
             except EOFError:
                 return None
             except KeyboardInterrupt:
@@ -368,6 +384,12 @@ class TuiFrontend:
                     self._question[1].set_result(text)
                 continue
             self._interrupted = False
+            if (m := PASTE_CMD_RE.fullmatch(text.strip())) and not self._question:
+                chip = await self._clipboard_chip()
+                if chip and m.group(1):  # /paste <question>: send it with the image
+                    return self.expand(f"{chip} {m.group(1)}")
+                prefill = f"{chip} " if chip else ""  # /paste alone: type the question next to the chip
+                continue
             return self.expand(text)
 
     def _flush_blocks(self, *, final: bool = False) -> None:
@@ -494,26 +516,48 @@ class TuiFrontend:
 
     async def confirm(self, message: str) -> bool:
         """A yes/no question; only an exact yes counts."""
-        self._stop_live()
-        self.console.print(Panel(Text(message, style="bold"), title="Confirm", border_style="red"))
-        try:
-            answer = await self._ask_line("[y]es / [n]o? ")
-        except (EOFError, KeyboardInterrupt):
-            return False
-        return answer.strip().lower() in ("y", "yes")
+        async with self._turn:
+            self._stop_live()
+            self.console.print(Panel(Text(message, style="bold"), title="Confirm", border_style="red"))
+            try:
+                answer = await self._ask_line("[y]es / [n]o? ")
+            except (EOFError, KeyboardInterrupt):
+                return False
+            return answer.strip().lower() in ("y", "yes")
 
     async def ask_secret(self, message: str) -> str | None:
         """A line that isn't echoed or kept in input history."""
+        async with self._turn:
+            self._stop_live()
+            self._secret = True
+            try:
+                return await self._ask_line(message)
+            except (EOFError, KeyboardInterrupt):
+                return None
+            finally:
+                self._secret = False
+
+    async def ask_questions(self, questions: list[Question]) -> Answers:
+        """Each question in turn, through the main prompt. Anything that isn't an answer stops the round."""
+        async with self._turn:
+            return await self._ask_questions(questions)
+
+    async def _ask_questions(self, questions: list[Question]) -> Answers:
         self._stop_live()
-        self._secret = True
-        try:
-            return await self._ask_line(message)
-        except (EOFError, KeyboardInterrupt):
-            return None
-        finally:
-            self._secret = False
+
+        def show(i: int, q: Question) -> None:
+            body: list = [Text(q.question, style="bold")]
+            body += [Text(f"  {n}. {o}") for n, o in enumerate(q.options, 1)]
+            self.console.print(Panel(Group(*body), title=f"Question {i + 1} of {len(questions)}",
+                                     border_style="cyan"))
+
+        return await ask_by_line(questions, show, self._ask_line)
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
+        async with self._turn:
+            return await self._request_approval(req)
+
+    async def _request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
         self._stop_live()
         body: list = [Text(req.summary, style="bold")]
         if a := req.assessment:

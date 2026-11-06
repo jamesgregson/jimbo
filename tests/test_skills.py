@@ -1,5 +1,6 @@
 from pydantic_ai.messages import ModelRequest, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.test import TestModel
 
 from helpers import ScriptedFrontend, settings
 from jimbo.config import Settings
@@ -133,3 +134,70 @@ async def test_read_file_allowed_in_skill_dir_only(tmp_path):
         await read_file(Ctx, str(tmp_path / "secret.txt"))
     with pytest.raises(ModelRetry):
         await read_file(Ctx, str(skill / ".." / ".." / ".." / "secret.txt"))
+
+
+async def test_skill_files_apply_from_the_next_input(tmp_path):
+    import os
+    from jimbo.core.runner import _handle
+
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path, bundled=True), fe, model=TestModel(call_tools=[]))
+    helps = lambda: {c["name"]: c["help"] for c in s.commands.describe()}
+    make_skill(tmp_path, "deploy", "---\ndescription: ship it\n---\nRun make deploy.")
+    await _handle(s, "hi")
+    assert s.deps.skills["deploy"].body == "Run make deploy." and helps()["deploy"] == "ship it"
+    assert [e for e in fe.events if e.kind == "commands"]  # completion gets the new command
+
+    path = tmp_path / ".jimbo" / "skills" / "deploy" / "SKILL.md"
+    path.write_text("---\ndescription: ship it now\n---\nRun make release.")
+    os.utime(path, ns=(1, 1))  # a different mtime, even on a coarse clock
+    await s.refresh_files()
+    assert s.deps.skills["deploy"].body == "Run make release." and helps()["deploy"] == "ship it now"
+
+    make_skill(tmp_path, "review", "---\ndescription: mine\n---\nmy way")  # replaces the bundled /review
+    await s.refresh_files()
+    assert helps()["review"] == "mine"
+    (tmp_path / ".jimbo" / "skills" / "review" / "SKILL.md").unlink()
+    path.unlink()
+    await s.refresh_files()
+    assert "deploy" not in s.deps.skills and "deploy" not in helps()
+    assert helps()["review"] != "mine" and "help" in helps()  # the bundled command is back; built-ins stay
+
+
+async def test_the_model_can_reload_skills_mid_run(tmp_path):
+    import json
+    from pydantic_ai.messages import ToolReturnPart
+    from pydantic_ai.models.function import DeltaToolCall
+
+    make_skill(tmp_path, "old", "---\ndescription: old\n---\nv1")
+    steps = iter([("write_file", {"path": ".jimbo/skills/new/SKILL.md", "content": "---\ndescription: new\n---\nhi"}),
+                  ("write_file", {"path": ".jimbo/skills/old/SKILL.md", "content": "---\ndescription: old\n---\nv2"}),
+                  ("reload_skills", {}), ("load_skill", {"name": "new"})])
+
+    async def stream(messages, info):
+        if (nxt := next(steps, None)) is not None:
+            yield {0: DeltaToolCall(name=nxt[0], json_args=json.dumps(nxt[1]))}
+        else:
+            yield "done"
+
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path), fe, model=FunctionModel(stream_function=stream))
+    await s.send("add a skill and use it")
+    results = [str(p.content) for m in s.history for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert "added: new" in results[2] and "changed: old" in results[2]
+    assert results[3].endswith("hi")  # loaded in the same run
+    assert "new" in {c["name"] for c in [e for e in fe.events if e.kind == "commands"][-1].data["commands"]}
+
+
+async def test_reload_command_rereads_skills_and_agents(tmp_path):
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path), fe, model=TestModel(call_tools=[]))
+    make_skill(tmp_path, "deploy", "---\ndescription: ship it\n---\nRun make deploy.")
+    (tmp_path / ".jimbo" / "agents").mkdir(parents=True)
+    (tmp_path / ".jimbo" / "agents" / "helper.md").write_text("---\ndescription: helps\n---\nHelp.")
+    await s.commands.dispatch(s, "/reload")
+    text = [e for e in fe.events if e.kind == "command_output"][-1].data["text"]
+    assert "added: deploy" in text and "Agents reloaded" in text
+    assert "deploy" in s.deps.skills and "helper" in s.deps.agents
+    await s.commands.dispatch(s, "/reload")
+    assert "No skill changed." in [e for e in fe.events if e.kind == "command_output"][-1].data["text"]

@@ -13,6 +13,8 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 
+from .attachments import content_text
+
 SUMMARY_INSTRUCTIONS = """\
 You compact the transcript of a coding-agent session so work can continue from your summary alone.
 Write a dense summary with these sections: Goal (what the user wants), Decisions and findings,
@@ -65,7 +67,7 @@ def render_transcript(messages: list[ModelMessage], return_limit: int = RETURN_L
             elif isinstance(p, ToolCallPart):
                 lines.append(f"TOOL CALL {p.tool_name}({p.args_as_json_str()[:300]})")
             elif isinstance(p, (ToolReturnPart, RetryPromptPart)):
-                text = str(p.content)
+                text = content_text(p.content)
                 if len(text) > return_limit:
                     text = f"{text[:return_limit]}… [{len(text) - return_limit} chars truncated]"
                 lines.append(f"TOOL RESULT: {text}")

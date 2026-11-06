@@ -3,12 +3,16 @@
 Server -> client: {"type": "event", "event": Event}, {"type": "approval", "request": ApprovalRequest},
                   {"type": "approval_closed", "id": str}, {"type": "files", "prefix": str, "files": [str]},
                   {"type": "secret", "id": str, "message": str}, {"type": "secret_closed", "id": str},
+                  {"type": "questions", "id": str, "questions": [Question]}, {"type": "questions_closed", "id": str},
                   {"type": "models", "provider": str, "models"?: [str], "error"?: str}
 Client -> server: {"type": "send", "text": str, "images"?: [{"media_type": str, "data": base64}]},
                   {"type": "approve", "id": str, "decision": "yes|no|always", "note"?: str  (why, on "no")},
                   {"type": "cancel"}, {"type": "complete", "prefix": str}  (workspace files for @path),
                   {"type": "approval_mode", "mode": "default|auto|yolo"}  (allowed mid-run and during a prompt),
                   {"type": "secret_answer", "id": str, "value": str | null}  (null: cancelled),
+                  {"type": "answers", "id": str, "answers": [str | [str] | null], "feedback"?: str}  (a list
+                      for a question with `multiple`; feedback: the user
+                      stopped answering to say this; a "send" while questions are open is feedback too),
                   {"type": "config_get"}  (answered with a `config` event),
                   {"type": "config_set", "op": str, ...}  (see ConfigControl.apply; refused during a run):
                       op "main": value, save?; "alias_set": name, spec; "alias_rm": name;
@@ -35,6 +39,7 @@ from pydantic_ai.messages import BinaryContent
 from ..core.approval import ApprovalDecision, ApprovalRequest
 from ..core.attachments import MAX_IMAGE_BYTES, MAX_IMAGES, UserMessage, check_image
 from ..core.events import Event
+from ..core.questions import Answers, Question, check_answer
 from ..core.trace import trace_page
 from ..tools.search import list_files
 
@@ -63,6 +68,7 @@ class WebFrontend:
         self._list_models: Callable[[str], Awaitable[list[str] | str]] | None = None
         self._trace_log: Callable[[], Path | None] | None = None
         self._secrets: dict[str, tuple[str, asyncio.Future[str | None]]] = {}
+        self._questions: dict[str, tuple[list[Question], asyncio.Future[Answers]]] = {}
         self._tasks: set[asyncio.Task] = set()
 
     def bind_cancel(self, cancel: Callable[[], object]) -> None:
@@ -116,6 +122,29 @@ class WebFrontend:
         finally:
             self._secrets.pop(sid, None)
             await self._broadcast({"type": "secret_closed", "id": sid})
+
+    async def ask_questions(self, questions: list[Question]) -> Answers:
+        """All the questions in one dialog, with a box to stop and say something else instead."""
+        fut: asyncio.Future[Answers] = asyncio.get_running_loop().create_future()
+        qid = secrets.token_hex(8)
+        self._questions[qid] = (questions, fut)
+        await self._broadcast(self._questions_msg(qid, questions))
+        try:
+            return await fut
+        finally:
+            self._questions.pop(qid, None)
+            await self._broadcast({"type": "questions_closed", "id": qid})
+
+    @staticmethod
+    def _questions_msg(qid: str, questions: list[Question]) -> dict:
+        return {"type": "questions", "id": qid, "questions": [q.model_dump() for q in questions]}
+
+    def _answer_questions(self, qid: str, answers, feedback) -> None:
+        questions, fut = self._questions[qid]
+        answers = answers if isinstance(answers, list) else []
+        got = [check_answer(q, a) for q, a in zip(questions, answers + [None] * len(questions))]
+        if not fut.done():
+            fut.set_result(Answers(answers=got, feedback=feedback.strip() or None if isinstance(feedback, str) else None))
 
     # ---- lifecycle ----
     def submit(self, text: str) -> None:
@@ -191,6 +220,8 @@ class WebFrontend:
             await ws.send_json({"type": "approval", "request": req.model_dump()})
         for sid, (message, _) in self._secrets.items():
             await ws.send_json({"type": "secret", "id": sid, "message": message})
+        for qid, (questions, _) in self._questions.items():
+            await ws.send_json(self._questions_msg(qid, questions))
         self._clients.add(ws)
         try:
             async for m in ws:
@@ -206,7 +237,10 @@ class WebFrontend:
             kind = msg["type"]
         except (ValueError, KeyError, TypeError):
             return
-        if kind == "send" and isinstance(msg.get("text"), str):
+        if kind == "send" and isinstance(msg.get("text"), str) and msg["text"].strip() and self._questions:
+            for qid in list(self._questions):  # typed instead of answering: it stops the questions
+                self._answer_questions(qid, [], msg["text"])
+        elif kind == "send" and isinstance(msg.get("text"), str):
             images = self._decode_images(msg.get("images"))
             if msg["text"].strip() or images:
                 self._inputs.put_nowait(UserMessage(msg["text"], images) if images else msg["text"])
@@ -226,6 +260,8 @@ class WebFrontend:
             fut = self._secrets[msg["id"]][1]
             if not fut.done():
                 fut.set_result(msg["value"] if isinstance(msg.get("value"), str) else None)
+        elif kind == "answers" and msg.get("id") in self._questions:
+            self._answer_questions(msg["id"], msg.get("answers"), msg.get("feedback"))
         elif kind == "approve" and msg.get("id") in self._pending:
             _, fut = self._pending[msg["id"]]
             d, note = msg.get("decision"), msg.get("note")

@@ -17,6 +17,8 @@ COMMAND_RE = re.compile(rf"/({NAME_RE.pattern})(?:\s+(.*))?", re.S)
 AGENT_RE = re.compile(rf"@({NAME_RE.pattern})(?:\s+(.*))?", re.S)
 
 Handler = Callable[["AgentSession", str], Awaitable[str | None]]
+# A command that can be typed while the agent works: returns the text to steer the run with.
+SteerHandler = Callable[["AgentSession", str], str]
 
 
 class CommandError(Exception):
@@ -33,19 +35,34 @@ class Command:
     help: str
     handler: Handler
     midrun: bool = False  # may run while the agent is working, typed at the steering prompt
+    steer: SteerHandler | None = None  # typed while the agent works, it becomes a steer (skills)
 
 
 class CommandRegistry:
     def __init__(self) -> None:
         self._commands: dict[str, Command] = {}
 
-    def add(self, name: str, help: str, handler: Handler, *, midrun: bool = False) -> None:
-        self._commands[name] = Command(name, help, handler, midrun)
+    def add(self, name: str, help: str, handler: Handler, *, midrun: bool = False,
+            steer: SteerHandler | None = None) -> None:
+        self._commands[name] = Command(name, help, handler, midrun, steer)
+
+    def remove(self, name: str) -> None:
+        self._commands.pop(name, None)
+
+    def names(self) -> set[str]:
+        return set(self._commands)
 
     def runs_midrun(self, text: str) -> bool:
         """`text` is a command that may run while the agent is working."""
         m = COMMAND_RE.fullmatch(text.strip())
         return bool(m and (cmd := self._commands.get(m.group(1))) and cmd.midrun)
+
+    def steer_text(self, session: "AgentSession", text: str) -> str | None:
+        """What to steer the run with if `text` is a command that becomes a steer mid-run, else None."""
+        m = COMMAND_RE.fullmatch(text.strip())
+        if m and (cmd := self._commands.get(m.group(1))) and cmd.steer:
+            return cmd.steer(session, (m.group(2) or "").strip())
+        return None
 
     def midrun_names(self) -> list[str]:
         return sorted(c.name for c in self._commands.values() if c.midrun)

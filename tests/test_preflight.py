@@ -91,3 +91,11 @@ async def test_hosted_context_and_unlisted_model(tmp_path):
 async def test_inconclusive_answers_let_jimbo_start(tmp_path, handler):
     facts = await hosted(tmp_path, handler)
     assert facts.problem is None and not facts.notes
+
+
+async def test_listed_input_types_say_whether_a_model_reads_images(tmp_path):
+    listing = replying(data=[{"id": "m", "architecture": {"input_modalities": ["text", "image"]}},
+                             {"id": "t", "architecture": {"input_modalities": ["text"]}}, {"id": "u"}])
+    assert (await hosted(tmp_path, listing)).vision is True
+    assert (await hosted(tmp_path, listing, "work:t")).vision is False
+    assert (await hosted(tmp_path, listing, "work:u")).vision is None  # not listed: no change

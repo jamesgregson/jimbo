@@ -340,11 +340,26 @@ doesn't allow nesting.
   `--auto` or `--yolo`. If you don't answer `y`, the mode stays as it was, or the session starts in the default
   mode. `plain`, `json` and one-shot runs don't ask.
 - **Steering (`tui`, `web`):** type while the agent works and your message reaches the model at its next
-  step. Slash commands are refused mid-run, except `/approve`, which changes the approval mode for the calls
+  step. A skill (`/name [args]`) steers the same way: its instructions reach the model at its next step. Other
+  slash commands are refused mid-run, except `/approve`, which changes the approval mode for the calls
   that follow. A call already waiting for your answer keeps the mode it started with.
+- **Questions (`tui`, `plain`, `web`):** the model can ask you yes/no and multiple choice questions, several at a
+  time. Some let you pick more than one option. In `tui` and `plain` they come one at a time: answer with the
+  option's number or text, `y`/`n`, or for several picks numbers like `1,3` or `none`. In `web`
+  they appear together in a dialog. To change direction, type something that isn't an answer (in `web`, use the box
+  under the questions). That stops the questions, and the model gets your answers so far and what you typed, then
+  asks new questions that take it into account. `json`, agents and skills marked `interactive: false` can't ask
+  questions.
 - **`tui`:** Enter submits, Shift+Enter or Alt+Enter inserts a newline, and Ctrl+D quits. Pastes over 10 lines
   collapse to `[pasted #1: 240 lines]` and expand on submit. `@path` completes workspace files and inlines
-  them for the model. Ctrl+V attaches a clipboard image (needs `pngpaste` or `osascript`).
+  them for the model. To attach the clipboard image, type `/paste [question]`, or
+  press Ctrl+V; Cmd+V works too in terminals that send an empty paste for an image. Copy the image itself, not
+  the file. This reads the clipboard with `pngpaste` (`brew install pngpaste`) or `osascript`, so macOS only.
+- **Images (all UIs):** `@shot.png` attaches the image instead of inlining it, as do `.jpg`, `.jpeg`, `.gif` and
+  `.webp`, and the message tells the model the image is attached. `read_file` on an image returns the image too,
+  so the model can open one itself. Images are limited to 5 MB each and 4 per message, counting pasted ones, and
+  are dropped with a warning when the model can't read images: `vision = false`, or a model that Ollama or
+  OpenRouter lists as text-only.
 - **`json`:** for scripts. Every event is a line of JSON on stdout, and calls that need a prompt are denied.
 - **`web`:** serves on port 8765, or the next free port if that's taken, then opens the page and prints its
   URL in the terminal, so you can get back to it if you close the tab. The URL carries a token. It accepts
@@ -365,7 +380,9 @@ doesn't allow nesting.
 | `/approve [auto\|yolo\|default]` | show or set the approval mode; works while the agent is running |
 | `/plan [on\|off]` | read-only mode: the agent presents a plan for you to approve |
 | `/todos` | show the agent's task list |
+| `/paste [question]` | attach the clipboard image (`tui`), with an optional question |
 | `/skills` | list available skills |
+| `/reload` | read skill and agent files again now; they also reload before each message |
 | `/agents [new <name> [--user]]` | list agents, or create one |
 | `/bundled` | list the agents, skills and commands shipped with jimbo, with their paths |
 | `/resume [id]` | list this project's saved sessions, or load one by id |
@@ -405,9 +422,22 @@ Built-in commands can't be overridden. Names start with a letter and contain onl
 **Instructions:** `~/.jimbo/AGENTS.md` and the workspace's `AGENTS.md` or `JIMBO.md` are added to the model's
 instructions on every request.
 
+**Memory:** tell jimbo to remember something ("remember that tests need `make check`",
+"jot that down") and it saves one line with the `remember` tool, asking first as for a file write. Your own
+preferences go to `~/.jimbo/memory.md`, for every project. Facts about the project go to `.jimbo/memory.md`. Both
+files are read at the start of each session, after `AGENTS.md`, and a new note applies straight away. They are
+plain markdown lists: edit or delete lines yourself. `/undo` removes the latest note.
+
 **Skills:** a skill is a folder containing a `SKILL.md` with `name` and `description` frontmatter. Jimbo looks
 in `.jimbo/skills`, `.claude/skills` and `.agents/skills`, under both your home directory and the workspace.
-The model sees each name and description, and loads the body when it needs it.
+The model sees each name and description, and loads the body when it needs it. New, changed and deleted
+skills apply from your next message. When jimbo writes or edits a skill itself, including its own bundled
+skills while you work on jimbo, it calls `reload_skills` to use the change in the same run. To reload
+yourself, type `/reload`, or ask jimbo to reload skills.
+
+Add `interactive: false` to a skill's frontmatter for a skill that must run without stopping for answers. For the
+rest of that turn the model can't ask you questions, and a skill it loads is told to decide instead of asking.
+Approval prompts still appear. Agents never ask questions, and skills they load follow the same rule.
 
 ## Bundled files
 
@@ -416,10 +446,43 @@ Jimbo ships these in the package. They work in every project, with no setup:
 | Kind | Name | What it does |
 |------|------|--------------|
 | Agent | `reviewer` | reviews a diff and reports bugs. It doesn't edit files |
+| Agent | `charter` | reads the repo and writes `specs/charter.md`: what the project is and how mature it is |
+| Agent | `critic` | finds requirements the project doesn't need yet. It doesn't edit files |
 | Command | `/review [change]` | runs `reviewer` on uncommitted changes, or on the change you name |
 | Command | `/init` | writes or updates `AGENTS.md`, which applies from the next session |
 | Skill | `debug` | reproduce a problem, find the cause, fix it, add a test |
 | Skill | `write-tests` | write tests in the style the project already uses |
+| Skill | `dont-overthink-it` | run code instead of reasoning in circles; for vague tasks, write code, run it, stop at a time box and report |
+| Skill | `the-reason-you-suck` | the short list of `you-donkey`'s critiques, checked before jimbo says a task is done |
+| Skill | `you-donkey` | when you're fed up with sloppy work: jimbo lists its mistakes, fixes them and shows they work |
+| Skill | `eye-on-the-prize` | do only what was asked; other problems are listed at the end, not fixed |
+| Skill | `jot-that-down` | when you ask jimbo to remember something, saves it to user or project memory. See [Instructions and skills](#instructions-and-skills) |
+| Skill | `sir-this-is-a-wendys` | pulls jimbo back from a tangent that overcomplicates a simple ask |
+| Skill | `did-i-stutter` | does a clear instruction as given, without asking again or swapping in its own version |
+| Skill | `ffs` | checks for obvious mistakes before acting: slow tests and scripts, poor complexity, assumptions the ask does not support |
+| Skill | `straighten-up` | before a task is done: checks the change does what you meant (no gaming tests or hiding errors), then tidies up |
+| Skill | `grill-me` | asks you about a plan one question at a time, with a suggested answer, until every decision is settled |
+| Skill | `spec` | build a feature in steps. See [Spec workflow](#spec-workflow) |
+
+### Spec workflow
+
+`/spec <feature>` plans a feature with you, then builds it one milestone at a time. Each step writes a file under
+`specs/` in your project, so you can stop and run `/spec <feature>` again later to continue.
+
+1. **Charter**: the `charter` agent writes `specs/charter.md`, which says what the repo is and how mature it is:
+   prototype, proof of concept, early product or production. Jimbo asks you to confirm the level.
+2. **Questions**: jimbo asks about the design in rounds, from the goal down to details. The first option of each
+   question is its suggestion. If the questions go the wrong way, type what you want instead of answering, and jimbo
+   asks new ones.
+3. **Requirements**: jimbo writes `specs/<feature>/requirements.md` from your answers.
+4. **Critic**: the `critic` agent finds requirements that are more than the project needs at its maturity level.
+   Jimbo cuts or defers them, shows you what changed, and waits for you to approve.
+5. **Spec**: jimbo writes `specs/<feature>/spec.md`, a list of milestones, and waits for you to approve it.
+6. **Build**: for each milestone, jimbo implements it, runs the tests and runs `reviewer`. It repeats this up to 3
+   times, until the tests pass and the review finds no bugs. Then it shows you the result and waits. Only you can
+   accept a milestone, and jimbo doesn't start the next one until you do.
+
+Jimbo doesn't commit unless you ask.
 
 **Replacing one:** create a file with the same name in any of the usual places. Your files always win, including
 skills in `~/.claude/skills` and `~/.agents/skills`. A skill and a command share the `/name` space, so your skill
@@ -476,7 +539,7 @@ You are a code reviewer. Report only real bugs, with file and line.
 |---|---|---|
 | `description` | Tells the main model when to use the agent | Only you can run it |
 | `model` | An alias or `main` | See below |
-| `tools` | Tools the agent can use | All tools except `run_agent` and `exit_plan` |
+| `tools` | Tools the agent can use | All tools except `run_agent`, `exit_plan` and `ask_user` |
 | `skills` | Skills loaded when the agent starts | None loaded |
 
 **Choosing a model:** jimbo uses the first of these that is set, then `main`:
@@ -535,7 +598,19 @@ estimate is not what the provider billed. The cost is recorded in these places:
 
 `/usage` shows the session's total so far.
 
+The `tui` toolbar, the `plain` stats line and the `web` stats bar also show the turn number and the cycle, as in
+`turn 3, cycle 7/50`. A turn starts with each message you send. A cycle is one model request: the model
+thinks, then calls tools or answers. The second number is `request_limit`, the most cycles a turn can use.
+`/usage` and the exit line include the number of turns.
+
+When the model reports thinking (reasoning) tokens, they are shown inside the output count, as in
+`3.2k out (1.1k thinking)`: in the `tui` toolbar, the `web` stats bar, `/usage` and the exit line. They are
+already part of the output tokens, so they aren't added again. Models that don't report them show no
+thinking count.
+
 `/undo` only covers `write_file` and `edit_file`, not shell commands, and only for the current run of jimbo.
 
 Context fill is measured against `context_window`, which defaults to `num_ctx`. When it passes
-`compact_threshold`, older history is summarized automatically, keeping the last `compact_keep` messages.
+`compact_threshold`, older history is summarized automatically, keeping the last `compact_keep` messages. To
+compact now, type `/compact [focus]`, or ask jimbo in words ("compact the conversation, keep the auth
+details") and it compacts before its next step.

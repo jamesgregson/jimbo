@@ -27,23 +27,27 @@ src/jimbo/
     skills.py          AGENTS.md loading and skill discovery
     agents.py          agent files, built-in agents, ForwardSink
     compaction.py      history summarization (/compact and auto-compaction)
-    attachments.py     @path mentions and pasted images
+    attachments.py     @path mentions (text inlined, images attached) and pasted images
     jsonl.py           JsonlSink: session log
     trace.py           the trace viewer page (trace_viewer.html) with a session's log embedded, for /trace
     models.py          ModelRouter: which model runs each task
     llm_tasks.py       run_task: background model calls (None on failure/timeout)
     assess.py          shell command summary and risk level for approval prompts
+    questions.py       ask_user's questions and answers; reading a typed reply
     stats.py           token/context accounting helpers
     store.py           SessionStore: history + todos saved per turn (<id>.messages.json) for --resume
     checkpoints.py     Checkpoints: files as each turn found them, for /diff and /undo
   tools/             what the model can call (all go through Deps.authorize)
-    fs.py paths.py     read_file, list_dir, write_file, edit_file; workspace path confinement
+    fs.py paths.py     read_file (images returned as images), list_dir, write_file, edit_file; workspace path confinement
     search.py          glob, grep
     shell.py           shell (with timeout, output capping, process-group kill)
     sandbox.py         macOS sandbox-exec wrapper for shell
-    todos.py skills.py todo_write, load_skill
+    todos.py skills.py todo_write, load_skill, reload_skills (main session only)
     agents.py          run_agent
+    ask.py             ask_user (only when the frontend can ask questions)
     plan.py            exit_plan (plan mode only)
+    compact.py         compact: the model asks for /compact when the user tells it to
+    memory.py          remember: saves a note to ~/.jimbo/memory.md or .jimbo/memory.md (main session only)
   providers/         model selection: "<provider>:<name>" -> Pydantic AI Model; startup checks (preflight.py)
   frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page), json
   bundled/           agents, skills and commands shipped with jimbo, laid out like .jimbo/
@@ -126,7 +130,9 @@ call, so call/return pairs are never split; old tool results are truncated in th
 summarizer sees. `/compact [focus]` runs it on demand. When the context fill passes `compact_threshold`
 (default 0.8 of the context window) it also runs automatically: before a turn in `send()`, and between
 model requests in a long tool loop through a `ProcessHistory` capability (which never drops the pending
-request). Failures are reported as `error` events and the run continues uncompacted.
+request). Failures are reported as `error` events and the run continues uncompacted. The `compact` tool lets the model
+compact when the user asks in words instead of typing `/compact`: it sets `Deps.compact_requested`, and the
+same `ProcessHistory` hook compacts before the next request, with the tool's `focus`.
 
 ### Input handling
 
@@ -140,7 +146,9 @@ first prompt.
 stdin) is polled for input during a run. The runner passes it to `session.steer()`, and the
 `midrun_history` processor in [agent.py](src/jimbo/agent.py) appends queued steers to the next model request
 as a `UserPromptPart` (emitting `user_message` with `steer=True`). Steers the run never delivered become the
-next turn; a cancelled or failed run discards them with a notice. Slash commands are refused mid-run.
+next turn; a cancelled or failed run discards them with a notice. Slash commands are refused mid-run, except
+those marked `midrun` (`/approve`) and those with a `steer` handler: a skill's command returns its prompt, which
+is queued as a steer, and applies the skill's frontmatter at once.
 Denying an approval can carry a reason (`ApprovalDecision.note`), which the model receives as
 `User denied this action: <note>`. In the TUI the approval and reason questions are answered through the
 same prompt that takes steers.
@@ -161,7 +169,7 @@ as usual.
 | `assistant_thinking_delta` | streamed reasoning, when the model returns it; not replayed on resume |
 | `tool_call` / `tool_result` | a tool invocation and its outcome |
 | `approval_requested` / `approval_resolved` | a human was asked / any policy decided |
-| `usage`, `context` | token counts; context-window fill |
+| `usage`, `context` | token counts, with `thinking_tokens` (reasoning, part of the output count; `thinking_tokens()` in core/stats.py); context-window fill. `context` also has `turns` (the session's turn count) and `limit` (`request_limit`), so `turn.requests` reads as cycles used |
 | `todos` | the agent's task list changed |
 | `compaction` | older history was replaced by a summary |
 | `instructions` | `text`: what the model is told besides the conversation; logged on the first request of a log and whenever it changes |
@@ -200,8 +208,19 @@ in a terminal and `plain` otherwise:
   carries a one-time token because the page can approve file writes, so keep it on localhost.
 
 Optional methods add more: `confirm(message)` (yes/no), `ask_secret(message)` (a line that isn't echoed or kept in
-history, for API keys), and `bind_cancel`, `bind_approval_mode`, `bind_config` and `bind_model_list`, which
+history, for API keys), `ask_questions(questions)` (see below), and `bind_cancel`, `bind_approval_mode`, `bind_config` and `bind_model_list`, which
 `run_frontend` calls with functions the frontend's own controls can use.
+
+**Questions.** The `ask_user` tool ([tools/ask.py](src/jimbo/tools/ask.py)) calls `Deps.ask_user`, which wiring
+sets to the frontend's `ask_questions`. `Deps.can_ask` hides the tool without that method (json), in agents, and for the rest of a turn in which a skill
+marked `interactive: false` was used (`use_skill` sets `Deps.no_questions`; `send()` clears it).
+A frontend returns `Answers`: one answer or `None` per question, and `feedback` if the user stopped to say
+something else. tui and plain ask one question at a time through `ask_by_line`
+([core/questions.py](src/jimbo/core/questions.py)): a line that isn't an answer ends the round as feedback. In tui
+the line comes through the main prompt, as approvals do. web shows one dialog with a feedback box, and a `send`
+while questions are open is feedback too. `format_answers` turns the result into text for the model, and with
+feedback tells it to respond and ask new questions rather than repeat the old ones. The questions and answers are
+in the `tool_call` and `tool_result` events, so there is no event of their own.
 
 To add one, implement the protocol and register a factory in `FRONTENDS`.
 
@@ -227,7 +246,7 @@ The default chain is:
 |--------|----------|
 | `plan` (`PlanMode`) | always first; in plan mode denies non-read-only calls and asks the user to approve `exit_plan` |
 | `rules` (`PatternRules`) | `approval_deny` first, then `approval_allow`; a match decides, otherwise `ask` |
-| `readonly` (`ReadOnlyAllow`) | allow calls flagged `read_only` (read, list, glob, grep, todos, load_skill, run_agent) |
+| `readonly` (`ReadOnlyAllow`) | allow calls flagged `read_only` (read, list, glob, grep, todos, load_skill, reload_skills, run_agent, ask_user) |
 | `remembered` (`RememberedDecisions`) | allow what the user chose "always" for: one exact shell command, or a whole other tool |
 | `ask` (`AskUser`) | terminal policy: ask the frontend; honors "remember for session" |
 
@@ -288,7 +307,11 @@ Approvals are about intent; separate mechanisms limit what a call can physically
 - **Skills**: folders containing `SKILL.md` (frontmatter `name`, `description`), discovered from
   `.jimbo`, `.claude` and `.agents` skill directories at user and workspace level (later wins). Only the
   name/description index goes in the prompt; the model calls `load_skill(name)` for the full body, and the
-  tool is hidden when no skills exist. Each skill is also a `/<name>` slash command.
+  tool is hidden when no skills exist. Each skill is also a `/<name>` slash command. Before each input,
+  `refresh_files` reloads skills if a `SKILL.md` changed, and registers the skill and bundled commands again, in
+  the same order, so a user's skill still replaces a bundled command. Agent files are reloaded the same way. The
+  `reload_skills` tool (when the model needs it or the user asks) and the `/reload` command run the same reload
+  with `force=True` and report which skills changed (`reload_and_describe`); `/reload` also reloads agents.
 - **Markdown commands**: `<dir>/<name>.md` files in `~/.jimbo/commands` and `<workspace>/.jimbo/commands`
   become `/<name>`, with `$ARGUMENTS` substitution. With `agent:` in the frontmatter they run in that agent.
 - **Agents**: `<dir>/<name>.md` files in `~/.jimbo/agents` and `<workspace>/.jimbo/agents`, plus the built-in

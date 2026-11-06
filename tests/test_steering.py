@@ -243,3 +243,65 @@ async def test_denial_note_reaches_the_model(tmp_path):
                       model=FunctionModel(answer, stream_function=stream))
     await s.send("find foo")
     assert results and "User denied this action: use rg instead" in results[0]
+
+
+async def test_quit_finishes_the_open_prompt_before_returning(tmp_path):
+    """/quit while the prompt stays up (tui): the read is cancelled and wound down before run_frontend returns, so
+    what jimbo prints on exit (the cost summary) isn't sent to a prompt that is going away."""
+    closed = []
+
+    class Fe(ScriptedFrontend):
+        supports_steering = True
+
+        async def next_user_input(self):
+            if self.inputs:
+                return self.inputs.pop(0)
+            try:
+                await asyncio.Event().wait()  # the prompt, waiting for the next line
+            finally:
+                closed.append(True)  # tui leaves patch_stdout here
+
+    fe = Fe(["/quit"])
+    s = build_session(settings(tmp_path), fe, model=model([]))
+    await asyncio.wait_for(run_frontend(s, fe), 1)
+    assert closed == [True]
+
+
+async def test_a_skill_typed_mid_run_steers_it(tmp_path):
+    seen, gate = [], asyncio.Event()
+    d = tmp_path / ".jimbo" / "skills" / "quiet"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\ndescription: q\ninteractive: false\n---\nWork alone.")
+
+    class Fe(ScriptedFrontend):
+        supports_steering = True
+
+        async def next_user_input(self):
+            if not self.inputs:
+                await gate.wait()
+                return None
+            if len(self.inputs) == 1:
+                await asyncio.sleep(0.05)  # typed while the run is in flight
+            return self.inputs.pop(0)
+
+        async def render(self, event):
+            await super().render(event)
+            if event.kind == "run_finished":
+                gate.set()
+
+    fe = Fe(["go", "/quiet focus on tests"])
+    s = build_session(settings(tmp_path), fe, model=model(seen))
+    real = s.deps.authorize
+    quiet_during_run = []
+
+    async def slow(*a, **k):
+        await asyncio.sleep(0.2)
+        quiet_during_run.append(s.deps.no_questions)
+        return await real(*a, **k)
+    s.deps.authorize = slow
+    await asyncio.wait_for(run_frontend(s, fe), 5)
+    assert seen[-1][0] == "go" and seen[-1][1].startswith("Use the skill 'quiet'")
+    assert seen[-1][1].endswith("Work alone.\n\nfocus on tests")
+    assert quiet_during_run == ["quiet"]  # the skill's frontmatter applies at once
+    assert len([e for e in fe.events if e.kind == "run_finished"]) == 1  # one turn: a steer, not a new run
+    assert not [e for e in fe.events if e.kind == "command_output" and not e.data["ok"]]

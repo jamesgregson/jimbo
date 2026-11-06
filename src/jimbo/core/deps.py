@@ -10,6 +10,7 @@ from .checkpoints import Checkpoints
 if TYPE_CHECKING:
     from .agents import AgentResult, AgentSpec
     from .models import ModelRouter
+    from .questions import Answers, Question
     from .skills import Skill
     from ..tools.sandbox import Sandbox
     from ..tools.todos import TodoItem
@@ -32,6 +33,8 @@ class Deps:
     todos: "list[TodoItem]" = field(default_factory=list)
     mode: Literal["normal", "plan"] = "normal"
     project_instructions: str = ""
+    vision: bool = True  # False: the model can't read images, so none are sent to it
+    user_dir: Path | None = None  # ~/.jimbo, set by wiring: where user memory lives
     skills: "dict[str, Skill]" = field(default_factory=dict)
     secret_files: list[str] = field(default_factory=list)  # file-name globs the model must not read
     checkpoints: Checkpoints = field(default_factory=Checkpoints)
@@ -45,12 +48,23 @@ class Deps:
     agents: "dict[str, AgentSpec]" = field(default_factory=dict)  # what this session can start; empty in an agent
     # Set by wiring, which can build agents: (spec, task, usage to add to, model, requests to leave unused).
     spawn_agent: "Callable[..., Awaitable[AgentResult]] | None" = None
+    # Set by wiring from the frontend's ask_questions: asks the user questions. None: nobody can answer.
+    ask_user: "Callable[[list[Question]], Awaitable[Answers]] | None" = None
+    compact_requested: str | None = None  # set by the compact tool: compact before the next request, with this focus
+    no_questions: str | None = None  # a skill marked `interactive: false` in use this turn: ask_user is hidden
     # Set by wiring: reloads agents if their files changed. Returns warnings, or None if nothing changed.
-    reload_agents: "Callable[[], list[str] | None] | None" = None
+    reload_agents: "Callable[..., list[str] | None] | None" = None  # force=True: reload even if unchanged
+    # Set by wiring: reloads skills and their /commands if any SKILL.md changed, or always with force=True.
+    reload_skills: "Callable[..., Awaitable[None]] | None" = None
 
     @property
     def can_load_skills(self) -> bool:
         return self.agent is None or self.agent.tools is None or "load_skill" in self.agent.tools
+
+    @property
+    def can_ask(self) -> bool:
+        """Whether the model may ask the user questions: a frontend can ask, and no agent or quiet skill runs."""
+        return self.ask_user is not None and self.agent is None and self.no_questions is None
 
     def read_roots(self) -> list[Path]:
         """Directories outside the workspace that read-only file tools may access: loaded skills' folders."""

@@ -98,7 +98,9 @@ async def _openai_compat(http: aiohttp.ClientSession, base: str, provider: str, 
     if found is None:
         # a warning only: gateways often serve models they don't list
         return ModelFacts(notes=[f"{provider} doesn't list model {name!r}"] if models else [])
-    return ModelFacts(context=found.get("context_length"), prices=_prices(found.get("pricing")))
+    modalities = (found.get("architecture") or {}).get("input_modalities")  # OpenRouter lists these
+    vision = "image" in modalities if isinstance(modalities, list) else None
+    return ModelFacts(context=found.get("context_length"), prices=_prices(found.get("pricing")), vision=vision)
 
 
 def _client(key: SecretStr | None, timeout: float) -> aiohttp.ClientSession:

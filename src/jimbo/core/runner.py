@@ -52,7 +52,7 @@ async def _handle(session: AgentSession, msg: str | UserMessage) -> bool:
     msg = UserMessage(msg) if isinstance(msg, str) else msg
     if not msg.text.strip() and not msg.images:
         return True
-    await session.refresh_agents()
+    await session.refresh_files()
     try:
         if msg.images or not await session.commands.dispatch(session, msg.text):
             await session.send(build_content(msg.text, msg.images))
@@ -140,11 +140,12 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
                     elif not await _handle(session, msg):
                         return
         finally:
-            for t in (run, read, *side):
-                if t is not None and not t.done():
-                    t.cancel()
-            if run is not None:
-                await asyncio.gather(run, return_exceptions=True)
+            pending = [t for t in (run, read, *side) if t is not None and not t.done()]
+            for t in pending:
+                t.cancel()
+            # Wait for them to wind down: tui's open prompt redirects stdout and stderr until it does, and anything
+            # printed on exit (the cost summary) would go to a prompt that is going away.
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def set_approval_mode(session: AgentSession, mode: str) -> None:
@@ -184,11 +185,14 @@ async def _steer_or_refuse(session: AgentSession, msg: str | UserMessage) -> Cor
         return None
     if not msg.images and session.commands.runs_midrun(msg.text):
         return session.commands.dispatch(session, msg.text)
+    if not msg.images and (text := session.commands.steer_text(session, msg.text)) is not None:  # a skill
+        session.steer(text)
+        return None
     if (msg.text.lstrip().startswith("/") or agent_call(session, msg.text)) and not msg.images:
         allowed = ", ".join(f"/{n}" for n in session.commands.midrun_names())
         await session.emit("command_output", command="steer", ok=False,  # they change session state mid-run
                            text="commands can't run while the agent is working"
-                                + (f" (except {allowed})" if allowed else "") + "; Esc stops it")
+                                + f" (except {allowed + ' and ' if allowed else ''}skills)" + "; Esc stops it")
     else:
         session.steer(build_content(msg.text, msg.images))
     return None

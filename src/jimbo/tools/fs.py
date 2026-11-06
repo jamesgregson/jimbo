@@ -1,7 +1,9 @@
 import difflib
 
 from pydantic_ai import ModelRetry, RunContext
+from pydantic_ai.messages import BinaryContent
 
+from ..core.attachments import IMAGE_SUFFIXES, check_image
 from ..core.deps import Deps, ToolDenied
 from .paths import PathEscape, resolve_in_workspace, resolve_readable
 
@@ -9,8 +11,10 @@ MAX_READ_BYTES = 64_000
 MAX_LIST_ENTRIES = 500
 
 
-async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: int = 500) -> str:
-    """Read a text file in the workspace (or in a skill's directory, by absolute path). Returns numbered lines starting at line `offset` (1-based)."""
+async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: int = 500) -> str | list:
+    """Read a text file in the workspace (or in a skill's directory, by absolute path). Returns numbered lines starting at line `offset` (1-based).
+
+    An image (.png, .jpg, .jpeg, .gif, .webp) is returned as the image itself, so you can look at it."""
     try:
         await ctx.deps.authorize(ctx.tool_call_id, "read_file", {"path": path}, f"read {path}", read_only=True)
         p = resolve_readable(ctx.deps.workspace, path, ctx.deps.read_roots())
@@ -18,6 +22,13 @@ async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: in
         raise ModelRetry(str(e)) from e
     if not p.is_file():
         raise ModelRetry(f"{path!r} is not a file")
+    if media_type := IMAGE_SUFFIXES.get(p.suffix.lower()):
+        if not ctx.deps.vision:
+            raise ModelRetry(f"{path!r} is an image, and this model can't read images (vision = false)")
+        data = p.read_bytes()
+        if problem := check_image(media_type, data):
+            raise ModelRetry(f"{path!r}: {problem}")
+        return [f"The image {path}:", BinaryContent(data, media_type=media_type)]
     try:
         text = p.read_bytes()[:MAX_READ_BYTES * 4].decode("utf-8")
     except UnicodeDecodeError:

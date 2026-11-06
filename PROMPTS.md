@@ -39,10 +39,12 @@ blank lines:
 
 - `~/.jimbo/AGENTS.md`, `~/.jimbo/JIMBO.md`
 - `<workspace>/AGENTS.md`, `<workspace>/JIMBO.md`
+- `~/.jimbo/memory.md`, `<workspace>/.jimbo/memory.md`: notes saved with the `remember` tool
 
 Each non-empty file becomes a section headed `# user instructions (<file>)` or
-`# project instructions (<file>)`. Each file is cut at 20,000 characters, with `[truncated]` added. The
-text is loaded once, when the session is wired up.
+`# project instructions (<file>)`, or for the memory files `# user memory (...)` and `# project memory (...)`.
+Each file is cut at 20,000 characters, with `[truncated]` added. The text is loaded when the session is wired
+up, and again after `remember` saves a note or `/undo` restores a memory file.
 
 ### Skill index
 
@@ -51,7 +53,8 @@ bundled skills, `~/.claude/skills`, `~/.agents/skills`, `~/.jimbo/skills`, `<wor
 `<workspace>/.agents/skills`, `<workspace>/.jimbo/skills`. Only the name and the frontmatter `description`
 go into the instructions. The body reaches the model in one of three ways:
 
-- The model calls `load_skill(name)`. The tool result is `Skill directory: <path>` followed by the body.
+- The model calls `load_skill(name)`. The tool result is `Skill directory: <path>` followed by the body. If
+  another skill marked `interactive: false` is in use this turn, a note says to decide instead of asking the user.
 - The user types `/<skill> [args]`. The user message is
   `Use the skill '<name>'. Its instructions:\n\n<body>`, followed by the args.
 - An agent spec lists the skill under `skills:`. The body goes into that agent's instructions.
@@ -133,8 +136,8 @@ agent's report, so the user can follow up on it.
 `build_agent(settings, model, spec)`. Its instructions are:
 
 1. `SYSTEM_PROMPT`, the same as the main agent.
-2. `AGENT_PROMPT`: `# Agent`, the agent's name, a note that nobody can answer questions and that the
-   final message is the only thing returned, then the agent file's body (or the built-in body for
+2. `AGENT_PROMPT`: `# Agent`, the agent's name, a note that nobody can answer questions (so where its instructions or a skill
+   say to ask the user, it decides and reports what it decided), that the final message is the only thing returned, then the agent file's body (or the built-in body for
    `explore` and `general`).
 3. `project_context`, as above, with the agent's preloaded skills and no agent index.
 

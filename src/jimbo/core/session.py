@@ -28,10 +28,11 @@ from pydantic_ai.usage import RunUsage
 
 from .agents import AgentResult
 from .approval import ApprovalModes
-from .attachments import build_content, expand_mentions, image_meta
+from .attachments import MAX_IMAGES, build_content, content_text, expand_mentions, image_meta, mentioned_images
 from .commands import CommandRegistry
 from .compaction import compact as compact_history, render_transcript
 from .cost import Spend, estimate_cost
+from .stats import thinking_tokens
 from .deps import Deps
 from .events import Event, EventKind, EventSink
 from .store import REPLAY_KINDS, SessionStore
@@ -52,7 +53,7 @@ class AgentSession:
         self.history: list[ModelMessage] = []
         self.commands = CommandRegistry()
         self.context_window = context_window
-        self.vision = vision  # False: images are dropped with a warning instead of sent to the model
+        self.deps.vision = vision  # False: images are dropped with a warning instead of sent to the model
         self.compact_threshold = compact_threshold  # 0 disables auto-compaction
         self.compact_keep = compact_keep
         self.store: SessionStore | None = None  # set to persist history after each turn (enables /resume)
@@ -73,6 +74,7 @@ class AgentSession:
         self.prices: dict[str, float] | None = None  # the main model's listed prices, when the provider gives them
         self.spend = Spend()  # this session id, across resumes; saved with its history
         self.run_spend = Spend()  # this jimbo process, across /clear and /resume
+        self.request_limit = request_limit
         self._limits = UsageLimits(request_limit=request_limit)
         self.deps.request_limit = request_limit  # so the prompt can warn the model before it runs out
         self._seq = 0
@@ -91,9 +93,12 @@ class AgentSession:
     async def emit_context(self) -> None:
         """Live stats: working-context size, plus token usage for the current prompt and the session."""
         def u(x: RunUsage) -> dict:
-            return {"requests": x.requests, "input_tokens": x.input_tokens, "output_tokens": x.output_tokens}
+            return {"requests": x.requests, "input_tokens": x.input_tokens, "output_tokens": x.output_tokens,
+                    "thinking_tokens": thinking_tokens(x)}
+        # `turns` numbers the session's turns; turn["requests"] counts this turn's cycles, up to `limit`
         await self.emit("context", tokens=self.context_tokens, window=self.context_window,
-                        turn=u(self.turn_usage), session=u(self.total_usage))
+                        turn=u(self.turn_usage), session=u(self.total_usage), turns=self.spend.turns,
+                        limit=self.request_limit)
 
     async def emit_status(self, *, initial: bool = False) -> None:
         """Tell the UI what state it's in. After the initial call, only sent when something changed."""
@@ -209,15 +214,30 @@ class AgentSession:
         text = "\n".join(p for p in parts if isinstance(p, str))
         images = [p for p in parts if isinstance(p, BinaryContent)]
         sent, files = expand_mentions(text, self.deps.workspace)
-        warning = None
+        found, found_meta, warnings = mentioned_images(text, self.deps.workspace)
+        meta = image_meta(images) + found_meta
+        images += found
+        if len(images) > MAX_IMAGES:
+            warnings.append(f"at most {MAX_IMAGES} images per message; dropped {len(images) - MAX_IMAGES}")
+            images, meta = images[:MAX_IMAGES], meta[:MAX_IMAGES]
         if images and not self.vision:
-            warning = f"the model is not marked vision-capable (vision = false); dropped {len(images)} image(s)"
-            images = []
-        attachments = [{"kind": "file", **f} for f in files] + image_meta(images)
+            warnings.append(f"the model is not marked vision-capable (vision = false); dropped {len(images)} image(s)")
+            images, meta = [], []
+        if notes := [f"[The image {m['path']} is attached to this message.]" for m in meta if "path" in m]:
+            sent += "\n\n" + "\n".join(notes)  # otherwise the model may go looking for the file with read_file
+        attachments = [{"kind": "file", **f} for f in files] + meta
         await self.emit("user_message", text=text, attachments=attachments, **({"steer": True} if steer else {}))
-        if warning:
+        for warning in warnings:
             await self.emit("command_output", command="attach", ok=False, text=warning)
         return text, build_content(sent, images)
+
+    @property
+    def vision(self) -> bool:
+        return self.deps.vision
+
+    @vision.setter
+    def vision(self, on: bool) -> None:
+        self.deps.vision = on
 
     def _needs_compaction(self) -> bool:
         return bool(self.compact_threshold and self.context_window
@@ -241,10 +261,11 @@ class AgentSession:
         return new
 
     async def _compact_midrun(self, messages: list[ModelMessage]) -> list[ModelMessage]:
-        if not self._needs_compaction():
+        focus, self.deps.compact_requested = self.deps.compact_requested, None  # the model called compact
+        if focus is None and not self._needs_compaction():
             return messages
         try:
-            return await self._apply_compaction(messages, allow_empty=False) or messages
+            return await self._apply_compaction(messages, focus=focus or "", allow_empty=False) or messages
         except Exception as e:  # compaction is best effort; the run continues with the full history
             await self.emit("error", type=type(e).__name__, message=f"auto-compaction failed: {e}")
             return messages
@@ -292,6 +313,7 @@ class AgentSession:
             self._task = None
             if self.deps.models:
                 self.deps.models.pop_scope()  # skill model choices last for one turn
+            self.deps.no_questions = None  # so does a skill's `interactive: false`
             self.persist()
 
     async def delegate(self, name: str, task: str, *, model: str | None = None) -> None:
@@ -305,6 +327,7 @@ class AgentSession:
             self.persist()
 
     async def _delegate(self, name: str, task: str, model: str | None) -> None:
+        self._count_turn()
         text = f"@{name} {task}"
         await self.emit("user_message", text=text, attachments=[])
         self.deps.checkpoints.begin()
@@ -334,19 +357,27 @@ class AgentSession:
         self.spend.add(u, cost)
         self.run_spend.add(u, cost)
         await self.emit("usage", requests=u.requests, input_tokens=u.input_tokens, output_tokens=u.output_tokens,
-                        cost=cost)
+                        thinking_tokens=thinking_tokens(u), cost=cost)
 
     async def close(self) -> None:
         """Log what the session cost, as jimbo exits."""
         await self.emit("session_end", session=self.spend.to_dict(), run=self.run_spend.to_dict())
 
-    async def refresh_agents(self) -> None:
-        """Pick up changes to agent files, so a new or edited agent works from the next input."""
+    async def refresh_files(self) -> None:
+        """Pick up changes to agent and skill files, so a new or edited one works from the next input."""
+        if self.deps.reload_skills:  # first: agents' `skills:` are checked against them
+            await self.deps.reload_skills()
         if self.deps.reload_agents:
             for warning in self.deps.reload_agents() or []:
                 await self.emit("command_output", command="agents", ok=True, text=warning)
 
+    def _count_turn(self) -> None:
+        self.spend.turns += 1
+        self.run_spend.turns += 1
+
     async def _run(self, content: str | list[UserContent]) -> str | None:
+        if not self.nested:  # an agent's run is part of its parent's turn
+            self._count_turn()
         _, prompt = await self._compose(content)
         run = None
         if not self.nested:
@@ -390,7 +421,7 @@ class AgentSession:
                                     await self.emit("tool_result", id=ev.tool_call_id, tool=ev.part.tool_name,
                                                     ok=isinstance(ev.part, ToolReturnPart)
                                                     and ev.part.outcome == "success",
-                                                    content=str(ev.part.content))
+                                                    content=content_text(ev.part.content))
                                     if ev.part.tool_name == "shell":
                                         self.last_output = str(ev.part.content)
                                     await self._emit_todos()

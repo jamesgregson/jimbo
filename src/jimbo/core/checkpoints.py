@@ -30,7 +30,7 @@ class Checkpoints:
         for path, before in (self._latest() or {}).items():
             old = (before or b"").decode("utf-8", "replace").splitlines()
             new = path.read_bytes().decode("utf-8", "replace").splitlines() if path.is_file() else []
-            rel = path.relative_to(workspace).as_posix()
+            rel = path.relative_to(workspace).as_posix() if path.is_relative_to(workspace) else path.as_posix()  # ~/.jimbo/memory.md
             lines += difflib.unified_diff(old, new, f"a/{rel}", f"b/{rel}", lineterm="")
         if len(lines) > MAX_DIFF_LINES:
             lines[MAX_DIFF_LINES:] = [f"[{len(lines) - MAX_DIFF_LINES} more lines]"]

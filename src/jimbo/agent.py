@@ -12,7 +12,10 @@ from .core.agents import AgentSpec, format_agent_index
 from .core.deps import Deps
 from .core.skills import format_skill_index
 from .tools.agents import AGENT_TOOLS
-from .tools.skills import SKILL_TOOLS
+from .tools.ask import ASK_TOOLS
+from .tools.compact import COMPACT_TOOLS
+from .tools.memory import MEMORY_TOOLS
+from .tools.skills import RELOAD_TOOLS, SKILL_TOOLS
 from .tools.fs import FS_TOOLS
 from .tools.search import SEARCH_TOOLS
 from .tools.plan import PLAN_TOOLS
@@ -42,7 +45,8 @@ If the plan is rejected, revise it using the feedback and call exit_plan again."
 
 AGENT_PROMPT = """\
 # Agent
-You are the agent "{name}", doing one task. Nobody can answer questions while you work.
+You are the agent "{name}", doing one task. Nobody can answer questions while you work: where your
+instructions or a skill say to ask the user, decide yourself and say what you decided in your report.
 Your final message is your report, and it is the only thing returned, so put everything the reader needs in it.
 
 {body}"""
@@ -170,7 +174,7 @@ def build_agent(settings: Settings, model: Model, spec: AgentSpec | None = None)
     """The main agent, or with `spec` an agent run: its own prompt, and only the tools it lists."""
     system = SYSTEM_PROMPT.format(os=platform.system())
     if spec is None:
-        instructions, tools = [system], [*ALL_TOOLS, *AGENT_TOOLS, *PLAN_TOOLS]
+        instructions, tools = [system], [*ALL_TOOLS, *AGENT_TOOLS, *PLAN_TOOLS, *ASK_TOOLS, *COMPACT_TOOLS, *RELOAD_TOOLS, *MEMORY_TOOLS]
     else:
         instructions = [system, AGENT_PROMPT.format(name=spec.name, body=spec.body)]
         tools = [t for t in ALL_TOOLS if spec.tools is None or _tool_name(t) in spec.tools]

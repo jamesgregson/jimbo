@@ -575,7 +575,7 @@ async def test_agents_new_creates_a_working_agent(tmp_path):
     assert (tmp_path / ".jimbo" / "agents" / "helper.md").exists()
     await s.commands.dispatch(s, "/agents new mine --user")
     assert (tmp_path / "user" / "agents" / "mine.md").exists()
-    await s.refresh_agents()
+    await s.refresh_files()
     agent = s.deps.agents["helper"]
     assert agent.description == "" and agent.tools is None  # only you can run it, until you describe it
 
@@ -603,15 +603,15 @@ async def test_agent_files_apply_from_the_next_input(tmp_path):
     await _handle(s, "@worker go")
     assert kinds(fe, "assistant_text")[-1]["text"] == "from agent"
     (tmp_path / ".jimbo" / "agents" / "worker.md").unlink()
-    await s.refresh_agents()
+    await s.refresh_files()
     assert "worker" not in s.deps.agents
 
 
 async def test_reload_reports_problems_once(tmp_path):
     s, fe = make(tmp_path)
     write_agent(tmp_path, "bad", "---\ntools: [nope]\n---\nx")
-    await s.refresh_agents()
-    await s.refresh_agents()
+    await s.refresh_files()
+    await s.refresh_files()
     assert sum("skipped agent" in c["text"] for c in kinds(fe, "command_output")) == 1
 
 

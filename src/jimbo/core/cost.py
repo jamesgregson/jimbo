@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 
 from pydantic_ai.usage import RunUsage
 
-from .stats import _n
+from .stats import _n, thinking_tokens
 
 
 def estimate_cost(usage: RunUsage | None, prices: dict[str, float] | None) -> float | None:
@@ -29,10 +29,12 @@ def format_cost(usd: float) -> str:
 
 @dataclass
 class Spend:
-    """Requests, tokens and estimated cost added up over turns."""
+    """Turns, requests, tokens and estimated cost added up over turns."""
+    turns: int = 0  # user messages (and @agent calls) that started a run
     requests: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    thinking_tokens: int = 0  # reasoning tokens, included in output_tokens
     cost: float = 0.0  # of the requests that could be priced
     unpriced: int = 0  # requests with no price, so `cost` is a lower bound
 
@@ -40,6 +42,7 @@ class Spend:
         self.requests += usage.requests
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
+        self.thinking_tokens += thinking_tokens(usage)
         if cost is None:
             self.unpriced += usage.requests
         else:
@@ -54,8 +57,10 @@ class Spend:
         return cls(**{k: v for k, v in (d or {}).items() if k in fields})
 
     def summary(self) -> str:
-        """e.g. `12 requests · 40.1k in · 3.2k out · $0.0123 estimated`."""
-        parts = [f"{self.requests} requests", f"{_n(self.input_tokens)} in", f"{_n(self.output_tokens)} out"]
+        """e.g. `3 turns · 12 requests · 40.1k in · 3.2k out (1.1k thinking) · $0.0123 estimated`."""
+        out = f"{_n(self.output_tokens)} out" + (f" ({_n(self.thinking_tokens)} thinking)" if self.thinking_tokens else "")
+        parts = [*([f"{self.turns} turn{'s' if self.turns != 1 else ''}"] if self.turns else []), f"{self.requests} requests",
+                 f"{_n(self.input_tokens)} in", out]
         if self.unpriced and self.unpriced == self.requests:
             parts.append("cost unknown (no prices for this model)")
         else:

@@ -36,8 +36,9 @@ class FrontendSink:
         await self._f.render(event)
 
 
-def _agent_files(dirs: list[Path]) -> dict[Path, int]:
-    return {p: p.stat().st_mtime_ns for d in dirs if d.is_dir() for p in d.glob("*.md")}
+def _files(dirs: list[Path], pattern: str) -> dict[Path, int]:
+    """Each file matching `pattern` in `dirs`, with its modification time: compared to see if any changed."""
+    return {p: p.stat().st_mtime_ns for d in dirs if d.is_dir() for p in d.glob(pattern)}
 
 
 def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[EventSink] | None = None,
@@ -111,7 +112,8 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     modes = ApprovalModes(gate, available, settings.approval, default_chain, auto_available=assess_mode != "off")
     deps = Deps(workspace=workspace, gate=gate, sandbox=sandbox,
                 shell_timeout=settings.shell_timeout, shell_timeout_max=settings.shell_timeout_max,
-                models=router, secret_files=settings.secret_files)
+                models=router, secret_files=settings.secret_files,
+                ask_user=getattr(frontend, "ask_questions", None))
     # Lowest to highest precedence. Also reads the cross-tool .agents/.claude skill folders; the user-level
     # ones are derived from user_dir's parent (the home dir by default).
     home = settings.user_dir.parent
@@ -119,19 +121,21 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     skill_dirs = [*(d / "skills" for d in bundled), home / ".claude" / "skills", home / ".agents" / "skills",
                   settings.user_dir / "skills", workspace / ".claude" / "skills", workspace / ".agents" / "skills",
                   workspace / ".jimbo" / "skills"]
+    deps.user_dir = settings.user_dir
     deps.project_instructions = load_project_instructions(settings.user_dir, workspace)
     deps.skills = load_skills(skill_dirs)
+    loaded_skills = {"files": _files(skill_dirs, "*/SKILL.md")}
     agent_dirs = [*(d / "agents" for d in bundled), settings.user_dir / "agents", workspace / ".jimbo" / "agents"]
     loaded: dict[str, list] = {}
 
     def load_all_agents() -> list[str]:
-        loaded["files"] = _agent_files(agent_dirs)
+        loaded["files"] = _files(agent_dirs, "*.md")
         deps.agents, problems = load_agents(agent_dirs, AGENT_TOOL_NAMES)
         return problems + [f"agent {a.name}: unknown skill {s!r}" for a in deps.agents.values() for s in a.skills
                            if s not in deps.skills]
 
-    def reload_agents() -> list[str] | None:
-        return load_all_agents() if _agent_files(agent_dirs) != loaded["files"] else None
+    def reload_agents(force: bool = False) -> list[str] | None:
+        return load_all_agents() if force or _files(agent_dirs, "*.md") != loaded["files"] else None
 
     for warning in load_all_agents():
         print(f"jimbo: {warning}", file=sys.stderr)
@@ -209,8 +213,27 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     register_builtins(session.commands, settings, modes)
     load_markdown_commands(session.commands, [settings.user_dir / "commands",
                                               deps.workspace / ".jimbo" / "commands"])
-    register_skill_commands(session.commands, deps.skills)
-    # Last, because this skips names already taken: a user's skill replaces a bundled command of the same name.
-    load_markdown_commands(session.commands, [d / "commands" for d in bundled])
+    late: set[str] = set()  # skill and bundled commands: registered last, and again when skills change
+
+    def register_late() -> None:
+        for name in late:
+            session.commands.remove(name)
+        before = session.commands.names()
+        register_skill_commands(session.commands, deps.skills)
+        # Last, because this skips names already taken: a user's skill replaces a bundled command of the same name.
+        load_markdown_commands(session.commands, [d / "commands" for d in bundled])
+        late.clear()
+        late.update(session.commands.names() - before)
+
+    async def reload_skills(force: bool = False) -> None:
+        if (files := _files(skill_dirs, "*/SKILL.md")) == loaded_skills["files"] and not force:
+            return
+        loaded_skills["files"] = files
+        deps.skills = load_skills(skill_dirs)
+        register_late()
+        await session.emit("commands", commands=session.commands.describe())  # for completion
+
+    register_late()
+    deps.reload_skills = reload_skills
     holder["s"] = session
     return session

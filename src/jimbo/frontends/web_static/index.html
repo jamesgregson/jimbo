@@ -113,6 +113,8 @@
   button[hidden], #dlg input[hidden] { display: none; }
   #dlg input { width: 100%; box-sizing: border-box; margin-top: 10px; background: var(--bg); color: var(--fg);
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
+  #dlg .q { margin: 12px 0; } #dlg .q label { display: block; padding: 3px 0; cursor: pointer; }
+  #dlg input[type=radio], #dlg input[type=checkbox] { width: auto; margin: 0 8px 0 0; }
   .msg.user.steer { opacity: .85; border-style: dashed; }
   .risk { margin: 8px 0; padding: 8px 10px; border-left: 4px solid #3a3; background: rgba(128,128,128,.12); }
   .risk.medium { border-color: #cb2; } .risk.high { border-color: #e55; } .risk.critical { border-color: #e55; background: rgba(238,85,85,.2); }
@@ -155,7 +157,7 @@
 </head>
 <body>
 <header><h1>Jimbo</h1><span id="status" class="off">connecting…</span><a id="sid" target="_blank" title="Open this session's trace" hidden></a><button id="settings-btn" class="sec" type="button" title="Models and providers">Settings</button></header>
-<div id="stats"><select id="st-model" title="Model for this session (Settings saves it)" hidden></select><span id="st-status"></span><span id="st-ctx">context —</span><span class="meter" id="st-meter"><i></i></span><span id="st-turn"></span><span id="st-session"></span></div>
+<div id="stats"><select id="st-model" title="Model for this session (Settings saves it)" hidden></select><span id="st-status"></span><span id="st-cycle"></span><span id="st-ctx">context —</span><span class="meter" id="st-meter"><i></i></span><span id="st-turn"></span><span id="st-session"></span></div>
 <aside id="todos" hidden></aside>
 <div id="log"></div>
 <div id="thinking"><span></span><span></span><span></span> working…</div>
@@ -183,13 +185,16 @@ const token = new URLSearchParams(location.search).get("token") || "";
 let ws, running = false, seg = null, segText = "", thinkSeg = null, cards = new Map(), pendingId = null;
 let commands = [], lastCtx = null;
 const fmtN = (n) => n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
+const outN = (u) => `${fmtN(u.output_tokens)} out` + (u.thinking_tokens ? ` (${fmtN(u.thinking_tokens)} thinking)` : "");
 function showStats(d) {
   const pct = d.window ? Math.round(100 * d.tokens / d.window) : null;
+  $("#st-cycle").textContent = d.turns ? `turn ${d.turns} · cycle ${d.turn.requests}/${d.limit}` : "";
+  $("#st-cycle").title = "Turns in this session, and model requests (think, then call tools or answer) in this turn, out of its limit";
   $("#st-ctx").textContent = `context ${fmtN(d.tokens)}` + (d.window ? ` / ${fmtN(d.window)} (${pct}%)` : "");
   const m = $("#st-meter"); m.hidden = pct == null; m.classList.toggle("hot", pct != null && pct >= 80);
   m.firstChild.style.width = Math.min(pct || 0, 100) + "%";
-  $("#st-turn").textContent = `prompt: ${fmtN(d.turn.input_tokens)} in · ${fmtN(d.turn.output_tokens)} out`;
-  $("#st-session").textContent = `session: ${fmtN(d.session.input_tokens)} in · ${fmtN(d.session.output_tokens)} out · ${d.session.requests} req`;
+  $("#st-turn").textContent = `prompt: ${fmtN(d.turn.input_tokens)} in · ${outN(d.turn)}`;
+  $("#st-session").textContent = `session: ${fmtN(d.session.input_tokens)} in · ${outN(d.session)} · ${d.session.requests} req`;
 }
 
 function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
@@ -369,7 +374,7 @@ function onEvent(ev) {
     }
     case "approval_resolved": showVerdict(d); break;
     case "usage": {
-      add(el("div", "note", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`)); break;
+      add(el("div", "note", `${d.requests} request(s) · ${d.input_tokens} in · ${outN(d)}`)); break;
     }
     case "context": lastCtx = d; showStats(d); break;
     case "status":
@@ -466,6 +471,8 @@ function connect() {
     else if (msg.type === "approval_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
     else if (msg.type === "secret") showSecret(msg);
     else if (msg.type === "secret_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
+    else if (msg.type === "questions") showQuestions(msg);
+    else if (msg.type === "questions_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
     else if (msg.type === "models") { modelLists[msg.provider] = msg.models || { error: msg.error }; renderModelPicker(); fillModelNames(lastSpecInput); }
   };
   ws.onclose = () => { setStatus("disconnected — retrying…", "off"); sendBtn.disabled = true; setTimeout(connect, 1500); };
@@ -548,6 +555,42 @@ function showSecret(msg) {
   btns.append(cancel, ok);
   dlg.replaceChildren(el("h2", null, "Key"), el("div", "sum", msg.message), field, btns);
   $("#modal").classList.add("show"); field.focus();
+}
+
+// The model's questions. Typing in the box below them stops the round and sends that text instead.
+function showQuestions(msg) {
+  pendingId = msg.id;
+  const dlg = $("#dlg"), picked = msg.questions.map((q) => q.multiple ? [] : null), btns = el("div", "btns");
+  const other = el("input"); other.type = "text"; other.placeholder = "Or tell jimbo something else instead (stops these questions)";
+  const ok = el("button", null, "Answer"); ok.type = "button";
+  const update = () => {
+    const stop = other.value.trim() !== "";
+    ok.textContent = stop ? "Stop and send" : "Answer"; ok.disabled = !stop && picked.includes(null);
+  };
+  const send = () => {
+    if (ok.disabled) return;
+    const feedback = other.value.trim();
+    ws.send(JSON.stringify({ type: "answers", id: msg.id, answers: picked, ...(feedback ? { feedback } : {}) }));
+  };
+  dlg.replaceChildren(el("h2", null, msg.questions.length > 1 ? `${msg.questions.length} questions` : "Question"));
+  msg.questions.forEach((q, i) => {
+    const box = el("div", "q"); box.append(el("div", "sum", `${i + 1}. ${q.question}`));
+    if (q.multiple) box.append(el("div", "note", "Pick any number"));
+    for (const option of q.kind === "yes_no" ? ["yes", "no"] : q.options) {
+      const label = el("label"), mark = el("input"); mark.type = q.multiple ? "checkbox" : "radio"; mark.name = `${msg.id}-${i}`;
+      mark.onchange = () => {
+        if (!q.multiple) picked[i] = option;
+        else picked[i] = q.options.filter((o, n) => box.querySelectorAll("input")[n].checked);
+        update();
+      };
+      label.append(mark, option); box.append(label);
+    }
+    dlg.append(box);
+  });
+  other.oninput = update;
+  other.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } };
+  ok.onclick = send; btns.append(ok); update();
+  dlg.append(other, btns); $("#modal").classList.add("show");
 }
 
 // ---- Models and providers. Changes in the settings panel are saved to the user config. ----

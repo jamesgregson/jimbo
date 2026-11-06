@@ -19,6 +19,7 @@ from jimbo.core.cost import estimate_cost
 from jimbo.core.events import Event
 from jimbo.core.jsonl import JsonlSink
 from jimbo.core.models import KNOWN_TASKS, MAIN, ModelRouter
+from jimbo.core.stats import thinking_tokens
 from jimbo.core.trace import trace_page
 from jimbo.providers.preflight import ModelFacts, inspect_model
 from jimbo.providers.registry import all_providers, build_model_from_spec, provider_config
@@ -211,6 +212,7 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
         "task": task.id, "trial": trial, "pass": error is None and bool(outcomes) and all(o.ok for o in outcomes),
         "check_exit": command_exit, "requests": usage.requests if usage else 0,
         "input_tokens": usage.input_tokens if usage else 0, "output_tokens": usage.output_tokens if usage else 0,
+        "thinking_tokens": thinking_tokens(usage) if usage else 0,
         "cost": estimate_cost(usage, facts.prices if facts else None),
         "seconds": round(time.monotonic() - started, 1), **metrics(collector.events), "error": error,
         "log": str(log) if log else None, "workspace": str(ws) if cfg.keep else None,

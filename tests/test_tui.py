@@ -260,3 +260,57 @@ async def test_agent_progress_is_a_toolbar_status_not_text():
     assert "reviewer" not in f._toolbar()
     out = f.console.file.getvalue()
     assert "let me think" not in out and "found it" not in out
+
+
+async def test_questions_take_turns_at_the_main_prompt():
+    """/approve auto typed while steering asks to confirm; an approval the model asks for meanwhile must wait its
+    turn, not take over the prompt and the answer meant for the confirm."""
+    lines: asyncio.Queue[str] = asyncio.Queue()
+
+    async def ask(_msg):
+        return await lines.get()
+
+    out = StringIO()
+    fe = TuiFrontend(Console(file=out, force_terminal=False, width=100), ask)
+    reading = asyncio.create_task(fe.next_user_input())
+    await asyncio.sleep(0.01)
+    confirm = asyncio.create_task(fe.confirm("Turn on auto?"))
+    await asyncio.sleep(0.01)
+    approval = asyncio.create_task(fe.request_approval(ApprovalRequest(id="1", tool="shell", summary="make")))
+    await asyncio.sleep(0.01)
+    assert "Approve shell" not in out.getvalue()  # its panel waits until the confirm is answered
+    await lines.put("y")
+    assert await asyncio.wait_for(confirm, 1) is True and not approval.done()
+    await asyncio.sleep(0.01)
+    assert "Approve shell" in out.getvalue()
+    await lines.put("n")
+    await asyncio.sleep(0.01)
+    await lines.put("")
+    assert not (await asyncio.wait_for(approval, 1)).allow and not reading.done()
+    reading.cancel()
+
+
+async def test_paste_command_attaches_the_clipboard_image(monkeypatch):
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 20
+    clip = {"data": png}
+
+    async def clipboard():
+        return clip["data"]
+    monkeypatch.setattr("jimbo.frontends.tui.clipboard_png", clipboard)
+    fe, out = make(["/paste what is this?"])
+    msg = await fe.next_user_input()
+    assert msg.text == "what is this?" and [i.data for i in msg.images] == [png]
+
+    seen = []
+    answers = ["/paste", "why so bad"]
+
+    async def ask(prompt):
+        seen.append(prompt)
+        return answers.pop(0)
+    fe = TuiFrontend(Console(file=StringIO()), ask)
+    msg = await fe.next_user_input()  # /paste alone: the chip waits in the prompt for the question
+    assert msg.text == "why so bad" and len(msg.images) == 1 and len(seen) == 2
+
+    clip["data"] = None
+    fe, out = make(["/paste", "plain"])
+    assert await fe.next_user_input() == "plain" and "no image on the clipboard" in out.getvalue()

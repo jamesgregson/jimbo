@@ -79,7 +79,7 @@ Each run writes `evals/results/<run-id>/`. `<run-id>` is the date, the time and 
 |------|----------|
 | `report.html` | the run as a page: totals, a table of tasks with failures first, and for each trial its check output and judge verdict, the task's prompt and rubric, the diff, and links to its trace and files |
 | `run.json` | jimbo commit and whether `src/` or `evals/` had changes, the model for each task name, trials, start and end time |
-| `results.jsonl` | one line per trial: `pass`, `check_exit`, `requests`, `input_tokens`, `output_tokens`, `cost`, `seconds`, `tool_calls`, `tool_retries`, `denials`, `wrap_up`, `hit_request_limit`, `compactions`, `error`, `log` |
+| `results.jsonl` | one line per trial: `pass`, `check_exit`, `requests`, `input_tokens`, `output_tokens`, `thinking_tokens` (included in `output_tokens`), `cost`, `seconds`, `tool_calls`, `tool_retries`, `denials`, `wrap_up`, `hit_request_limit`, `compactions`, `error`, `log` |
 | `<task>/<trial>/session.jsonl` | the session log |
 | `<task>/<trial>/trace.html` | the trace viewer with that log; open it in a browser |
 | `<task>/<trial>/diff.patch` | the changes jimbo made |

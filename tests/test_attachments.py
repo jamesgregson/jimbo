@@ -132,3 +132,63 @@ def test_tui_shift_enter_maps_to_newline_binding():
     from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
     from prompt_toolkit.keys import Keys
     assert ANSI_SEQUENCES["\x1b[13;2u"] == (Keys.Escape, Keys.ControlM)
+
+
+async def test_an_image_mentioned_with_at_path_is_attached(tmp_path):
+    (tmp_path / "shot.PNG").write_bytes(PNG)
+    (tmp_path / "huge.jpg").write_bytes(b"0" * (MAX_IMAGE_BYTES + 1))
+    fe, seen = ScriptedFrontend(), []
+    s = build_session(settings(tmp_path), fe, model=echo_model(seen))
+    await s.send("what's wrong in @shot.PNG and @huge.jpg and @missing.png?")
+    content = user_content(seen[0])
+    assert isinstance(content, list) and content[0].startswith("what's wrong")
+    assert [c.data for c in content[1:]] == [PNG] and content[1].media_type == "image/png"
+    assert "<file" not in content[0]  # not inlined as text
+    ev = next(e for e in fe.events if e.kind == "user_message")
+    assert ev.data["attachments"] == [{"kind": "image", "path": "shot.PNG", "media_type": "image/png",
+                                       "bytes": len(PNG)}]
+    warnings = [e.data["text"] for e in fe.events if e.kind == "command_output" and not e.data["ok"]]
+    assert any("@huge.jpg" in w and "limit" in w for w in warnings)
+
+
+async def test_mentioned_images_count_toward_the_limit_and_need_vision(tmp_path):
+    for i in range(3):
+        (tmp_path / f"{i}.png").write_bytes(PNG)
+    fe, seen = ScriptedFrontend(), []
+    s = build_session(settings(tmp_path), fe, model=echo_model(seen))
+    pasted = [BinaryContent(PNG, media_type="image/png")] * 2
+    await s.send(["@0.png @1.png @2.png", *pasted])
+    assert len(user_content(seen[0])) == 1 + 4
+    assert any("at most 4" in e.data["text"] for e in fe.events if e.kind == "command_output")
+    fe, seen = ScriptedFrontend(), []
+    s = build_session(settings(tmp_path, vision=False), fe, model=echo_model(seen))
+    await s.send("look at @0.png")
+    assert user_content(seen[0]) == "look at @0.png"
+
+
+async def test_a_mentioned_image_is_labelled_in_the_message(tmp_path):
+    (tmp_path / "figs").mkdir()
+    (tmp_path / "figs" / "a.png").write_bytes(PNG)
+    fe, seen = ScriptedFrontend(), []
+    s = build_session(settings(tmp_path), fe, model=echo_model(seen))
+    await s.send("why is @figs/a.png bad")
+    assert "[The image figs/a.png is attached to this message.]" in user_content(seen[0])[0]
+    assert next(e for e in fe.events if e.kind == "user_message").data["text"] == "why is @figs/a.png bad"
+
+
+async def test_read_file_returns_an_image_the_model_can_see(tmp_path):
+    from pydantic_ai.messages import ToolReturnPart
+    from test_plan import model, retries
+
+    (tmp_path / "a.png").write_bytes(PNG)
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path), fe, model=model([("read_file", {"path": "a.png"})]))
+    await s.send("look")
+    returned = next(p for m in s.history for p in m.parts if isinstance(p, ToolReturnPart))
+    assert any(isinstance(c, BinaryContent) and c.data == PNG for c in returned.content)
+    result = next(e for e in fe.events if e.kind == "tool_result")
+    assert result.data["ok"] and "[image image/png" in result.data["content"] and "PNG" not in result.data["content"]
+    s = build_session(settings(tmp_path, vision=False), ScriptedFrontend(),
+                      model=model([("read_file", {"path": "a.png"})]))
+    await s.send("look")
+    assert any("can't read images" in r for r in retries(s))

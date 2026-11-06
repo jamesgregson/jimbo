@@ -152,3 +152,34 @@ async def test_compact_failure_still_ends_busy(tmp_path):
     busy, _, after = busy_and_after(fe)
     assert [b["on"] for b in busy] == [True, False]
     assert [e.data for e in fe.events if e.kind == "command_output"][-1]["ok"] is False
+
+
+async def test_asking_the_model_to_compact_compacts(tmp_path):
+    fe, seen = ScriptedFrontend(), []
+
+    def answer(messages):
+        last = messages[-1].parts[-1]
+        text = str(last.content)
+        if "Transcript to summarize" in text:
+            seen.append(text)
+            return ModelResponse(parts=[TextPart("SUMMARY")])
+        if text == "please compact, keep the auth details":
+            return ModelResponse(parts=[ToolCallPart("compact", {"focus": "auth"})])
+        return ModelResponse(parts=[TextPart("compacted" if isinstance(last, ToolReturnPart) else "ok")])
+
+    async def stream(messages, info):
+        r = answer(messages).parts[0]
+        if isinstance(r, ToolCallPart):
+            from pydantic_ai.models.function import DeltaToolCall
+            yield {0: DeltaToolCall(name=r.tool_name, json_args='{"focus": "auth"}')}
+        else:
+            yield r.content
+    s = build_session(settings(tmp_path, compact_keep=2), fe,
+                      model=FunctionModel(lambda m, i: answer(m), stream_function=stream))
+    await s.send("one")
+    await s.send("two")
+    assert not seen  # no context window: nothing compacts on its own
+    assert await s.send("please compact, keep the auth details") == "compacted"
+    assert len(seen) == 1 and "Pay particular attention to: auth" in seen[0]
+    assert s.history[0].parts[0].content.startswith(SUMMARY_PREFIX)
+    assert s.deps.compact_requested is None and [e for e in fe.events if e.kind == "compaction"]

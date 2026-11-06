@@ -14,7 +14,7 @@ from .core.approval import MODE_WARNING, RISKY_MODES, ApprovalModes
 from .core.commands import NAME_RE, CommandError, CommandRegistry, QuitSession
 from .core.session import AgentSession
 from .core.trace import trace_page
-from .core.skills import Skill, apply_skill_models, format_skill_index
+from .core.skills import Skill, format_skill_index, reload_and_describe, load_project_instructions, memory_paths, use_skill
 from .providers.credentials import describe_key_source
 from .providers.registry import all_providers
 from .tools.todos import format_todos
@@ -183,6 +183,22 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
         return ("plan mode on: read-only tools only; the agent presents a plan with exit_plan" if on
                 else "plan mode off")
 
+    async def reload(session: AgentSession, args: str) -> str:
+        if session.is_running:
+            raise CommandError("a run is in progress; wait for it or cancel first")
+        if session.deps.reload_skills is None:
+            raise CommandError("this session can't reload skills")
+        lines = [await reload_and_describe(session.deps)]
+        if session.deps.reload_agents:
+            warnings = session.deps.reload_agents(force=True) or []
+            lines += [f"Agents reloaded ({len(session.deps.agents)}).", *warnings]
+        return "\n".join(lines)
+
+    async def paste(session: AgentSession, args: str) -> str:
+        # The tui handles /paste itself, because it reads the clipboard; this answers in the other UIs.
+        return ("/paste attaches the clipboard image in the tui. In the web UI, paste or drop the image into the "
+                "message box. In any UI, @path attaches an image file from the workspace.")
+
     async def todos(session: AgentSession, args: str) -> str:
         return format_todos(session.deps.todos)
 
@@ -256,7 +272,10 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
         restored = session.deps.checkpoints.undo()
         if not restored:
             return "Nothing to undo."
-        names = ", ".join(p.relative_to(session.deps.workspace).as_posix() for p in restored)
+        ws = session.deps.workspace
+        names = ", ".join(p.relative_to(ws).as_posix() if p.is_relative_to(ws) else str(p) for p in restored)
+        if session.deps.user_dir and set(restored) & set(memory_paths(session.deps.user_dir, ws).values()):
+            session.deps.project_instructions = load_project_instructions(session.deps.user_dir, ws)
         session.history = [*session.history, ModelRequest(parts=[UserPromptPart(
             f"I undid your latest file changes, so these are back as they were: {names}")]),
             ModelResponse(parts=[TextPart("Understood.")])]  # otherwise the model trusts its memory of them
@@ -280,7 +299,9 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
     registry.add("approve", "show or set approval chain: /approve [auto|yolo|default]", approve, midrun=True)
     registry.add("plan", "toggle plan mode (read-only until you approve a plan): /plan [on|off]", plan)
     registry.add("todos", "show the agent's task list", todos)
+    registry.add("paste", "attach the clipboard image (tui): /paste [question]", paste)
     registry.add("skills", "list available skills", skills)
+    registry.add("reload", "read skill and agent files again now (they also reload before each message)", reload)
     registry.add("agents", "list agents, or create one: /agents [new <name> [--user]]", agents)
     registry.add("bundled", "list the agents, skills and commands shipped with jimbo, with their paths", bundled)
     registry.add("resume", "list saved sessions, or load one: /resume [id]", resume)
@@ -297,9 +318,12 @@ def register_skill_commands(registry: CommandRegistry, skills: dict[str, Skill])
         if skill.name in registry:
             continue
 
-        async def run(session: AgentSession, args: str, skill: Skill = skill) -> None:
-            apply_skill_models(session.deps, skill)  # a bad alias just leaves the user's models in place
-            prompt = f"Use the skill '{skill.name}'. Its instructions:\n\n{skill.body}"
-            await session.send(f"{prompt}\n\n{args}" if args else prompt)
+        def prompt(session: AgentSession, args: str, skill: Skill = skill) -> str:
+            use_skill(session.deps, skill)  # a bad alias just leaves the user's models in place
+            text = f"Use the skill '{skill.name}'. Its instructions:\n\n{skill.body}"
+            return f"{text}\n\n{args}" if args else text
 
-        registry.add(skill.name, skill.description or f"skill from {skill.path}", run)
+        async def run(session: AgentSession, args: str, prompt=prompt) -> None:
+            await session.send(prompt(session, args))
+
+        registry.add(skill.name, skill.description or f"skill from {skill.path}", run, steer=prompt)
