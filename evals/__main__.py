@@ -32,7 +32,8 @@ def config(args) -> RunConfig:
         raise ValueError(f"--requests-per-minute must be 0 or more, got {args.requests_per_minute}")
     return RunConfig(model=args.model, task_models=task_models(args.set), trials=getattr(args, "trials", 1),
                      retry_failed_only=getattr(args, "retry_failed_only", False),
-                     jobs=args.jobs, sandbox=not getattr(args, "no_sandbox", False),
+                     jobs=args.jobs,
+                     sandbox="off" if getattr(args, "no_sandbox", False) else getattr(args, "sandbox", "seatbelt"),
                      network=not getattr(args, "no_network", False), lsp=not getattr(args, "no_lsp", False),
                      keep=getattr(args, "keep", False),
                      user_config=args.config, requests_per_minute=args.requests_per_minute)
@@ -136,7 +137,10 @@ def main() -> None:
     p.add_argument("--trials", type=int, default=1, help="attempts per task (default 1)")
     p.add_argument("--retry-failed-only", action="store_true",
                    help="run each task's trials one at a time and stop at the first pass")
-    p.add_argument("--no-sandbox", action="store_true", help="run where there is no sandbox (not macOS)")
+    p.add_argument("--sandbox", choices=["seatbelt", "docker", "podman", "off"], default="seatbelt",
+                   help="where shell commands run: sandbox-exec (macOS, the default), a Docker or Podman "
+                        "container per trial, or unconfined")
+    p.add_argument("--no-sandbox", action="store_true", help="the same as --sandbox off")
     p.add_argument("--no-network", action="store_true", help="block network access for shell commands")
     p.add_argument("--no-lsp", action="store_true", help="start no language servers (lsp = false)")
     p.add_argument("--keep", action="store_true", help="keep each trial's workspace")

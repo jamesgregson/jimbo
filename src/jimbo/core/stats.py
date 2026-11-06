@@ -43,14 +43,14 @@ def output_preview(content: str, lines: int = 10) -> list[str]:
 
 
 def format_stats(d: dict) -> str:
-    """e.g. `turn 3, cycle 7/50 · ctx 3.2k/32k (10%) · this turn 1.1k in 200 out · session 9.0k in 1.2k out · 7 req`.
+    """e.g. `turn 3, cycle 7/50 · ctx 3.2k/32k (10%) · turn context 1.1k in 200 out · session 9.0k in 1.2k out · 7 req`.
     A cycle is one model request: the model thinks, then calls tools or answers."""
     cycles = f"turn {d['turns']}, cycle {d['turn']['requests']}/{d['limit']} · " if d.get("turns") else ""
     ctx = f"{cycles}ctx {_n(d['tokens'])}"
     if d.get("window"):
         ctx += f"/{_n(d['window'])} ({100 * d['tokens'] / d['window']:.0f}%)"
     t, s = d["turn"], d["session"]
-    return (f"{ctx} · this turn {_n(t['input_tokens'])} in {_out(t)}"
+    return (f"{ctx} · turn context {_n(t['input_tokens'])} in {_out(t)}"
             f" · session {_n(s['input_tokens'])} in {_out(s)} · {s['requests']} req")
 
 
@@ -74,3 +74,11 @@ class AgentProgress:
     def line(self) -> str:
         what = f"{self.phase}… {self.chars:,} chars" if self.phase in ("thinking", "writing") else f"{self.phase}…"
         return f"{self.name} › {what}" + (f" · request {self.requests}" if self.requests else "")
+
+
+def sandbox_label(status: dict) -> str:
+    """How a status line names the sandbox, from a `status` event."""
+    if not status.get("sandboxed"):
+        return "NOT sandboxed"
+    kind = status.get("sandbox")
+    return f"{kind} sandbox" if kind in ("docker", "podman") else "sandboxed"

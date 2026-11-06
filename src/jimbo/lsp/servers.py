@@ -91,6 +91,13 @@ def _from_config(name: str, cfg: ServerConfig) -> Server | None:
                   dict(cfg.settings or SETTINGS.get(name, {})))
 
 
+def executables(settings: Settings) -> list[str]:
+    """Every program resolve_servers may look for."""
+    names = [c[0] for c in COMMANDS.values()]
+    names += [cfg.command[0] for cfg in settings.lsp_servers.values() if cfg.command]
+    return list(dict.fromkeys(names))
+
+
 def resolve_servers(settings: Settings, which: Callable[[str], str | None] = shutil.which) -> tuple[
         list[Choice], list[str]]:
     """The server for each language, and warnings about servers in config that can't be used.

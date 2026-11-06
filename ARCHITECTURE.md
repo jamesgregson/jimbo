@@ -121,7 +121,8 @@ src/jimbo/
                        shell_kill
     web.py             web_fetch (Pydantic AI's local fetcher, behind an approval)
     show.py            show_image: emits an `image` event (path, not bytes); only frontends with shows_images offer it
-    sandbox.py         macOS sandbox-exec wrapper for shell
+    sandbox.py         the Sandbox interface, spawn/kill, and the macOS sandbox-exec sandbox
+    container_sandbox.py  the Docker or Podman sandbox: one container per session, port forwards, images
     todos.py skills.py todo_write, load_skill, reload_skills (main session only)
     agents.py          run_agent
     ask.py             ask_user (only when the frontend can ask questions)
@@ -527,10 +528,25 @@ These limit what a call can do after it is approved:
 
 1. **Path confinement** ([tools/paths.py](src/jimbo/tools/paths.py)): file tools resolve symlinks and reject
    paths outside the workspace (`PathEscape`). Read-only tools may also read the folders of loaded skills.
-2. **Sandbox** ([tools/sandbox.py](src/jimbo/tools/sandbox.py)): on macOS, `shell` is wrapped in `sandbox-exec`
-   with a profile that allows reads anywhere and writes only to the workspace, temp and cache dirs plus
-   `sandbox_writable`, and optionally blocks outbound network. The OS enforces it. The approval prompt states
-   whether the command is sandboxed.
+2. **Sandbox** ([tools/sandbox.py](src/jimbo/tools/sandbox.py)): `shell` and language servers start processes
+   with `spawn(sandbox, argv, ...)` and stop them with `kill(sandbox, proc)`, which take `Deps.sandbox` (a
+   `Sandbox`, or None to run directly). The approval prompt states where the command runs (`describe()`).
+   - `SeatbeltSandbox`: on macOS, the process is wrapped in `sandbox-exec` with a profile that allows reads
+     anywhere and writes only to the workspace, temp and cache dirs plus `sandbox_writable`, and optionally
+     blocks outbound network. The OS enforces it. `kill` kills the process group.
+   - `ContainerSandbox` ([tools/container_sandbox.py](src/jimbo/tools/container_sandbox.py)), for
+     `sandbox = "docker"` or `"podman"`. Both CLIs take the same commands; `probe` reads `<cli> info` into a
+     `Runtime` (engine, rootless, SELinux), which adds `--userns=keep-id` for rootless Podman and
+     `label=disable` on SELinux Linux hosts. `kind` is the engine. `build_sandbox` checks the runtime, removes
+     containers whose jimbo process is gone, and builds or pulls the image, all before the UI starts. The
+     container starts at the first `spawn` (`<cli> run -d`, mounts at the
+     same paths as on the host, the host user id, no capabilities) and runs `sleep infinity`; each process is
+     a `<cli> exec` with a `JIMBO_RUN=<id>` variable. `kill` kills every process in the container whose
+     environment has that id, then the local exec client. A `<cli> wait` process notices when the container
+     stops, and the next `spawn` reports it and starts a new one. Port forwards are `asyncio` servers on
+     `127.0.0.1` that start `<cli> exec -i ... socat` per connection. `close()` closes the forwards and
+     removes the container; `main.py`, `/sandbox reset` and eval trials call it. Language servers are looked
+     for in the image with one throwaway container (`find_commands`), and get `processId: null`.
 3. **Shell limits** ([tools/shell.py](src/jimbo/tools/shell.py)): stdin is empty, a timeout applies
    (model-adjustable up to `shell_timeout_max`), the command runs in its own process group so the whole tree is
    killed on timeout or interrupt, and long output keeps only its head and tail.

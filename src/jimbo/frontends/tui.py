@@ -27,7 +27,8 @@ from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
 from ..core.agents import PROGRESS
 from ..core.questions import Answers, Question, ask_by_line
-from ..core.stats import OUTPUT_TOOLS, AgentProgress, agent_prefix, format_stats, output_preview, shell_failed
+from ..core.stats import (OUTPUT_TOOLS, AgentProgress, agent_prefix, format_stats, output_preview, sandbox_label,
+                          shell_failed)
 from ..tools.search import list_files
 from .clipboard import clipboard_png
 
@@ -443,7 +444,7 @@ class TuiFrontend:
         match event.kind:
             case "status":
                 if self._status is None:
-                    sandbox = "sandboxed" if d["sandboxed"] else "NOT sandboxed"
+                    sandbox = sandbox_label(d)
                     c.print(Text(f"jimbo · {d['model']} · {d['workspace']} · {sandbox} · session {event.session_id}",
                                  style="dim"))
                 self._status = d

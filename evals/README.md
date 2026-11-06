@@ -23,9 +23,10 @@ uv run python -m evals report [<run>]              # print a run's table and wri
 ```
 
 Other options: `--jobs N` (trials at once, default 4), `--keep` (keep each trial's workspace), `--no-network`
-(block network access for shell commands), `--no-sandbox` (needed where there is no sandbox, which is anywhere
-but macOS), `--no-lsp` (start no language servers, to compare a run with one that has them), `--config <path>`
-(a different `config.toml`).
+(block network access for shell commands), `--sandbox docker` or `--sandbox podman` (each trial runs its
+commands in its own container from the bundled image; works on Linux), `--sandbox off` or `--no-sandbox` (commands run unconfined,
+needed on other systems without Docker or Podman), `--no-lsp` (start no language servers, to compare a run with one that
+has them), `--config <path>` (a different `config.toml`).
 
 With `--retry-failed-only`, a task's trials run one after another and stop at the first pass. Different tasks
 still run at the same time. A task passes if any of its trials passes, and the reports count tasks instead of

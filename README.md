@@ -69,6 +69,7 @@ Other ways to run it:
 | `jimbo --auto` | make file changes, and run shell commands rated low or medium risk, without asking |
 | `jimbo --yolo` | do everything without asking |
 | `jimbo --model <name>` | use a different model for this run |
+| `jimbo --sandbox docker` | run commands in a Docker container for this run (`podman` for Podman; see [Sandbox](#sandbox)) |
 | `jimbo --workspace <dir>` | work on another folder instead of the current one |
 | `cat log.txt \| jimbo "explain this"` | include piped text with the task |
 
@@ -110,6 +111,7 @@ Useful commands (type `/help` for all of them):
 - `/skills`, `/agents` list skills and agents
 - `/trace` see everything that happened in this session, in the browser
 - `/lsp` list the language servers jimbo found
+- `/sandbox` show where commands run; `/sandbox port 5173` opens a port in the container sandbox
 - `/quit` exit
 
 Each session is saved, so `jimbo --resume` continues it later.
@@ -130,10 +132,55 @@ approval_deny  = ["shell:sudo *", "shell:rm -rf*"]
 
 - File tools only work inside the project folder.
 - Files such as `.env`, `*.pem` and `*.key` can't be read or searched by the model.
-- On macOS, commands run in a sandbox that can only write inside your project and temp folders. On other
-  systems there is no sandbox.
+- Commands you approve run in a sandbox, if one is available. See [Sandbox](#sandbox).
 
-See [Approvals](docs/reference.md#approvals) and [Sandbox](docs/reference.md#sandbox-macos).
+See [Approvals](docs/reference.md#approvals).
+
+## Sandbox
+
+A sandbox limits what a command can do after you approve it. The approval prompt and the status line say
+where commands run. Language servers run in the same sandbox.
+
+| Setting | Where commands run | Commands can read | Commands can write |
+|---------|--------------------|-------------------|--------------------|
+| `sandbox = "auto"` (default), on macOS | under `sandbox-exec` | everything | the project, temp folders and caches |
+| `sandbox = "auto"` (default), elsewhere | with no sandbox | everything | everything |
+| `sandbox = "docker"` | in a Docker container, on macOS and Linux | the project only | the project only |
+| `sandbox = "podman"` | in a Podman container, on macOS and Linux | the project only | the project only |
+| `sandbox = "off"` | with no sandbox | everything | everything |
+
+The container sandboxes also keep your home folder and environment variables, such as API keys, away from
+commands. Docker and Podman work the same way. To use Docker, start it and add this line to the top of
+`~/.jimbo/config.toml`:
+
+```toml
+sandbox = "docker"
+```
+
+For Podman, use `sandbox = "podman"`. On macOS, run `podman machine init` once and `podman machine start` before
+starting jimbo.
+
+For one run only, start jimbo with `jimbo --sandbox docker` or `jimbo --sandbox podman`. `--sandbox` takes the same values as the setting
+and replaces it for that run.
+
+- The first time, jimbo builds the image `jimbo-sandbox`, which takes a few minutes. It has Debian, git,
+  build tools, Python with uv and pytest, Node.js, and the `clangd` and `basedpyright` language servers.
+  `jimbo sandbox build` builds it again, for example after you update jimbo (`jimbo sandbox build podman` for
+  Podman, which keeps its own images).
+- jimbo starts one container at the first command and removes it when jimbo exits. Commands in a session share
+  it, so a server started in the background can be reached by later commands.
+- Commands run as your user, not root, so they can't install system packages. For other tools, build your own
+  image from [the bundled Dockerfile](src/jimbo/bundled/sandbox/Dockerfile) and set `sandbox_image`.
+- To open a server in the container from your browser, type `/sandbox port 5173` and go to
+  `http://localhost:5173`.
+- `sandbox_readonly = ["~/.gitconfig"]` adds a file or folder the container can read, for example so git
+  commits have your name.
+- `sandbox_network = false` blocks network access in either sandbox.
+
+A sandbox doesn't protect the project itself: an approved command can still change or delete its files.
+`/undo` restores file changes jimbo made with its file tools, but not changes made by commands.
+
+See [Sandbox](docs/reference.md#sandbox) for all settings.
 
 ## Language servers
 
@@ -149,7 +196,8 @@ before it starts a server.
 | Go | `gopls` |
 | TypeScript, JavaScript | `typescript-language-server` |
 
-`/lsp` shows which servers jimbo found. See [Language servers](docs/reference.md#language-servers) to add
+With the Docker sandbox, servers run in the container, so jimbo uses the ones in the image, not the ones on your
+computer. `/lsp` shows which servers jimbo found. See [Language servers](docs/reference.md#language-servers) to add
 another language or turn them off.
 
 ## Customize it
@@ -198,6 +246,8 @@ See [Instructions and skills](docs/reference.md#instructions-and-skills) and [Ag
 | `jimbo: command not found` | The folder pip installs scripts into is not on your `PATH`. Add it, or install jimbo in a virtual environment and activate it. |
 | `no main model` | Create `~/.jimbo/config.toml` as shown in [Set up a model](#set-up-a-model). |
 | `provider openrouter has no API key configured` | Set `OPENROUTER_API_KEY` in this terminal, or run `/providers key openrouter` and paste the key. |
+| `sandbox = "docker" but Docker is not available` | Start Docker (Docker Desktop on macOS), or run without it: `jimbo --sandbox auto`. |
+| `sandbox = "podman" but Podman is not available` | On macOS, run `podman machine start` (and `podman machine init` the first time). Or run without it: `jimbo --sandbox auto`. |
 | HTTP 429 from the provider | The provider limits requests per minute. Set `requests_per_minute` for that provider in `~/.jimbo/config.toml`. See [Providers and API keys](docs/reference.md#providers-and-api-keys). |
 
 ## Update
@@ -206,7 +256,9 @@ See [Instructions and skills](docs/reference.md#instructions-and-skills) and [Ag
 pip install --force-reinstall git+https://github.com/jamesgregson/jimbo.git
 ```
 
-`--force-reinstall` is needed because the version number does not change between commits.
+`--force-reinstall` is needed because the version number does not change between commits. For the same reason,
+jimbo doesn't notice when the sandbox image is out of date: if you use a container sandbox, run
+`jimbo sandbox build` (or `jimbo sandbox build podman`) after updating.
 
 ## Develop
 
@@ -218,13 +270,15 @@ uv sync                                  # create .venv with jimbo and the dev d
 uv run jimbo                             # run jimbo from the source in this clone
 uv run jimbo --workspace ~/my-project    # run it on another project
 uv run pytest                            # run the tests (no network or API key needed)
+uv run jimbo sandbox build               # build the sandbox image, so the Docker tests run instead of being skipped
+uv run jimbo sandbox build podman        # the same for the Podman tests
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) describes how the code is organized.
 
 ## Evals
 
-The eval suite runs jimbo on 36 small coding tasks with a real model and checks the results. Use it to see
+The eval suite runs jimbo on 38 small coding tasks with a real model and checks the results. Use it to see
 whether a change to jimbo, or a different model, does better or worse. It is in the repo, not in the
 installed package, so run it from a clone (see [Develop](#develop)):
 
@@ -235,12 +289,14 @@ uv run python -m evals run --tag cpp          # only the C++ tasks
 uv run python -m evals run --tag skills       # only the tasks that check skills are used
 uv run python -m evals run --model <name>     # another model
 uv run python -m evals run --no-lsp           # without language servers
+uv run python -m evals run --sandbox docker   # each task in its own Docker container (or --sandbox podman)
 uv run python -m evals compare <run-a> <run-b>
 ```
 
 It uses your `~/.jimbo/config.toml` and API key, and each task costs model requests. The C++ tasks need `make`
 and a C++17 compiler (`c++`, or the one in `CXX`). Each task runs in a temp copy of its files. On macOS, shell
-commands run in the sandbox; on other systems, add `--no-sandbox`. Tasks run 4 at a time; if the provider
+commands run under `sandbox-exec`; on other systems, add `--sandbox docker`, or `--no-sandbox` to run them
+unconfined. Tasks run 4 at a time; if the provider
 returns HTTP 429, add `--requests-per-minute N` or `--jobs 1`.
 
 Each run saves its results to `evals/results/<run-id>/`. Open `report.html` there to see each task's result,

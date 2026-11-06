@@ -23,7 +23,7 @@ def test_shown_only_when_reported():
     assert Spend.from_dict(spend.to_dict()).thinking_tokens == 1200  # kept across a resume
     plain = {"requests": 1, "input_tokens": 1, "output_tokens": 2}
     d = {"tokens": 10, "window": None, "turn": {**plain, "thinking_tokens": 150}, "session": plain}
-    assert "turn 1 in 2 out (150 thinking)" in format_stats(d) and "session 1 in 2 out ·" in format_stats(d)
+    assert "turn context 1 in 2 out (150 thinking)" in format_stats(d) and "session 1 in 2 out ·" in format_stats(d)
 
 
 async def test_the_session_reports_them(tmp_path):

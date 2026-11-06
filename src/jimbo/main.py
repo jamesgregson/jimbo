@@ -12,12 +12,12 @@ from .core.models import MAIN
 from .core.runner import run_frontend
 from .frontends.registry import build_frontend, pick_ui
 from .providers.preflight import inspect_model
+from .tools.container_sandbox import rebuild
 from .tools.shell import kill_background
 from .wiring import build_session
 
 
-def main() -> None:
-    os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")  # banner garbles streaming output
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="jimbo", description="A simple coding agent")
     ap.add_argument("prompt", nargs="?", help="one-shot task; omit for an interactive session")
     ap.add_argument("--model", help="main model for this run: an alias or <provider>:<name>")
@@ -29,14 +29,42 @@ def main() -> None:
                       help="auto-approve file edits, and shell commands the assessment model rates medium risk or lower")
     ap.add_argument("--resume", nargs="?", const="", metavar="ID",
                     help="continue a saved session (the most recent if no id/prefix is given)")
-    args = ap.parse_args()
+    ap.add_argument("--sandbox", choices=["auto", "on", "off", "docker", "podman"],
+                    help="where shell commands run, in place of the sandbox setting: auto (sandbox-exec on macOS "
+                         "when available), on (sandbox-exec or refuse to start), off, docker or podman")
+    return ap
+
+
+def overrides(args: argparse.Namespace) -> dict:
+    """Settings given on the command line; they win over both config files."""
+    return {k: v for k, v in {"workspace": args.workspace, "ui": args.ui, "sandbox": args.sandbox}.items() if v}
+
+
+def build_cli(argv: list[str]) -> str:
+    """The runtime `jimbo sandbox build [docker|podman]` builds for: the one named, else the configured one."""
+    match argv:
+        case [("docker" | "podman") as cli]:
+            return cli
+        case []:
+            return "podman" if Settings().sandbox == "podman" else "docker"
+    raise ValueError("usage: jimbo sandbox build [docker|podman]")
+
+
+def main() -> None:
+    os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")  # banner garbles streaming output
+    if sys.argv[1:3] == ["sandbox", "build"] and len(sys.argv) <= 4:
+        try:
+            rebuild(build_cli(sys.argv[3:]))
+        except ValueError as e:
+            raise SystemExit(f"jimbo: {e}") from None
+        return
+    args = parser().parse_args()
     if args.resume and not args.prompt and len(args.resume.split()) > 1:  # jimbo --resume "fix the tests"
         args.prompt, args.resume = args.resume, ""
 
-    overrides = {k: v for k, v in {"workspace": args.workspace, "ui": args.ui}.items() if v}
     sink = None
     try:
-        settings = Settings(**overrides)
+        settings = Settings(**overrides(args))
         if args.model:
             settings.model_aliases[MAIN] = settings.model_aliases.get(args.model, args.model)
         if args.yolo:
@@ -109,6 +137,8 @@ def main() -> None:
             await kill_background(session.deps)
             if session.deps.lsp:
                 await session.deps.lsp.close()
+            if session.deps.sandbox:
+                await session.deps.sandbox.close()
             if stop := getattr(frontend, "stop", None):
                 await stop()
             if spent.requests and settings.ui != "json":  # json: the session_end event says it

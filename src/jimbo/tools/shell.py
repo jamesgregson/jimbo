@@ -1,15 +1,12 @@
 import asyncio
-import os
-import shutil
-import signal
 
 from pydantic_ai import ModelRetry, RunContext, Tool
 from pydantic_ai.tools import ToolDefinition
 
 from ..core.deps import Deps, ToolDenied
+from .sandbox import SHELL, SandboxError, kill, spawn
 
 MAX_OUTPUT_BYTES = 30_000
-SHELL = shutil.which("bash") or "/bin/sh"
 
 
 class _Capped:
@@ -36,18 +33,11 @@ class _Capped:
                 + bytes(self.tail).decode("utf-8", "replace"))
 
 
-def _kill(proc: asyncio.subprocess.Process) -> None:
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)  # the whole group: `cmd | cmd`, background jobs, ...
-    except ProcessLookupError:
-        pass
-
-
 class BackgroundProcess:
     """A shell(background=true) process: its output is read as it arrives and kept until shell_output reads it."""
 
-    def __init__(self, command: str, proc: asyncio.subprocess.Process) -> None:
-        self.command, self.proc = command, proc
+    def __init__(self, command: str, proc: asyncio.subprocess.Process, deps: Deps) -> None:
+        self.command, self.proc, self.deps = command, proc, deps
         self.unread = bytearray()
         self.dropped = 0  # unread bytes thrown away to keep the newest MAX_OUTPUT_BYTES
         self.killed = False
@@ -84,17 +74,17 @@ class BackgroundProcess:
     async def kill(self) -> None:
         if self.proc.returncode is None:
             self.killed = True
-            _kill(self.proc)
+            await kill(self.deps.sandbox, self.proc)
             await self.proc.wait()
 
 
 async def _start(d: Deps, command: str) -> asyncio.subprocess.Process:
-    argv = [SHELL, "-c", command]
-    if d.sandbox:
-        argv = d.sandbox.wrap(argv)
-    return await asyncio.create_subprocess_exec(
-        *argv, cwd=d.workspace, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT, start_new_session=True)  # own group: Ctrl+C goes to jimbo only
+    argv = [d.sandbox.shell if d.sandbox else SHELL, "-c", command]
+    try:
+        return await spawn(d.sandbox, argv, cwd=d.workspace, stdin=asyncio.subprocess.DEVNULL,
+                           stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    except SandboxError as e:
+        raise ModelRetry(str(e)) from None
 
 
 async def shell(ctx: RunContext[Deps], command: str, timeout: int | None = None, background: bool = False) -> str:
@@ -120,7 +110,7 @@ async def shell(ctx: RunContext[Deps], command: str, timeout: int | None = None,
     proc = await _start(d, command)
     if background:
         pid = str(len(d.processes) + 1)
-        bg = d.processes[pid] = BackgroundProcess(command, proc)
+        bg = d.processes[pid] = BackgroundProcess(command, proc, d)
         first = await bg.read(wait=1)  # a command that fails at once says so now
         return f"background process {pid}: {first}"
     out = _Capped(MAX_OUTPUT_BYTES)
@@ -134,11 +124,11 @@ async def shell(ctx: RunContext[Deps], command: str, timeout: int | None = None,
         await asyncio.wait_for(asyncio.gather(pump(), proc.wait()), t)
         status = f"exit code {proc.returncode}"
     except TimeoutError:
-        _kill(proc)
+        await kill(d.sandbox, proc)
         await proc.wait()
         status = f"timed out after {t}s (killed)"
     except asyncio.CancelledError:  # run interrupted: don't leave the command running
-        _kill(proc)
+        await kill(d.sandbox, proc)
         raise
     return f"{status}\n{out.text()}".rstrip()
 

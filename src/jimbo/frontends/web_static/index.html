@@ -204,7 +204,7 @@ function showStats(d) {
   $("#st-ctx").textContent = `context ${fmtN(d.tokens)}` + (d.window ? ` / ${fmtN(d.window)} (${pct}%)` : "");
   const m = $("#st-meter"); m.hidden = pct == null; m.classList.toggle("hot", pct != null && pct >= 80);
   m.firstChild.style.width = Math.min(pct || 0, 100) + "%";
-  $("#st-turn").textContent = `prompt: ${fmtN(d.turn.input_tokens)} in · ${outN(d.turn)}`;
+  $("#st-turn").textContent = `turn context: ${fmtN(d.turn.input_tokens)} in · ${outN(d.turn)}`;
   $("#st-session").textContent = `session: ${fmtN(d.session.input_tokens)} in · ${outN(d.session)} · ${d.session.requests} req`;
 }
 
@@ -413,7 +413,7 @@ function onEvent(ev) {
     case "context": lastCtx = d; showStats(d); break;
     case "status":
       currentModel = d.model; renderModelPicker();
-      $("#st-status").textContent = [d.mode === "plan" && "PLAN", d.yolo && "YOLO", d.auto && "AUTO", !d.sandboxed && "not sandboxed"].filter(Boolean).join(" · ");
+      $("#st-status").textContent = [d.mode === "plan" && "PLAN", d.yolo && "YOLO", d.auto && "AUTO", (d.sandbox === "docker" || d.sandbox === "podman") && `${d.sandbox} sandbox`, !d.sandboxed && "not sandboxed"].filter(Boolean).join(" · ");
       approvalMode = d.yolo ? "yolo" : d.auto ? "auto" : "default";
       document.querySelectorAll(".mode select").forEach(syncMode);
       break;

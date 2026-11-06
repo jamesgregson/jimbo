@@ -106,7 +106,7 @@ class AgentSession:
         status = {"model": d.models.explain("main").spec if d.models else None, "workspace": str(d.workspace),
                   "mode": d.mode, "yolo": any(p.name == "yolo" for p in d.gate.policies),
                   "auto": any(p.name == "auto" for p in d.gate.policies),
-                  "sandboxed": d.sandbox is not None}
+                  "sandboxed": d.sandbox is not None, "sandbox": d.sandbox.kind if d.sandbox else None}
         if initial or self._status_sent not in (None, status):
             self._status_sent = status
             await self.emit("status", **status)

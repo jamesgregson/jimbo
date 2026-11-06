@@ -84,7 +84,8 @@ async def _client(ctx: RunContext[Deps], p: Path) -> LspClient:
     if (server := lsp.server_for(p)) is None:
         missing = next((c for c in lsp.choices if c.tried and p.suffix.lower() in c.extensions), None)
         if missing:
-            raise LspUnavailable(f"no language server for {missing.language} is installed "
+            where = " in the sandbox image" if lsp.sandbox and lsp.sandbox.container else ""
+            raise LspUnavailable(f"no language server for {missing.language} is installed{where} "
                                  f"(tried {', '.join(missing.tried)})")
         raise LspUnavailable(f"no language server for {p.suffix or p.name} files; there is one for: "
                              f"{', '.join(lsp.languages())}")

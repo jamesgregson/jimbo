@@ -3,11 +3,14 @@
 import asyncio
 import json
 import os
-import signal
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
+
+from ..tools.sandbox import SandboxError, kill, spawn
+
+if TYPE_CHECKING:
+    from ..tools.sandbox import Sandbox
 
 SHUTDOWN_WAIT = 2.0  # seconds a server gets to exit after `exit` before it is killed
 PROGRESS_GRACE = 1.0  # seconds after start in which a server may still begin reporting work, such as indexing
@@ -65,9 +68,10 @@ class LspClient:
 
     def __init__(self, name: str, argv: list[str], root: Path, *, env: dict[str, str] | None = None,
                  settings: dict | None = None, init_options: dict | None = None, log_path: Path | None = None,
-                 wrap: Callable[[list[str]], list[str]] | None = None) -> None:
+                 sandbox: "Sandbox | None" = None) -> None:
         self.name = name
-        self.argv = wrap(argv) if wrap else argv
+        self.argv = argv
+        self.sandbox = sandbox
         self.root = root
         self.env = env or {}
         self.settings = settings or {}
@@ -102,11 +106,10 @@ class LspClient:
             except OSError:
                 pass
         try:
-            self._proc = await asyncio.create_subprocess_exec(
-                *self.argv, cwd=self.root, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=log or asyncio.subprocess.DEVNULL, env={**os.environ, **self.env},
-                start_new_session=True)  # own group: Ctrl+C goes to jimbo only, and kill takes the whole tree
-        except OSError as e:
+            self._proc = await spawn(self.sandbox, self.argv, cwd=self.root, env=self.env,
+                                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                     stderr=log or asyncio.subprocess.DEVNULL)
+        except (OSError, SandboxError) as e:
             raise LspError(f"language server {self.name} didn't start: {e}") from None
         finally:
             if log:
@@ -114,9 +117,11 @@ class LspClient:
         self._reader = asyncio.create_task(self._read_loop())
         self._started_at = asyncio.get_running_loop().time()
         root = path_uri(self.root)
+        # A server may exit when this process is gone; in a container, jimbo's pid means nothing.
+        pid = None if self.sandbox and self.sandbox.container else os.getpid()
         try:
             result = await self.request("initialize", {
-                "processId": os.getpid(), "rootUri": root, "rootPath": str(self.root),
+                "processId": pid, "rootUri": root, "rootPath": str(self.root),
                 "workspaceFolders": [{"uri": root, "name": self.root.name}],
                 "clientInfo": {"name": "jimbo"}, "capabilities": capabilities(),
                 "initializationOptions": self.init_options}, timeout)
@@ -202,10 +207,7 @@ class LspClient:
             await asyncio.wait_for(proc.wait(), SHUTDOWN_WAIT)
         except TimeoutError:
             pass
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)  # whatever it started, too
-        except (ProcessLookupError, PermissionError):
-            pass
+        await kill(self.sandbox, proc)  # whatever it started, too
         await proc.wait()
         if self._reader:
             self._reader.cancel()

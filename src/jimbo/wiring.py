@@ -23,9 +23,10 @@ from .core.store import SessionStore
 from .core.skills import load_project_instructions, load_skills
 from .core.session import AgentSession
 from .lsp.manager import LspManager
-from .lsp.servers import resolve_servers
+from .lsp.servers import executables, resolve_servers
 from .providers.preflight import ModelFacts, inspect_model
 from .providers.registry import build_model_from_spec
+from .tools.container_sandbox import ContainerSandbox, find_commands
 from .tools.sandbox import build_sandbox
 
 
@@ -108,7 +109,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                                **({"detail": call.detail} if unseen else {}))  # no prompt showed this diff
 
     workspace = settings.workspace.resolve()
-    sandbox = build_sandbox(settings.sandbox, workspace, settings.sandbox_writable, settings.sandbox_network)
+    sandbox = build_sandbox(settings, workspace)
     gate = ApprovalGate(policies, observe)
     # Started with --yolo or --auto: "default" means the normal chain, not that one.
     default_chain = (settings.approval if not {"yolo", "auto"} & set(settings.approval)
@@ -119,7 +120,11 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                 models=router, secret_files=settings.secret_files,
                 ask_user=getattr(frontend, "ask_questions", None))
     if settings.lsp:
-        choices, problems = resolve_servers(settings)
+        if isinstance(sandbox, ContainerSandbox):  # servers run in the container, so look for them in its image
+            found = find_commands(sandbox.image, executables(settings), sandbox.cli)
+            choices, problems = resolve_servers(settings, lambda name: name if name in found else None)
+        else:
+            choices, problems = resolve_servers(settings)
         for warning in problems:
             print(f"jimbo: {warning}", file=sys.stderr)
         log_dir = settings.log_dir if settings.log_sessions else None

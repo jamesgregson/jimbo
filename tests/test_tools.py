@@ -118,7 +118,7 @@ async def test_shell_denied_becomes_retry(tmp_path):
 @pytest.mark.skipif(not sb.available(), reason="sandbox-exec is macOS only")
 async def test_sandbox_confines_writes(tmp_path):
     outside = Path.home() / f".jimbo-sandbox-probe-{time.time_ns()}"
-    s = sb.Sandbox([tmp_path])
+    s = sb.SeatbeltSandbox([tmp_path])
     c = ctx(tmp_path, sandbox=s)
     try:
         out = await shell(c, f"touch inside.txt && echo ok; touch {outside}; echo rc=$?")
@@ -129,13 +129,15 @@ async def test_sandbox_confines_writes(tmp_path):
 
 
 def test_build_sandbox_modes(tmp_path, monkeypatch):
-    assert sb.build_sandbox("off", tmp_path, [], True) is None
+    def build(mode, **kw):
+        return sb.build_sandbox(settings(tmp_path, sandbox=mode, **kw), tmp_path)
+    assert build("off") is None
     monkeypatch.setattr(sb, "available", lambda: False)
-    assert sb.build_sandbox("auto", tmp_path, [], True) is None
+    assert build("auto") is None
     with pytest.raises(ValueError):
-        sb.build_sandbox("on", tmp_path, [], True)
+        build("on")
     monkeypatch.setattr(sb, "available", lambda: True)
-    s = sb.build_sandbox("auto", tmp_path, [tmp_path / "extra"], False)
+    s = build("auto", sandbox_writable=[tmp_path / "extra"], sandbox_network=False)
     assert tmp_path.resolve() in s.writable and (tmp_path / "extra").resolve() in s.writable
     assert "network-outbound" in s.profile()
 

@@ -70,7 +70,7 @@ def fixing_model():
 
 
 async def test_run_suite_with_scripted_model(tmp_path):
-    cfg = RunConfig(sandbox=False, user_config=tmp_path / "none.toml", main_model=fixing_model())
+    cfg = RunConfig(sandbox="off", user_config=tmp_path / "none.toml", main_model=fixing_model())
     run_dir = await run_suite(load_tasks(["bug-paginate", "bug-coupon-minimum"]), cfg, results_dir=tmp_path)
     results = {r["task"]: r for r in map(json.loads, (run_dir / "results.jsonl").read_text().splitlines())}
     fixed, other = results["bug-paginate"], results["bug-coupon-minimum"]
@@ -90,7 +90,7 @@ async def test_run_suite_with_scripted_model(tmp_path):
 
 
 async def test_retry_failed_only_stops_at_the_first_pass(tmp_path):
-    cfg = RunConfig(sandbox=False, user_config=tmp_path / "none.toml", main_model=fixing_model(), trials=3,
+    cfg = RunConfig(sandbox="off", user_config=tmp_path / "none.toml", main_model=fixing_model(), trials=3,
                     retry_failed_only=True)
     run_dir = await run_suite(load_tasks(["bug-paginate", "bug-coupon-minimum"]), cfg, results_dir=tmp_path)
     results = list(map(json.loads, (run_dir / "results.jsonl").read_text().splitlines()))

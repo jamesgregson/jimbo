@@ -18,6 +18,9 @@ from .lsp.manager import MAX_EXITS, LspManager, LspUnavailable
 from .core.skills import Skill, format_skill_index, reload_and_describe, load_project_instructions, memory_paths, use_skill
 from .providers.credentials import describe_key_source
 from .providers.registry import all_providers
+from .tools.container_sandbox import ContainerSandbox, parse_port
+from .tools.sandbox import SandboxError
+from .tools.shell import kill_background
 from .tools.todos import format_todos
 
 AGENT_TEMPLATE = """\
@@ -303,6 +306,39 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
                 return f"Language server {name} stopped." if await manager.stop(name) else f"{name} isn't running."
         raise CommandError("usage: /lsp [start|stop|restart <name>]")
 
+    async def sandbox(session: AgentSession, args: str) -> str:
+        box = session.deps.sandbox
+        if not isinstance(box, ContainerSandbox):
+            if args.split():
+                raise CommandError('/sandbox port and reset need a container sandbox (sandbox = "docker" or '
+                                   '"podman")')
+            return box.describe() if box else "not sandboxed"
+        try:
+            match args.split():
+                case []:
+                    return box.status()
+                case ["reset"]:
+                    await kill_background(session.deps)
+                    if session.deps.lsp:
+                        await session.deps.lsp.close()
+                    await box.close()
+                    return "Sandbox container removed. A new one starts at the next command."
+                case ["port", "close", spec]:
+                    host, _ = parse_port(spec)
+                    return f"Stopped forwarding host port {host}." if await box.close_port(host) \
+                        else f"Host port {host} isn't forwarded."
+                case ["port", spec]:
+                    host, container = parse_port(spec)
+                    await box.open_port(host, container)
+                    text = f"forwarding 127.0.0.1:{host} -> container port {container}"
+                    if settings.ui == "web" and settings.web_host not in ("127.0.0.1", "localhost", "::1"):
+                        text += (f"\nThe forward listens on 127.0.0.1 of the machine jimbo runs on, so a browser "
+                                 f"reaching jimbo at {settings.web_host} can't open it.")
+                    return text
+        except (ValueError, SandboxError) as e:
+            raise CommandError(str(e)) from None
+        raise CommandError("usage: /sandbox [reset | port <port> | port <host>:<container> | port close <port>]")
+
     async def quit_(session: AgentSession, args: str) -> None:
         raise QuitSession
 
@@ -328,6 +364,8 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
     registry.add("undo", "restore the files changed by the latest turn that changed any", undo)
     registry.add("output", "show the latest shell output or agent report in full", output)
     registry.add("lsp", "list language servers, or start, stop or restart one: /lsp [start|stop|restart <name>]", lsp)
+    registry.add("sandbox", "show the sandbox, or forward a port or reset the container: "
+                 "/sandbox [reset | port <port> | port <host>:<container> | port close <port>]", sandbox)
     registry.add("quit", "exit jimbo", quit_)
 
 
@@ -349,7 +387,8 @@ def describe_lsp(manager: LspManager) -> str:
             state = "found, not started"
         rows.append((c.language, name, state))
     width = [max((len(r[i]) for r in rows), default=0) for i in (0, 1)]
-    return "\n".join(["Language servers (lsp = true):",
+    where = " in the sandbox image" if manager.sandbox is not None and manager.sandbox.container else ""
+    return "\n".join([f"Language servers{where} (lsp = true):",
                       *(f"  {lang:<{width[0]}}  {name:<{width[1]}}  {state}" for lang, name, state in rows)])
 
 

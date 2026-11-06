@@ -71,7 +71,8 @@ class LspManager:
                                      f"({self.denied[server.name]})")
             if server.name not in self.approved:
                 try:
-                    where = "in the sandbox" if self.sandbox else "not sandboxed"
+                    where = (f"in the {self.sandbox.kind} container" if self.sandbox and self.sandbox.container
+                             else "in the sandbox" if self.sandbox else "not sandboxed")
                     await deps.authorize(call_id, "lsp_start", {"server": server.name},
                                          f"start language server {server.name} for {server.language}",
                                          detail=f"$ {' '.join(server.command)}\n\nIt runs {where} until jimbo exits. "
@@ -98,7 +99,7 @@ class LspManager:
         client = LspClient(server.name, list(server.command), self.workspace, env=server.env,
                            settings=server.settings, init_options=server.init_options,
                            log_path=self.log_path(server.name) if self.log_path else None,
-                           wrap=self.sandbox.wrap if self.sandbox else None)
+                           sandbox=self.sandbox)
         stamp = self._stamp(server.name)
         try:
             await client.start(self.timeout)

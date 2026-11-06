@@ -19,8 +19,9 @@ BUNDLED_DIR = Path(__file__).parent / "bundled"
 # code and credentials are sent. These keys are only read from ~/.jimbo/config.toml (or env/CLI).
 UNTRUSTED_KEYS = {"model", "api_key", "ollama_base_url", "openai_base_url", "openrouter_base_url",
                   "workspace", "web_host", "approval", "approval_allow", "sandbox", "sandbox_writable",
-                  "sandbox_network", "log_dir", "user_dir", "providers", "model_aliases", "models", "tasks",
-                  "secret_files", "lsp_servers"}
+                  "sandbox_network", "sandbox_image", "sandbox_readonly", "sandbox_ports", "sandbox_env",
+                  "sandbox_memory", "sandbox_cpus", "log_dir", "user_dir", "providers", "model_aliases", "models",
+                  "tasks", "secret_files", "lsp_servers"}
 RENAMED_TASKS = {"shell_assess": "jimbo-shell-assess", "compaction": "jimbo-compaction"}
 
 
@@ -151,9 +152,16 @@ class Settings(BaseSettings):
 
     shell_timeout: int = 120  # seconds, default per command; the model may ask for up to shell_timeout_max
     shell_timeout_max: int = 600
-    sandbox: SandboxMode = "auto"  # auto: sandbox-exec when available (macOS); on: refuse to run without it
+    # auto: sandbox-exec when available (macOS); on: refuse to run without it; docker, podman: a container
+    sandbox: SandboxMode = "auto"
     sandbox_writable: list[Path] = []  # extra writable paths besides workspace, temp and cache dirs
     sandbox_network: bool = True
+    sandbox_image: str = ""  # docker, podman: empty means the bundled image, built on first use
+    sandbox_readonly: list[Path] = []  # docker, podman: extra paths mounted read-only
+    sandbox_ports: list[int | str] = []  # docker, podman: forwards opened when the container starts, 5173 or "8080:5173"
+    sandbox_env: dict[str, str] = {}  # docker, podman: environment variables set in the container
+    sandbox_memory: str = "8g"  # container --memory; "" means no limit
+    sandbox_cpus: float = 0  # container --cpus; 0 means no limit
 
     @classmethod
     def settings_customise_sources(cls, settings_cls: type[BaseSettings], init_settings: InitSettingsSource,

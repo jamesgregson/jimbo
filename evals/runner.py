@@ -23,6 +23,7 @@ from jimbo.core.stats import thinking_tokens
 from jimbo.core.trace import trace_page
 from jimbo.providers.preflight import ModelFacts, inspect_model
 from jimbo.providers.registry import all_providers, build_model_from_spec, provider_config
+from jimbo.tools import container_sandbox
 from jimbo.tools.sandbox import available as sandbox_available
 from jimbo.wiring import build_session
 
@@ -30,6 +31,8 @@ from .grading import JUDGE_TASK, Outcome, check_events, judge, run_check
 from .tasks import EVALS_DIR, Task
 
 RESULTS_DIR = EVALS_DIR / "results"
+# --sandbox -> the sandbox setting
+SANDBOX_MODES = {"seatbelt": "on", "docker": "docker", "podman": "podman", "off": "off"}
 EVAL_CHAIN = ["rules", "yolo"]  # deny rules still apply; everything else is allowed
 BASE_DENY = ["shell:git push*", "shell:sudo *"]
 PLAN_NOTE = ("This is an evaluation run: the plan is recorded and will not be carried out. "
@@ -44,7 +47,7 @@ class RunConfig:
     trials: int = 1
     retry_failed_only: bool = False  # run a task's trials one after another, stopping at its first pass
     jobs: int = 4
-    sandbox: bool = True
+    sandbox: str = "seatbelt"  # seatbelt, docker or podman (a container per trial), or off
     network: bool = True
     lsp: bool = True  # False: no language servers, to compare runs with and without them
     keep: bool = False  # keep each trial's temp workspace
@@ -91,7 +94,7 @@ def make_settings(cfg: RunConfig, task: Task | None, workspace: Path, user_dir: 
     if (src := user_config_path(cfg)).is_file() and not (user_dir / "config.toml").exists():
         shutil.copy(src, user_dir / "config.toml")
     s = Settings(workspace=workspace, user_dir=user_dir, log_dir=log_dir, ui="plain", approval=list(EVAL_CHAIN),
-                 sandbox="on" if cfg.sandbox else "off", sandbox_network=cfg.network, lsp=cfg.lsp,
+                 sandbox=SANDBOX_MODES[cfg.sandbox], sandbox_network=cfg.network, lsp=cfg.lsp,
                  **(task.settings if task else {}))
     s.approval_deny = [*s.approval_deny, *BASE_DENY, *(task.deny if task else [])]
     if cfg.model:
@@ -196,6 +199,8 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
         finally:
             if session is not None and session.deps.lsp:
                 await session.deps.lsp.close()
+            if session is not None and session.deps.sandbox:
+                await session.deps.sandbox.close()
             sink.close()
         diff = await asyncio.to_thread(workspace_diff, ws)
         (out / "diff.patch").write_text(diff)
@@ -252,8 +257,13 @@ def jimbo_commit() -> dict:
 
 async def preflight(cfg: RunConfig) -> tuple[Settings, ModelFacts]:
     """Check the setup once before any trial: sandbox, main model and its key."""
-    if cfg.sandbox and not sandbox_available():
-        raise ValueError("no sandbox on this system: commands would run unconfined. Pass --no-sandbox to run anyway")
+    if cfg.sandbox == "seatbelt" and not sandbox_available():
+        raise ValueError("no sandbox-exec on this system: use --sandbox docker or podman, or --sandbox off to run commands "
+                         "unconfined")
+    if cfg.sandbox in ("docker", "podman"):
+        if why := container_sandbox.unavailable(cfg.sandbox):
+            raise ValueError(f"--sandbox {cfg.sandbox} but {cfg.sandbox.capitalize()} is not available: {why}")
+        await asyncio.to_thread(container_sandbox.ensure_image, container_sandbox.bundled_image(), cfg.sandbox)
     tmp = Path(tempfile.mkdtemp(prefix="jimbo-eval-preflight-"))
     try:
         settings = make_settings(cfg, None, tmp, tmp / "home" / ".jimbo", tmp / "logs")

@@ -10,7 +10,7 @@ from ..core.agents import PROGRESS
 from ..core.approval import ApprovalDecision, ApprovalRequest, mode_switch, parse_answer
 from ..core.events import Event
 from ..core.questions import Answers, Question, ask_by_line
-from ..core.stats import OUTPUT_TOOLS, agent_prefix, format_stats, output_preview
+from ..core.stats import OUTPUT_TOOLS, agent_prefix, format_stats, output_preview, sandbox_label
 
 
 class _Stdin:
@@ -73,7 +73,7 @@ class PlainFrontend:
             return
         match event.kind:
             case "status":
-                sandbox = "sandboxed" if d["sandboxed"] else "NOT sandboxed"
+                sandbox = sandbox_label(d)
                 flags = "".join(f" · {f}" for f, on in (("plan mode", d["mode"] == "plan"), ("YOLO", d["yolo"]), ("AUTO", d.get("auto"))) if on)
                 print(f"[jimbo: {d['model']} · {d['workspace']} · {sandbox}{flags} · session {event.session_id}]",
                       file=sys.stderr)

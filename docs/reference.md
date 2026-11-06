@@ -7,7 +7,7 @@ Look things up here. To get started, see the [README](../README.md).
 - [Providers and API keys](#providers-and-api-keys)
 - [Models per task](#models-per-task)
 - [Approvals](#approvals)
-- [Sandbox (macOS)](#sandbox-macos)
+- [Sandbox](#sandbox)
 - [Language servers](#language-servers)
 - [Interfaces](#interfaces)
 - [Slash commands](#slash-commands)
@@ -20,7 +20,7 @@ Look things up here. To get started, see the [README](../README.md).
 
 Settings are read from these sources, highest priority first:
 
-1. CLI flags
+1. CLI flags (`--workspace`, `--ui` and `--sandbox` replace the settings of the same name)
 2. `JIMBO_USER_DIR`, which replaces `~/.jimbo`. It's the only environment variable jimbo reads
 3. `<workspace>/.jimbo/config.toml`
 4. `~/.jimbo/config.toml` (jimbo doesn't create this file; make it yourself)
@@ -67,9 +67,15 @@ secret_files = [".env", ".env.local", "*.pem", "*.key", "id_rsa"]   # shortened 
 # ---- Shell and sandbox ------------------------------------------------------------------------
 shell_timeout = 120           # seconds, per command
 shell_timeout_max = 600       # the most the model may ask for
-sandbox = "auto"              # auto | on (refuse to run without it) | off
+sandbox = "auto"              # auto | on (refuse to run without it) | off | docker | podman
 sandbox_writable = []         # extra writable paths
 sandbox_network = true        # false blocks outbound network from shell commands
+sandbox_image = ""            # docker, podman: empty means the bundled image, built on first use
+sandbox_readonly = []         # docker, podman: extra paths mounted read-only
+sandbox_ports = []            # docker, podman: ports forwarded when the container starts, 5173 or "8080:5173"
+sandbox_env = {}              # docker, podman: environment variables set in the container
+sandbox_memory = "8g"         # docker, podman: memory limit; "" means no limit
+sandbox_cpus = 0              # docker, podman: CPU limit; 0 means no limit
 
 # ---- Language servers (see Language servers) --------------------------------------------------
 lsp = true                    # false: start no language servers and hide the lsp_* tools
@@ -323,20 +329,99 @@ and its usual variants (not `.env.example`), `*.pem`, `*.key`, `id_rsa` and `id_
 `~/.jimbo/config.toml` to change it; a workspace config can't. It doesn't stop a shell command you approve,
 or an `@path` you type yourself.
 
-## Sandbox (macOS)
+## Sandbox
 
-`shell` runs bash non-interactively in the workspace root, with a timeout. On macOS it runs under
-`sandbox-exec`, so commands can read anything but write only to the workspace, temp directories, `~/.cache`
-and `~/Library/Caches`. Approval prompts say whether a command is sandboxed. Other platforms have no
-sandbox.
+`shell` runs bash non-interactively in the workspace root, with a timeout. Language servers run the same way.
+Approval prompts say where a command runs. There are two sandboxes:
 
-- `sandbox`: `auto` uses it when available, `on` refuses to start without it, `off` disables it.
-- `sandbox_writable = ["~/other"]` adds writable paths.
+- **macOS sandbox** (`sandbox = "auto"` or `"on"`): commands run under `sandbox-exec`. They can read anything
+  but write only to the workspace, temp directories, `~/.cache` and `~/Library/Caches`. `auto` uses it when
+  available and runs commands unsandboxed elsewhere; `on` refuses to start without it.
+- **Container sandbox** (`sandbox = "docker"` or `"podman"`, macOS and Linux): commands run in a container
+  that sees only the workspace, so they can't read your home directory or your environment variables either.
+
+`sandbox = "off"` turns sandboxing off. `jimbo --sandbox <mode>` sets the mode for one run, in place of the setting.
+
+- `sandbox_writable = ["~/other"]` adds writable paths. In a container sandbox they are mounted at the same path.
 - `sandbox_network = false` blocks outbound network, and hides `web_fetch`.
 
 Git in a workspace that is a subdirectory of a repo can't write the repo's `.git` unless you add it to
-`sandbox_writable`. If jimbo itself runs inside a sandbox, `auto` falls back to unsandboxed, because macOS
+`sandbox_writable`. If jimbo itself runs inside a macOS sandbox, `auto` falls back to unsandboxed, because macOS
 doesn't allow nesting.
+
+### Container sandbox (Docker or Podman)
+
+```toml
+sandbox = "docker"                    # or "podman"
+sandbox_readonly = ["~/.gitconfig"]   # for git commits with your name
+```
+
+Docker and Podman behave the same, except as described under [Podman](#podman). jimbo checks the runtime when
+it starts and exits if it isn't running. It does not fall back to running commands
+unsandboxed.
+
+**The container.** jimbo starts one container at the first command and removes it when jimbo exits. Later
+commands use the same container, so a server started with `background = true` can be reached by a later
+`curl localhost`. The container:
+
+- mounts the workspace, `sandbox_writable` and `sandbox_readonly` (read-only) at the same paths as on the
+  host, and nothing else. jimbo won't mount `/`, your home directory, or a path that holds the Docker or Podman socket.
+- runs commands as your user id, not root, with no Linux capabilities. Commands can't install system
+  packages; put them in the image.
+- gets none of your environment variables, only `HOME=/home/jimbo`, `TERM`, `LANG` and `sandbox_env`.
+- keeps `~/.cache` in the volume `jimbo-cache`, shared by all sessions, so pip, uv and npm caches survive.
+- has a memory limit (`sandbox_memory`, default 8g), an optional CPU limit (`sandbox_cpus`) and a limit of
+  1024 processes.
+
+On timeout, Ctrl+C or `shell_kill`, jimbo kills the command and every process it started inside the container.
+If the container stops, for example when it runs out of memory, the next command says so and a new container
+starts at the command after it. Containers left by a jimbo process that crashed are removed the next time jimbo
+starts.
+
+**Images.** With `sandbox_image` empty, jimbo builds `jimbo-sandbox:<jimbo version>` from
+[src/jimbo/bundled/sandbox/Dockerfile](../src/jimbo/bundled/sandbox/Dockerfile) the first time it is needed.
+This takes a few minutes. The image has Debian with bash, git, ripgrep, build tools, Python with uv and pytest,
+Node.js, socat, and the `clangd` and `basedpyright` language servers. `jimbo sandbox build` builds it again and
+removes older `jimbo-sandbox` images. It uses Podman when `sandbox = "podman"`; `jimbo sandbox build docker`
+or `jimbo sandbox build podman` picks the runtime. Docker and Podman keep separate images. For other tools, copy the Dockerfile, add to it, build it, and set
+`sandbox_image` to its name; jimbo pulls an image it doesn't have. An image needs `sh` and `sleep`, and `socat`
+for port forwarding. Language servers must be in the image: `/lsp` lists those found there.
+
+**Ports.** A server in the container is reachable only from inside it. To open it from the host, type
+`/sandbox port 5173` (or `/sandbox port 8080:5173` for a different host port) and browse to
+`http://localhost:5173`. jimbo listens on `127.0.0.1` and passes each connection into the container, so forwards
+work with `sandbox_network = false` too, and the server can listen on `localhost` in the container.
+`sandbox_ports` opens forwards when the container starts. With `--ui web` and a `web_host` that isn't local, a
+browser on another machine can't reach the forwards.
+
+**`/sandbox`** shows the container, image, mounts, network, ports and limits.
+
+| Command | What it does |
+|---------|--------------|
+| `/sandbox port <port>` | forward `127.0.0.1:<port>` on the host to the same port in the container |
+| `/sandbox port <host>:<container>` | forward a host port to a different container port |
+| `/sandbox port close <port>` | stop the forward on that host port |
+| `/sandbox reset` | stop background commands and language servers and remove the container; a new one starts at the next command |
+
+Mounts and the image are fixed when the container starts. After changing `sandbox_image`, `sandbox_writable` or
+`sandbox_readonly`, run `/sandbox reset` or restart jimbo.
+
+#### Podman
+
+- **macOS.** Podman runs containers in a VM. Run `podman machine init` once and `podman machine start` before
+  jimbo. The VM shares `/Users`, `/private` and `/var/folders` with the Mac by default. A workspace elsewhere,
+  such as under `/Volumes`, fails to start with a message saying so; add the folder with
+  `podman machine init --volume`, or move the workspace.
+- **Rootless.** With rootless Podman, jimbo adds `--userns=keep-id`, so files that commands write belong to
+  you on the host. `/sandbox` says whether Podman is rootless. Rootless Podman on cgroups v1 ignores the memory,
+  CPU and process limits, and `/sandbox` says so.
+- **SELinux.** On Linux with SELinux enabled, jimbo adds `--security-opt label=disable` for the container (with
+  Docker too), so the container can read the mounts without jimbo relabelling your files. On macOS the VM
+  already labels its shared folders for containers, so the flag isn't added.
+- **Image names.** Podman may refuse or ask about a short `sandbox_image` name such as `rust:1`. Use a full
+  name, such as `docker.io/library/rust:1`.
+- If `docker` runs Podman (the `podman-docker` package), `sandbox = "docker"` uses the Podman flags, and
+  `/sandbox` says `podman sandbox (through the docker command)`.
 
 **Background commands:** `shell` with `background = true` starts a command with no timeout, such as a server or a
 watcher, and returns an id. The approval prompt says `run in background`. The model reads new output with
@@ -382,7 +467,7 @@ before the edit are only counted.
 run project code: `rust-analyzer` runs build scripts and proc macros, and `typescript-language-server` loads
 plugins named in `tsconfig.json`. If you answer no, jimbo doesn't ask again for that server until you type
 `/lsp start <name>`. To skip the prompt, see Approvals. Plan mode allows server starts, and denies
-`lsp_rename`. Servers run in the sandbox, like `shell`. Each server's stderr goes to
+`lsp_rename`. Servers run in the sandbox, like `shell`; with a container sandbox they must be in the image. Each server's stderr goes to
 `<log_dir>/<session id>.lsp-<name>.log`.
 
 **Commands:** `/lsp` lists servers and their state. `/lsp start|stop|restart <name>` starts, stops or restarts
@@ -488,6 +573,7 @@ command = ["/opt/node/bin/pyright-langserver", "--stdio"]
 | `/undo` | restore the files that turn changed; repeat to go further back |
 | `/output` | show the latest shell output or agent report in full |
 | `/lsp [start\|stop\|restart <name>]` | list language servers, or start, stop or restart one |
+| `/sandbox [reset \| port ...]` | show the sandbox; forward a port or reset the container (container sandbox) |
 | `/quit` | exit |
 
 Tab completes commands in `tui` and `web`. Every skill and custom command is also a `/name` command.
