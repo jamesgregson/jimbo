@@ -4,9 +4,10 @@ import asyncio
 import getpass
 import sys
 import threading
+from typing import Awaitable, Callable
 
 from ..core.agents import PROGRESS
-from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
+from ..core.approval import ApprovalDecision, ApprovalRequest, mode_switch, parse_answer
 from ..core.events import Event
 from ..core.questions import Answers, Question, ask_by_line
 from ..core.stats import agent_prefix, format_stats, output_preview
@@ -54,6 +55,11 @@ class PlainFrontend:
         self._thinking = False  # reasoning is mid-line on stderr
         self._stats = ""
         self._stdin = _Stdin()
+        self._set_mode: Callable[[str], Awaitable[None]] | None = None
+
+    def bind_approval_mode(self, set_mode: Callable[[str], Awaitable[None]]) -> None:
+        """Called by run_frontend: `/approve <mode>` typed at an approval prompt switches modes."""
+        self._set_mode = set_mode
 
     async def next_user_input(self) -> str | None:
         try:
@@ -144,7 +150,11 @@ class PlainFrontend:
         if req.detail:
             print(req.detail, file=sys.stderr)
         try:
-            answer = parse_answer(await self._stdin.line(f"[y]es / [n]o / [a]lways ({req.always})? "))
+            # `/approve <mode>` switches modes for later calls; this one is still asked about
+            while (mode := mode_switch(line := await self._stdin.line(f"[y]es / [n]o / [a]lways ({req.always})? "))) \
+                    is not None and self._set_mode:
+                await self._set_mode(mode)
+            answer = parse_answer(line)
             if answer:
                 return answer
             note = (await self._stdin.line("Why? (optional, enter to skip) ")).strip()

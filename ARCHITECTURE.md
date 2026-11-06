@@ -261,7 +261,8 @@ everything else is auto-approved. `/approve default` restores the normal chain.
 The named chains live in `ApprovalModes`, which `/approve` and frontend controls share. A frontend with its own
 control defines `bind_approval_mode`; `run_frontend` hands it `set_approval_mode`, which, unlike a slash command,
 works mid-run and while a prompt is open. It replaces `gate.policies`, so a call already being decided keeps the
-old chain and later calls use the new one. A frontend with an optional `confirm(message) -> bool` (the TUI) is
+old chain and later calls use the new one. The line frontends (tui, plain) use it for `/approve <mode>` typed at
+an approval prompt: the mode switches and the same call is asked about again. A frontend with an optional `confirm(message) -> bool` (the TUI) is
 asked before a risky mode is turned on: `run_frontend` sets it as `session.confirm`, `/approve auto|yolo` uses it,
 and a session started in a risky mode is asked once and falls back to the default chain on "no". Because policies are plain
 objects behind a protocol, a smarter one (for example an LLM-based guard) can be inserted before `ask`.

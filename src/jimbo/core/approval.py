@@ -60,6 +60,13 @@ def parse_answer(text: str) -> ApprovalDecision | None:
     return ApprovalDecision(allow=False, note=answer)
 
 
+def mode_switch(text: str) -> str | None:
+    """The mode in `/approve <mode>` typed at an approval prompt, so a line frontend can switch modes there
+    and ask again instead of taking the line as a denial. None: the line is an answer."""
+    cmd, _, arg = text.strip().partition(" ")
+    return arg.strip() if cmd == "/approve" else None
+
+
 class ApprovalPolicy(Protocol):
     name: str
 

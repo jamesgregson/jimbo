@@ -62,6 +62,44 @@ async def test_approval_mapping():
     assert "Approve write_file" in out.getvalue()
 
 
+async def test_approve_at_an_approval_prompt_switches_mode_and_asks_again():
+    req = ApprovalRequest(id="1", tool="shell", summary="run")
+    fe, out = make(["/approve auto", "y", "y", "/approve default", "/approve yolo", "n", "y"])
+    modes = []
+
+    async def set_mode(mode):
+        modes.append(mode)
+
+    fe.bind_approval_mode(set_mode)
+    assert (await fe.request_approval(req)).allow  # confirmed auto, then answered
+    assert modes == ["auto"] and "Confirm" in out.getvalue()
+    assert (await fe.request_approval(req)).allow  # yolo not confirmed: unchanged
+    assert modes == ["auto", "default"]
+
+
+async def test_question_keeps_the_steering_draft():
+    from types import SimpleNamespace
+    from prompt_toolkit.buffer import Buffer
+    lines: asyncio.Queue[str] = asyncio.Queue()
+
+    async def ask(_msg):
+        return await lines.get()
+
+    fe = TuiFrontend(Console(file=StringIO(), force_terminal=False), ask)
+    buf = Buffer()
+    fe._session = SimpleNamespace(default_buffer=buf, app=SimpleNamespace(invalidate=lambda: None))
+    reader = asyncio.create_task(fe.next_user_input())
+    await asyncio.sleep(0)
+    buf.text = "half a steer"
+    approval = asyncio.create_task(fe.request_approval(ApprovalRequest(id="1", tool="shell", summary="run")))
+    await asyncio.sleep(0)
+    assert buf.text == ""  # the question gets an empty line
+    await lines.put("y")
+    assert (await approval).allow
+    await lines.put(" and the rest")
+    assert await reader == "half a steer and the rest"  # the draft came back
+
+
 async def test_input_quit_and_double_interrupt():
     fe, _ = make(["hi", EOFError()])
     assert await fe.next_user_input() == "hi"

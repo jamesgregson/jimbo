@@ -22,7 +22,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 from pydantic_ai.messages import BinaryContent
 
-from ..core.approval import ApprovalDecision, ApprovalRequest, parse_answer
+from ..core.approval import MODE_WARNING, RISKY_MODES, ApprovalDecision, ApprovalRequest, mode_switch, parse_answer
 from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
 from ..core.agents import PROGRESS
@@ -200,9 +200,11 @@ class TuiFrontend:
         self.console = console or Console()
         kb = KeyBindings()
         self._cancel: Callable[[], object] | None = None
+        self._set_mode: Callable[[str], Awaitable[None]] | None = None
         self._running = False
         self._prompting = False  # next_user_input is waiting on the main prompt
         self._question: tuple[str, asyncio.Future[str]] | None = None  # asked through the main prompt
+        self._draft = ""  # what was typed at the main prompt when a question took it; restored after
         # One question at a time: a confirm from /approve typed while steering and an approval the model asks for
         # would otherwise share the prompt, and one would take the other's answer.
         self._turn = asyncio.Lock()
@@ -269,6 +271,10 @@ class TuiFrontend:
         """Called by run_frontend: Ctrl+C / Esc during a run stop it."""
         self._cancel = cancel
 
+    def bind_approval_mode(self, set_mode: Callable[[str], Awaitable[None]]) -> None:
+        """Called by run_frontend: `/approve <mode>` typed at an approval prompt switches modes."""
+        self._set_mode = set_mode
+
     def bind_model_list(self, lister: Callable[[str], Awaitable[list[str] | str]]) -> None:
         """Called by run_frontend: model names for completion."""
         self.model_completer.lister = lister
@@ -312,6 +318,9 @@ class TuiFrontend:
             return await self._prompt(message)
         fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._question = (message, fut)
+        if self._session is not None and (buf := self._session.default_buffer).text:
+            self._draft = buf.text  # a half-typed steering message must not become the answer
+            buf.reset()
         self._invalidate()
         try:
             return await fut
@@ -382,6 +391,7 @@ class TuiFrontend:
             if self._question:  # the line answers a question (approval), it isn't a message
                 if not self._question[1].done():
                     self._question[1].set_result(text)
+                prefill, self._draft = self._draft, ""  # back to what was being typed
                 continue
             self._interrupted = False
             if (m := PASTE_CMD_RE.fullmatch(text.strip())) and not self._question:
@@ -517,13 +527,16 @@ class TuiFrontend:
     async def confirm(self, message: str) -> bool:
         """A yes/no question; only an exact yes counts."""
         async with self._turn:
-            self._stop_live()
-            self.console.print(Panel(Text(message, style="bold"), title="Confirm", border_style="red"))
-            try:
-                answer = await self._ask_line("[y]es / [n]o? ")
-            except (EOFError, KeyboardInterrupt):
-                return False
-            return answer.strip().lower() in ("y", "yes")
+            return await self._confirm(message)
+
+    async def _confirm(self, message: str) -> bool:
+        self._stop_live()
+        self.console.print(Panel(Text(message, style="bold"), title="Confirm", border_style="red"))
+        try:
+            answer = await self._ask_line("[y]es / [n]o? ")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer.strip().lower() in ("y", "yes")
 
     async def ask_secret(self, message: str) -> str | None:
         """A line that isn't echoed or kept in input history."""
@@ -575,7 +588,12 @@ class TuiFrontend:
             body.append(Syntax(req.detail, "diff", theme="ansi_dark") if is_diff else Text(req.detail))
         self.console.print(Panel(Group(*body), title=f"Approve {req.tool}", border_style="yellow"))
         try:
-            answer = parse_answer(await self._ask_line(f"[y]es / [n]o / [a]lways ({req.always})? "))
+            # `/approve <mode>` switches modes for later calls; this one is still asked about
+            while (mode := mode_switch(line := await self._ask_line(f"[y]es / [n]o / [a]lways ({req.always})? "))) \
+                    is not None and self._set_mode:
+                if mode not in RISKY_MODES or await self._confirm(MODE_WARNING):
+                    await self._set_mode(mode)
+            answer = parse_answer(line)
             if answer:
                 return answer
             note = (await self._ask_line("Why? (optional, enter to skip) ")).strip()
