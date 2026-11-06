@@ -344,3 +344,39 @@ async def test_streamed_thinking_is_emitted(tmp_path):
     await s.send("go")
     thought = "".join(e.data["text"] for e in fe.events if e.kind == "assistant_thinking_delta")
     assert thought == "Let me think"
+
+
+async def test_wording_shapes_the_prompt_and_hides_always():
+    asked = []
+
+    async def ask(req):
+        asked.append(req)
+        return ApprovalDecision(allow=True, remember="session")
+
+    remembered = RememberedDecisions()
+    au = AskUser(ask, remembered)
+    call = ToolCallInfo(tool="lsp_start", args={"server": "clangd"}, summary="start clangd", workspace=Path("."),
+                        wording={"title": "Start a language server?", "always": None, "allow_label": "Start it"})
+    await au.evaluate(call)
+    req = asked[0]
+    assert req.title == "Start a language server?" and req.keys() == "[y] start it / [n] deny? "
+    assert not remembered.allows(call)  # "a" typed anyway is a plain yes
+    plain = ApprovalRequest(id="2", tool="shell", summary="run", always="this exact command")
+    assert plain.title == "Approve shell"
+    assert plain.keys() == "[y] allow once / [n] deny / [a] always (this exact command)? "
+
+
+async def test_plan_prompt_is_worded_for_a_plan(tmp_path):
+    from jimbo.core.approval import PlanMode
+    asked = []
+
+    async def ask(req):
+        asked.append(req)
+        return ApprovalDecision(allow=False)
+
+    plan = PlanMode(lambda: True, ask)
+    await plan.evaluate(ToolCallInfo(tool="exit_plan", args={"plan": "- a"}, summary="", detail="- a",
+                                     workspace=tmp_path))
+    req = asked[0]
+    assert (req.title, req.markdown, req.always) == ("Review the plan", True, None)
+    assert req.keys() == "[y] approve and start / [n] revise? " and req.note_prompt == "What should change in the plan?"

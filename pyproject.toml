@@ -5,7 +5,7 @@ description = "A simple coding agent built on Pydantic AI"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic-ai-slim[openai]",
+    "pydantic-ai-slim[openai,web-fetch]",
     "pydantic-settings",
     "rich",
     "prompt_toolkit",

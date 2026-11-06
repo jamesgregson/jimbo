@@ -114,9 +114,13 @@ src/jimbo/
     store.py           SessionStore: history + todos saved per turn (<id>.messages.json) for --resume
     checkpoints.py     Checkpoints: files as each turn found them, for /diff and /undo
   tools/             what the model can call (all go through Deps.authorize)
-    fs.py paths.py     read_file (images returned as images), list_dir, write_file, edit_file; workspace path confinement
+    fs.py paths.py     read_file (images returned as images), list_dir, write_file, edit_file, multi_edit, delete_file,
+                       move_file; workspace path confinement
     search.py          glob, grep
-    shell.py           shell (with timeout, output capping, process-group kill)
+    shell.py           shell (with timeout, output capping, process-group kill); background processes, shell_output,
+                       shell_kill
+    web.py             web_fetch (Pydantic AI's local fetcher, behind an approval)
+    show.py            show_image: emits an `image` event (path, not bytes); only frontends with shows_images offer it
     sandbox.py         macOS sandbox-exec wrapper for shell
     todos.py skills.py todo_write, load_skill, reload_skills (main session only)
     agents.py          run_agent
@@ -582,8 +586,12 @@ How each of these reaches the model is in [Prompts](#prompts).
 
 An agent run is a child `AgentSession` with `nested=True`, so compaction, cancellation and usage tracking use
 the same code as the main loop. `core` can't import `build_agent`, so [wiring.py](src/jimbo/wiring.py) sets
-`Deps.spawn_agent`, the only way to start one. `run_agent` calls it from a tool, with `sequential=True` so agents
-run one at a time. `AgentSession.delegate()` calls it directly for `@name` and commands with `agent:`.
+`Deps.spawn_agent`, the only way to start one. `run_agent` calls it from a tool. Agents whose tools are all in
+`READ_ONLY_TOOLS` ([tools/agents.py](src/jimbo/tools/agents.py)), and every agent in plan mode, run in parallel
+when the model calls several in one response; other agents hold `Deps.agent_lock`, so they run one at a time.
+The agents in one response split the requests left (`share`). `spawn_agent` gives a second run of the same agent
+the name `<name>-2`, so the ids `ForwardSink` and `Deps.authorize()` put on its calls don't collide.
+`AgentSession.delegate()` calls it directly for `@name` and commands with `agent:`.
 The child's instructions and messages are in [Agent prompts](#agent-prompts).
 
 - **Deps.** The child gets `replace(parent.deps, ...)` with its own router, empty todos and `agents={}`. Empty
@@ -646,7 +654,8 @@ refused), after one `authorize` call with the diff of every file. Each file goes
 - **History**: [core/store.py](src/jimbo/core/store.py) `SessionStore` saves the history and todos after each
   turn to `<id>.messages.json`. `--resume` loads them.
 - **Checkpoints**: [core/checkpoints.py](src/jimbo/core/checkpoints.py) records each file as a turn first found
-  it. `/diff` shows the changes and `/undo` restores the files.
+  it. `/diff` shows the changes and `/undo` restores the files. `delete_file` and `move_file` record every file
+  in a directory they remove (at most 1,000 files and 50 MB), and `/undo` recreates the directories.
 - **Event log**: [core/jsonl.py](src/jimbo/core/jsonl.py) `JsonlSink` writes every event to
   `~/.jimbo/sessions/<id>.jsonl`, which `/trace` opens.
 

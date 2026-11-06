@@ -20,16 +20,21 @@ from .tools.fs import FS_TOOLS
 from .tools.lsp import LSP_TOOLS
 from .tools.search import SEARCH_TOOLS
 from .tools.plan import PLAN_TOOLS
-from .tools.shell import shell
+from .tools.shell import SHELL_TOOLS
+from .tools.show import SHOW_TOOLS
 from .tools.todos import TODO_TOOLS
+from .tools.web import WEB_TOOLS
 
 SYSTEM_PROMPT = """\
 You are jimbo, a coding agent working inside a single workspace directory on {os}.
 Use the provided tools to inspect the code before answering; do not guess file contents.
 Find files with glob and search text with grep; read them with read_file.
-You can create and modify files with write_file (whole file) and edit_file (exact replace);
-read a file before editing it. Paths are relative to the workspace root.
-Use shell to run commands (tests, builds, git); it is non-interactive and runs in the workspace root.
+You can create and modify files with write_file (whole file), edit_file (exact replace) and multi_edit
+(several replacements in one file); read a file before editing it. Delete and move files with delete_file and
+move_file, not shell, so /undo can reverse it. Paths are relative to the workspace root.
+Use shell to run commands (tests, builds, git); it is non-interactive and runs in the workspace root. Run
+servers and other long-running commands with background=true.
+Use web_fetch to read documentation and other web pages.
 For tasks with 3 or more steps, plan them with todo_write first and update it as you progress.
 Be concise.
 If a tool call is denied, do not retry the same call; explain what you wanted to do and why instead.
@@ -38,7 +43,8 @@ If a tool call is denied, do not retry the same call; explain what you wanted to
 
 PLAN_PROMPT = """\
 # Plan mode
-You are in plan mode: only read-only tools work (read_file, glob, grep, todo_write); edits and shell are denied.
+You are in plan mode: only read-only tools work (read_file, list_dir, glob, grep, the lsp_ tools, web_fetch,
+run_agent, todo_write); edits and shell are denied.
 Investigate the code, then call exit_plan(plan) with a concrete plan as a markdown list of steps
 (one "- " or "1. " item per step). The user reviews it; once approved, plan mode ends and you can execute it.
 If the plan is rejected, revise it using the feedback and call exit_plan again."""
@@ -190,7 +196,7 @@ def _tool_name(tool) -> str:
     return tool.name if isinstance(tool, Tool) else tool.__name__
 
 
-ALL_TOOLS = [*FS_TOOLS, *SEARCH_TOOLS, shell, *TODO_TOOLS, *SKILL_TOOLS, *LSP_TOOLS]  # what agents may have
+ALL_TOOLS = [*FS_TOOLS, *SEARCH_TOOLS, *SHELL_TOOLS, *WEB_TOOLS, *TODO_TOOLS, *SKILL_TOOLS, *LSP_TOOLS]  # what agents may have
 AGENT_TOOL_NAMES = {_tool_name(t) for t in ALL_TOOLS}
 
 
@@ -198,7 +204,8 @@ def build_agent(settings: Settings, model: Model, spec: AgentSpec | None = None)
     """The main agent, or with `spec` an agent run: its own prompt, and only the tools it lists."""
     system = SYSTEM_PROMPT.format(os=platform.system())
     if spec is None:
-        instructions, tools = [system], [*ALL_TOOLS, *AGENT_TOOLS, *PLAN_TOOLS, *ASK_TOOLS, *COMPACT_TOOLS, *RELOAD_TOOLS, *MEMORY_TOOLS]
+        instructions, tools = [system], [*ALL_TOOLS, *AGENT_TOOLS, *PLAN_TOOLS, *ASK_TOOLS, *COMPACT_TOOLS,
+                                         *RELOAD_TOOLS, *MEMORY_TOOLS, *SHOW_TOOLS]
     else:
         instructions = [system, AGENT_PROMPT.format(name=spec.name, body=spec.body)]
         tools = [t for t in ALL_TOOLS if spec.tools is None or _tool_name(t) in spec.tools]

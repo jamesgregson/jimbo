@@ -4,6 +4,7 @@ import json
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from helpers import ScriptedFrontend, settings
+from jimbo.core.approval import ApprovalDecision
 from jimbo.tools.plan import plan_steps
 from jimbo.wiring import build_session
 
@@ -32,6 +33,11 @@ def retries(s):
             if isinstance(p, ToolReturnPart) and p.outcome == "retried"]
 
 
+def results(s, tool):
+    return [str(p.content) for m in s.history for p in m.parts
+            if isinstance(p, ToolReturnPart) and p.tool_name == tool and p.outcome == "success"]
+
+
 def test_plan_steps():
     assert [t.content for t in plan_steps(PLAN)] == ["read code", "fix bug", "run tests"]
 
@@ -58,7 +64,23 @@ async def test_rejected_plan_stays_in_plan_mode_even_with_yolo(tmp_path):
     await s.commands.dispatch(s, "/plan on")
     await s.send("go")
     assert s.deps.mode == "plan" and s.deps.todos == []
-    assert any("rejected" in r for r in retries(s))
+    assert any("not approved" in r for r in results(s, "exit_plan"))
+
+
+async def test_rejection_feedback_steers_the_next_plan(tmp_path):
+    class Reject(ScriptedFrontend):
+        async def request_approval(self, req):
+            return ApprovalDecision(allow=False, note="use sqlite, not postgres")
+
+    fe = Reject()
+    calls = [("exit_plan", {"plan": f"- plan {i}"}) for i in range(5)]  # more rejections than tool_retries allows
+    s = build_session(settings(tmp_path), fe, model=model(calls))
+    await s.commands.dispatch(s, "/plan on")
+    assert await s.send("go") == "done"
+    got = results(s, "exit_plan")
+    assert len(got) == 5 and not retries(s) and not [e for e in fe.events if e.kind == "error"]
+    assert "The feedback: use sqlite, not postgres" in got[0] and "call exit_plan again" in got[0]
+    assert s.deps.mode == "plan"
 
 
 async def test_exit_plan_hidden_outside_plan_mode(tmp_path):

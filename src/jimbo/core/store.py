@@ -13,7 +13,7 @@ from .events import Event
 # Events worth redrawing when a session is resumed; deltas are covered by assistant_text, and approval
 # prompts or the command list would be stale. run_finished is needed: frontends show a run as working until it.
 REPLAY_KINDS = {"user_message", "assistant_text", "tool_call", "tool_result", "error", "command_output",
-                "compaction", "todos", "run_finished"}
+                "compaction", "todos", "run_finished", "image"}
 
 
 @dataclass

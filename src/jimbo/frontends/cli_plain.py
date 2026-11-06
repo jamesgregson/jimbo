@@ -10,7 +10,7 @@ from ..core.agents import PROGRESS
 from ..core.approval import ApprovalDecision, ApprovalRequest, mode_switch, parse_answer
 from ..core.events import Event
 from ..core.questions import Answers, Question, ask_by_line
-from ..core.stats import agent_prefix, format_stats, output_preview
+from ..core.stats import OUTPUT_TOOLS, agent_prefix, format_stats, output_preview
 
 
 class _Stdin:
@@ -97,7 +97,7 @@ class PlainFrontend:
                 print(f"\n[tool] {agent_prefix(d)}{d['tool']}({d['args']})", file=sys.stderr)
             case "tool_result" if not d["ok"]:
                 print(f"[tool error] {agent_prefix(d)}{d['content']}", file=sys.stderr)
-            case "tool_result" if d.get("tool") == "shell":
+            case "tool_result" if d.get("tool") in OUTPUT_TOOLS:
                 print(agent_prefix(d) + d["content"].strip().splitlines()[0], *output_preview(d["content"]),
                       sep="\n  ", file=sys.stderr)
             case "error":
@@ -140,7 +140,7 @@ class PlainFrontend:
         return await ask_by_line(questions, show, self._stdin.line)
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalDecision:
-        print(f"\nApprove {req.tool}: {req.summary}", file=sys.stderr)
+        print(f"\n{req.title}: {req.summary}", file=sys.stderr)
         if a := req.assessment:
             print(f"[risk: {a['risk'].upper()}] {a['summary']}", file=sys.stderr)
             if a["reasons"]:
@@ -151,13 +151,12 @@ class PlainFrontend:
             print(req.detail, file=sys.stderr)
         try:
             # `/approve <mode>` switches modes for later calls; this one is still asked about
-            while (mode := mode_switch(line := await self._stdin.line(f"[y]es / [n]o / [a]lways ({req.always})? "))) \
-                    is not None and self._set_mode:
+            while (mode := mode_switch(line := await self._stdin.line(req.keys()))) is not None and self._set_mode:
                 await self._set_mode(mode)
             answer = parse_answer(line)
             if answer:
                 return answer
-            note = (await self._stdin.line("Why? (optional, enter to skip) ")).strip()
+            note = (await self._stdin.line(f"{req.note_prompt} (optional, enter to skip) ")).strip()
         except EOFError:
             return ApprovalDecision(allow=False, note="not run: stdin closed, so nobody can approve it")
         return ApprovalDecision(allow=False, note=note or None)

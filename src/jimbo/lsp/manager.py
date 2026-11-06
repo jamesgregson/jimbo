@@ -71,8 +71,14 @@ class LspManager:
                                      f"({self.denied[server.name]})")
             if server.name not in self.approved:
                 try:
+                    where = "in the sandbox" if self.sandbox else "not sandboxed"
                     await deps.authorize(call_id, "lsp_start", {"server": server.name},
-                                         f"start language server {server.name} for {server.language}")
+                                         f"start language server {server.name} for {server.language}",
+                                         detail=f"$ {' '.join(server.command)}\n\nIt runs {where} until jimbo exits. "
+                                                "jimbo uses it to find definitions and references, rename symbols "
+                                                "and report errors after edits. Yes lasts for this session.",
+                                         wording={"title": "Start a language server?", "always": None,
+                                                  "allow_label": "Start it", "deny_label": "Don't start"})
                 except ToolDenied as e:
                     self.denied[server.name] = str(e)
                     raise LspUnavailable(f"language server {server.name} was not started: {e}") from None

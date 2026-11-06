@@ -27,7 +27,7 @@ from ..core.attachments import UserMessage, check_image
 from ..core.events import Event
 from ..core.agents import PROGRESS
 from ..core.questions import Answers, Question, ask_by_line
-from ..core.stats import AgentProgress, agent_prefix, format_stats, output_preview
+from ..core.stats import OUTPUT_TOOLS, AgentProgress, agent_prefix, format_stats, output_preview, shell_failed
 from ..tools.search import list_files
 from .clipboard import clipboard_png
 
@@ -469,9 +469,9 @@ class TuiFrontend:
             case "tool_result":
                 if d["ok"]:
                     first = d["content"].strip().splitlines()[:1]
-                    failed = d.get("tool") == "shell" and first != ["exit code 0"]
+                    failed = d.get("tool") in OUTPUT_TOOLS and bool(first) and shell_failed(first[0])
                     c.print(Text(f"  ✓ {agent_prefix(d)}{_clip(first[0]) if first else ''}", style="yellow" if failed else "dim green"))
-                    if d.get("tool") == "shell":
+                    if d.get("tool") in OUTPUT_TOOLS:
                         for line in output_preview(d["content"]):
                             c.print(Text(f"    {line}", style="dim"))
                 else:
@@ -583,20 +583,21 @@ class TuiFrontend:
                 body.append(Text(f"  assessed by {a['model']}", style="dim"))
             else:
                 body.append(Text("  fixed checks only; no model assessment", style="yellow"))
-        if req.detail:
+        if req.detail and req.markdown:
+            body.append(Markdown(req.detail))
+        elif req.detail:
             is_diff = req.detail.lstrip().startswith(("---", "diff ", "@@"))
             body.append(Syntax(req.detail, "diff", theme="ansi_dark") if is_diff else Text(req.detail))
-        self.console.print(Panel(Group(*body), title=f"Approve {req.tool}", border_style="yellow"))
+        self.console.print(Panel(Group(*body), title=req.title, border_style="yellow"))
         try:
             # `/approve <mode>` switches modes for later calls; this one is still asked about
-            while (mode := mode_switch(line := await self._ask_line(f"[y]es / [n]o / [a]lways ({req.always})? "))) \
-                    is not None and self._set_mode:
+            while (mode := mode_switch(line := await self._ask_line(req.keys()))) is not None and self._set_mode:
                 if mode not in RISKY_MODES or await self._confirm(MODE_WARNING):
                     await self._set_mode(mode)
             answer = parse_answer(line)
             if answer:
                 return answer
-            note = (await self._ask_line("Why? (optional, enter to skip) ")).strip()
+            note = (await self._ask_line(f"{req.note_prompt} (optional, enter to skip) ")).strip()
         except (EOFError, KeyboardInterrupt):
             return ApprovalDecision(allow=False, note="no answer")
         return ApprovalDecision(allow=False, note=note or None)

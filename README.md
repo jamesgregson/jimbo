@@ -1,7 +1,27 @@
 # Jimbo
 
-A coding agent for your terminal. It reads and edits files and runs shell commands in your project. It
-asks before it writes a file or runs a command.
+A coding agent for your terminal. You describe a task, and jimbo reads your code, edits files, runs commands
+and tests, and reports what it did. It asks before it changes a file, runs a command or fetches a web page.
+
+It works with any model that supports tool calling, through OpenRouter, OpenAI or a compatible API, or a local
+model with Ollama. It runs in a terminal, in a browser, or as a JSON event stream for scripts.
+
+## What you can use it for
+
+- **Fix bugs.** Give it an error, a failing test or a description. It reproduces the problem, finds the cause,
+  fixes it and runs the tests.
+- **Add features and refactor.** It edits several files, renames symbols across the project with a language
+  server, moves and deletes files, and checks each edit for new errors.
+- **Write tests** in the style the project already uses.
+- **Understand code.** Ask how something works or where something is used. It searches and reads the code and
+  answers with file paths.
+- **Review changes.** `/review` checks your uncommitted changes for bugs.
+- **Plan first.** `/plan` makes it investigate without changing anything and present a plan for you to approve.
+- **Run and check things.** It runs builds, tests and git. It can start a dev server in the background, read
+  its output and stop it.
+- **Look things up.** It reads documentation, changelogs and issues on the web.
+- **Automate.** `jimbo "<task>"` runs one task and exits. `--ui json` prints events as JSON lines for scripts
+  and CI.
 
 ## Install
 
@@ -24,7 +44,8 @@ printf '[model_aliases]\nmain = "openrouter:z-ai/glm-5.3-flash"\n' > ~/.jimbo/co
 
 Add the `export` line to your shell profile (for example `~/.zshrc`) so the key is set in every terminal.
 
-To use a different model or provider, see [Providers and API keys](docs/reference.md#providers-and-api-keys).
+To use a different model or provider, including OpenAI and local models with Ollama, see
+[Providers and API keys](docs/reference.md#providers-and-api-keys).
 
 ## Run it
 
@@ -51,25 +72,53 @@ Other ways to run it:
 | `jimbo --workspace <dir>` | work on another folder instead of the current one |
 | `cat log.txt \| jimbo "explain this"` | include piped text with the task |
 
-In a session, type `/help` to list commands. Useful ones:
+## What jimbo can do
+
+The model works through these tools:
+
+| Area | Tools |
+|------|-------|
+| Read and search | read files (and images), list directories, find files by name, search file contents |
+| Change files | write a file, replace text (one or several edits at once), delete and move files or directories |
+| Commands | run shell commands with a timeout, or in the background with output read later |
+| Code navigation | go to definition, find references, list symbols, show errors, rename a symbol everywhere (needs a [language server](#language-servers)) |
+| Web | fetch a page as markdown |
+| Images | show you an image, such as a chart it made with a script (`--ui web` only) |
+| Work in steps | keep a todo list, ask you questions, hand a task to an [agent](#agents), present a plan |
+| Memory | save a note that later sessions read |
+
+Every file change is recorded, so `/diff` shows it and `/undo` reverts it. Shell commands are not recorded.
+
+## In a session
+
+- Type a task and press Enter. While jimbo works, you can type another message and it reaches the model at
+  its next step (`tui` and `web`).
+- `@path` adds a file to your message. `@shot.png` attaches an image, and `/paste` attaches the clipboard
+  image (`tui`, macOS).
+- Ctrl+C stops the current task and keeps what it did so far.
+
+Useful commands (type `/help` for all of them):
 
 - `/clear` start a new conversation
 - `/model` switch model, `/providers` add a provider or set a key
 - `/plan` make a plan without changing any files
 - `/diff` show the last file changes, `/undo` revert them
 - `/review` review your uncommitted changes
-- `/skills` list the skills jimbo can load
+- `/approve auto` or `/approve default` change the approval mode
+- `/compact` summarize older history to free context (jimbo also does this when the context fills)
+- `/usage` tokens used and estimated cost
+- `/skills`, `/agents` list skills and agents
 - `/trace` see everything that happened in this session, in the browser
 - `/lsp` list the language servers jimbo found
 - `/quit` exit
 
-Ctrl+C stops the current task.
+Each session is saved, so `jimbo --resume` continues it later.
 
-## Approvals
+## Approvals and safety
 
-Jimbo reads files in your project without asking. Before it writes a file or runs a command, it shows
-you the change or the command and asks. Answer `y` (yes), `n` (no) or `a` (always). `a` allows that
-exact command, or all file writes, for the rest of the session.
+Jimbo reads files in your project without asking. Before it writes, deletes or moves a file, runs a command
+or fetches a web page, it shows you what it will do and asks. Answer `y` (yes), `n` (no) or `a` (always). `a`
+allows that exact command, that tool's file changes, or fetches from that domain, for the rest of the session.
 
 To always allow or always refuse some commands, add lines like these to the top of
 `~/.jimbo/config.toml`:
@@ -79,8 +128,12 @@ approval_allow = ["shell:git status*", "shell:git diff*"]
 approval_deny  = ["shell:sudo *", "shell:rm -rf*"]
 ```
 
-On macOS, commands run in a sandbox that can only write inside your project and temp folders. On other
-systems there is no sandbox.
+- File tools only work inside the project folder.
+- Files such as `.env`, `*.pem` and `*.key` can't be read or searched by the model.
+- On macOS, commands run in a sandbox that can only write inside your project and temp folders. On other
+  systems there is no sandbox.
+
+See [Approvals](docs/reference.md#approvals) and [Sandbox](docs/reference.md#sandbox-macos).
 
 ## Language servers
 
@@ -99,16 +152,44 @@ before it starts a server.
 `/lsp` shows which servers jimbo found. See [Language servers](docs/reference.md#language-servers) to add
 another language or turn them off.
 
-## Project instructions
+## Customize it
 
-Put an `AGENTS.md` (or `JIMBO.md`) file in your project root with build commands, test commands and
-conventions. Jimbo reads it at the start of each session. Run `/init` to have jimbo write one for you.
-Instructions for every project go in `~/.jimbo/AGENTS.md`.
+**Project instructions:** put an `AGENTS.md` (or `JIMBO.md`) file in your project root with build commands,
+test commands and conventions. Jimbo reads it at the start of each session. Run `/init` to have jimbo write
+one for you. Instructions for every project go in `~/.jimbo/AGENTS.md`.
 
-A skill is a folder with a `SKILL.md` file that tells jimbo how to do one kind of task. Put skills in
-`.jimbo/skills/` in your project or in `~/.jimbo/skills/`. Jimbo also reads `.claude/skills/` and
-`.agents/skills/`. It loads a skill when the task needs it. See
-[Instructions and skills](docs/reference.md#instructions-and-skills).
+**Memory:** tell jimbo to remember something ("remember that tests need `make check`"). It saves the note to
+`.jimbo/memory.md` for this project, or `~/.jimbo/memory.md` for every project, and reads it in later sessions.
+
+**Skills:** a skill is a folder with a `SKILL.md` file that tells jimbo how to do one kind of task. Put skills
+in `.jimbo/skills/` in your project or in `~/.jimbo/skills/`. Jimbo also reads `.claude/skills/` and
+`.agents/skills/`. It loads a skill when the task needs it, and each skill is also a `/name` command.
+
+**Commands:** a markdown file in `.jimbo/commands/` or `~/.jimbo/commands/` becomes a slash command that sends
+its text as a prompt.
+
+**Agents:** an agent is a helper with its own instructions, tools and model. It does one task in its own
+conversation and returns a report, so its file reads stay out of your main conversation. Read-only agents run
+at the same time. Define your own in `.jimbo/agents/<name>.md`, run one with `@name <task>`, or let jimbo
+start one.
+
+Jimbo comes with these:
+
+| Kind | Name | What it does |
+|------|------|--------------|
+| Agent | `explore` | searches and reads code to answer a question. Read-only |
+| Agent | `general` | does multi-step work, including edits and commands |
+| Agent | `reviewer` | reviews a diff for bugs |
+| Agent | `charter` | writes `specs/charter.md`: what the project is and how mature it is |
+| Agent | `critic` | reviews a requirements doc for features the project doesn't need yet |
+| Command | `/review` | runs `reviewer` on your uncommitted changes |
+| Command | `/init` | writes or updates `AGENTS.md` |
+| Skill | `debug` | find the cause of a bug or failing test before changing code |
+| Skill | `write-tests` | write tests in the style the project already uses |
+| Skill | `grill-me` | asks you about a plan, one question at a time, until every decision is settled |
+| Skill | `jot-that-down` | saves something you want remembered across sessions |
+
+See [Instructions and skills](docs/reference.md#instructions-and-skills) and [Agents](docs/reference.md#agents).
 
 ## Problems
 

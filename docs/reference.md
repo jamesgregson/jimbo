@@ -286,14 +286,15 @@ are already allowed).
 
 ## Approvals
 
-Reading and searching never ask. `write_file`, `edit_file` and `shell` ask first, unless a rule allows them.
+Reading and searching never ask. `write_file`, `edit_file`, `delete_file`, `move_file`, `shell` and `web_fetch` ask
+first, unless a rule allows them. `multi_edit` asks as `edit_file`, so rules and `a` for `edit_file` cover it.
 
 At a prompt, answer `y`, `n` or `a`. Only those exact answers (or `yes`, `no`, `always`) count: anything else
 denies the call and gives your text to the model as the reason, so a half-typed sentence can't approve
 anything. `a` (always) allows that exact shell command for the rest of the session, that one language
-server, or the whole tool for `write_file` and `edit_file`. In `json` mode, or when stdin is closed, calls that need a prompt are denied.
+server, fetches from that one domain for `web_fetch`, or the whole tool for the file tools. In `json` mode, or when stdin is closed, calls that need a prompt are denied.
 
-A rule is `tool` or `tool:<glob>`, matched against the call's first argument (the command or path):
+A rule is `tool` or `tool:<glob>`, matched against the call's first argument (the command, path or URL):
 
 ```toml
 approval_allow = ["shell:git status*", "shell:uv run pytest*", "write_file:docs/*"]
@@ -303,13 +304,14 @@ approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:secrets/*"]
 - Deny wins, and applies even with `--yolo`.
 - Paths are matched relative to the workspace, however the model spelled them. Deny rules also match the file
   name, so `read_file:*.sql` covers `db/dump.sql`.
+- `move_file` rules are matched against both paths. An allow rule must match both, and a deny rule either.
 - An allow rule never matches a compound shell command (pipes, `;`, `&&`, redirects, `$...`), so
   `shell:git status*` can't approve `git status; rm -rf ~`.
 - Deny rules are best effort: `bash -c "sudo …"` slips past them. The sandbox is the real boundary.
 - Starting a language server asks once per session, as `lsp_start`. `approval_allow = ["lsp_start:clangd"]`
   skips the prompt for one server, and `lsp_start` for all of them. See Language servers.
 
-**Auto mode:** `jimbo --auto` or `/approve auto` makes file writes and edits without asking, and runs shell
+**Auto mode:** `jimbo --auto` or `/approve auto` makes file writes, edits, deletes and moves without asking, and runs shell
 commands without asking when the `jimbo-shell-assess` model rates them low or medium risk. Commands that
 change source control or external state are rated high (see Shell risk assessment), so they still ask.
 Staging with `git add` is not covered and can run without asking. Deny rules and `secret_files` still apply. The fixed checks can raise the risk but can't approve a command on their
@@ -330,11 +332,24 @@ sandbox.
 
 - `sandbox`: `auto` uses it when available, `on` refuses to start without it, `off` disables it.
 - `sandbox_writable = ["~/other"]` adds writable paths.
-- `sandbox_network = false` blocks outbound network.
+- `sandbox_network = false` blocks outbound network, and hides `web_fetch`.
 
 Git in a workspace that is a subdirectory of a repo can't write the repo's `.git` unless you add it to
 `sandbox_writable`. If jimbo itself runs inside a sandbox, `auto` falls back to unsandboxed, because macOS
 doesn't allow nesting.
+
+**Background commands:** `shell` with `background = true` starts a command with no timeout, such as a server or a
+watcher, and returns an id. The approval prompt says `run in background`. The model reads new output with
+`shell_output` and stops the command with `shell_kill`. Neither asks. Each keeps the newest 30,000 bytes of
+output not yet read. jimbo stops background commands when it exits. Ctrl+C does not stop them.
+
+## Web pages
+
+`web_fetch` fetches an http or https URL and gives the model the page as markdown, cut at 50,000 characters.
+Images are passed to the model as images; PDFs and other files are refused. It runs in the jimbo process, not
+in the sandbox. It can't fetch local or private addresses such as `localhost` or `192.168.x.x`; the model uses
+`curl` through `shell` for those. It asks before each fetch. `a` allows that domain for the session, and
+`approval_allow = ["web_fetch:https://docs.python.org/*"]` allows matching URLs. In plan mode it still asks.
 
 ## Language servers
 
@@ -438,6 +453,11 @@ command = ["/opt/node/bin/pyright-langserver", "--stdio"]
   are dropped with a warning when the model can't read images: `vision = false`, or a model that Ollama or
   OpenRouter lists as text-only.
 - **`json`:** for scripts. Every event is a line of JSON on stdout, and calls that need a prompt are denied.
+- **Images from the agent (`web`):** the model can show you an image file from the workspace with `show_image`,
+  for example a chart it made with a script. It appears in the conversation with its caption; click it to open
+  it full size. PNG, JPEG, GIF, WebP and SVG files up to 5 MB work. The page shows the file as it was when it was
+  shown. The session log records the path and caption, not the image, so `/trace` and a resumed session can't
+  show it if the file has changed or been deleted. Other interfaces don't offer the tool.
 - **`web`:** serves on port 8765, or the next free port if that's taken, then opens the page and prints its
   URL in the terminal, so you can get back to it if you close the tab. The URL carries a token. It accepts
   pasted or dropped images, shows approvals as a dialog with the diff, and turns Send into Stop during a
@@ -639,7 +659,11 @@ agent file's model for that run. Commands without `agent:` run on the main model
 `[reviewer] run: pytest -x`. Agent files can't change approvals. In plan mode, agents can't write files or run shell
 commands. `approval_deny = ["run_agent:reviewer"]` stops the main model starting that agent.
 
-**Limits:** agents run one at a time and can't start other agents. An agent uses the turn's `request_limit`. When the
+**Limits:** agents can't start other agents. When the main model starts several agents in one response, those
+whose `tools` are all read-only (`read_file`, `list_dir`, `glob`, `grep`, `load_skill`, `todo_write`, `web_fetch`,
+`shell_output` and the `lsp_*` tools other than `lsp_rename`) run at the same time, and so do all agents in plan
+mode. Other agents run one at a time. Agents started in one response share the requests left in the turn
+equally. A second run of the same agent at the same time is named with a number, as in `explore-2`. An agent uses the turn's `request_limit`. When the
 main model starts one, 5 requests are kept for it to finish the turn, and it receives the first 20,000 characters of
 the report. Ctrl+C stops the agent and the current run. `/undo` reverts an agent's file edits with the rest of the turn.
 
@@ -648,7 +672,9 @@ to a hosted model. Each tool call it makes still needs approval.
 
 ## Plan mode and todos
 
-**Plan mode:** `/plan` allows only read-only tools, and the agent ends with a plan you approve or reject.
+**Plan mode:** `/plan` allows only read-only tools, and the agent ends with a plan you approve or reject. When you
+reject it, jimbo asks why. The model gets your answer, revises the plan and presents it again, as many times as
+needed.
 
 **Todos:** for multi-step work the agent keeps a task list, shown in every interface.
 
@@ -676,6 +702,12 @@ estimate is not what the provider billed. The cost is recorded in these places:
 
 `/usage` shows the session's total so far.
 
+`/trace` groups the session by turn, and each turn by cycle: one box per model request, with the tools it
+called, its context size and how long it took. Each turn's line gives its requests, cycles, tool calls and
+errors. The number of model requests is also in the header and in each turn's usage line, with the requests
+made by agents counted separately, as in `6 request(s) (4 by agents)`. Requests made for shell risk assessment
+and compaction are not counted.
+
 The `tui` toolbar, the `plain` stats line and the `web` stats bar also show the turn number and the cycle, as in
 `turn 3, cycle 7/50`. A turn starts with each message you send. A cycle is one model request: the model
 thinks, then calls tools or answers. The second number is `request_limit`, the most cycles a turn can use.
@@ -686,7 +718,8 @@ When the model reports thinking (reasoning) tokens, they are shown inside the ou
 already part of the output tokens, so they aren't added again. Models that don't report them show no
 thinking count.
 
-`/undo` only covers `write_file` and `edit_file`, not shell commands, and only for the current run of jimbo.
+`/undo` only covers the file tools (`write_file`, `edit_file`, `multi_edit`, `delete_file`, `move_file`), not shell
+commands, and only for the current run of jimbo.
 
 Context fill is measured against `context_window`, which defaults to `num_ctx`. When it passes
 `compact_threshold`, older history is summarized automatically, keeping the last `compact_keep` messages. To

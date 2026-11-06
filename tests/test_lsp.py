@@ -33,12 +33,13 @@ class Recorder:
     name = "ask"
 
     def __init__(self, start=True):
-        self.start, self.asked = start, []
+        self.start, self.asked, self.calls = start, [], []
 
     async def evaluate(self, call):
         if call.read_only:
             return Verdict(action="allow", decided_by="readonly")
         self.asked.append(call.summary)
+        self.calls.append(call)
         ok = self.start or call.tool != "lsp_start"
         return Verdict(action="allow" if ok else "deny", reason=None if ok else "not now", decided_by="user")
 
@@ -113,6 +114,9 @@ async def test_read_tools(make):
     out = await t.lsp_references(ctx, "a.fk", 1, "alpha")
     assert out.splitlines() == ["2 reference(s) to alpha in 2 file(s):", "a.fk:1  def alpha", "b.fk:1  alpha()"]
     assert rec.asked == ["start language server fake for fk"]
+    start = rec.calls[0]  # the prompt names the command, and offers no "always": yes already lasts the session
+    assert start.detail.startswith(f"$ {sys.executable}") and "until jimbo exits" in start.detail
+    assert start.wording["title"] == "Start a language server?" and start.wording["always"] is None
     out = await t.lsp_definition(ctx, "b.fk", 1, "alpha")
     assert out.startswith("Definition of alpha:\na.fk:1  def alpha\n\n`alpha`: a fake symbol")
     assert "config [7]" in out  # the server's workspace/configuration request got the server's settings

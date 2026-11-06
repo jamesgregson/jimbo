@@ -32,7 +32,7 @@ from .attachments import MAX_IMAGES, build_content, content_text, expand_mention
 from .commands import CommandRegistry
 from .compaction import compact as compact_history, render_transcript
 from .cost import Spend, estimate_cost
-from .stats import thinking_tokens
+from .stats import OUTPUT_TOOLS, thinking_tokens
 from .deps import Deps
 from .events import Event, EventKind, EventSink
 from .store import REPLAY_KINDS, SessionStore
@@ -422,7 +422,7 @@ class AgentSession:
                                                     ok=isinstance(ev.part, ToolReturnPart)
                                                     and ev.part.outcome == "success",
                                                     content=content_text(ev.part.content))
-                                    if ev.part.tool_name == "shell":
+                                    if ev.part.tool_name in OUTPUT_TOOLS:
                                         self.last_output = str(ev.part.content)
                                     await self._emit_todos()
                                     await self.emit_status()

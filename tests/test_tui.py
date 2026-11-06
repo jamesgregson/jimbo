@@ -352,3 +352,21 @@ async def test_paste_command_attaches_the_clipboard_image(monkeypatch):
     clip["data"] = None
     fe, out = make(["/paste", "plain"])
     assert await fe.next_user_input() == "plain" and "no image on the clipboard" in out.getvalue()
+
+
+async def test_plan_approval_shows_the_plan_and_asks_what_to_change():
+    prompts = []
+
+    async def ask(message):
+        prompts.append(message)
+        return "n" if len(prompts) == 1 else "split step 2"
+
+    f = TuiFrontend(console=Console(file=StringIO(), width=100), ask=ask)
+    d = await f.request_approval(ApprovalRequest(
+        id="plan-1", tool="exit_plan", title="Review the plan", summary="Approve?", detail="- **read** code\n- fix",
+        markdown=True, always=None, allow_label="Approve and start", deny_label="Revise",
+        note_prompt="What should change in the plan?"))
+    out = f.console.file.getvalue()
+    assert "Review the plan" in out and "Approve exit_plan" not in out and "**read**" not in out
+    assert prompts == ["[y] approve and start / [n] revise? ", "What should change in the plan? (optional, enter to skip) "]
+    assert not d.allow and d.note == "split step 2"

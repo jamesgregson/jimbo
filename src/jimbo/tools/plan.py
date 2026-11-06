@@ -1,6 +1,6 @@
 import re
 
-from pydantic_ai import ModelRetry, RunContext, Tool
+from pydantic_ai import RunContext, Tool
 from pydantic_ai.tools import ToolDefinition
 
 from ..core.deps import Deps, ToolDenied
@@ -22,8 +22,12 @@ async def exit_plan(ctx: RunContext[Deps], plan: str) -> str:
     """
     try:
         await ctx.deps.authorize(ctx.tool_call_id, "exit_plan", {"plan": plan}, "present plan", detail=plan)
-    except ToolDenied as e:
-        raise ModelRetry(str(e)) from e
+    except ToolDenied as e:  # a result, not a retry: a rejection is feedback to act on, and must not use up retries
+        feedback = f"The feedback: {e.reason}" if e.reason else "No reason was given."
+        return (f"The plan was not approved. {feedback}\n"
+                "You are still in plan mode. Change the plan to address the feedback and call exit_plan again "
+                "with the whole revised plan. If it isn't clear what to change, ask the user. If nobody is "
+                "available to approve it, stop and give the plan as your reply.")
     ctx.deps.mode = "normal"
     steps = plan_steps(plan)
     if steps:

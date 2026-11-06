@@ -191,3 +191,46 @@ async def test_trace_page_needs_the_token_and_embeds_the_log(client, tmp_path):
     assert r.status == 200 and 'data-name="abc.jsonl">{"seq":1' in await r.text()
     client.fe.bind_trace(lambda: tmp_path / "missing.jsonl")
     assert (await client.get(f"/trace?token={client.fe.token}")).status == 404
+
+
+PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+       b"\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+
+
+async def test_shown_image_is_served_as_it_was_when_shown(client, tmp_path):
+    f = tmp_path / "plot.png"
+    f.write_bytes(PNG)
+    await client.fe.render(Event(seq=1, session_id="s", kind="image",
+                                 data={"id": "abc", "path": "plot.png", "file": str(f), "media_type": "image/png",
+                                       "bytes": len(PNG), "caption": "a chart"}))
+    f.write_bytes(b"changed later")
+    assert (await client.get("/image/abc?token=nope")).status == 403
+    assert (await client.get(f"/image/missing?token={client.fe.token}")).status == 404
+    r = await client.get(f"/image/abc?token={client.fe.token}")
+    assert r.status == 200 and r.content_type == "image/png" and await r.read() == PNG
+    assert "sandbox" in r.headers["Content-Security-Policy"] and r.headers["X-Content-Type-Options"] == "nosniff"
+
+
+async def test_model_shows_an_image_in_the_web_ui(tmp_path):
+    from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+    from helpers import settings
+    from jimbo.wiring import build_session
+    (tmp_path / "plot.png").write_bytes(PNG)
+    steps = iter([{0: DeltaToolCall(name="show_image", json_args=json.dumps({"path": "plot.png", "caption": "c"}))},
+                  "done"])
+
+    async def stream(messages, info):
+        assert "show_image" in [t.name for t in info.function_tools]
+        yield next(steps)
+    fe = WebFrontend(open_browser=False)
+    s = build_session(settings(tmp_path), fe, model=FunctionModel(stream_function=stream))
+    assert await s.send("plot it") == "done"
+    shown = [m["event"]["data"] for m in fe._history if m["event"]["kind"] == "image"]
+    assert len(shown) == 1 and shown[0]["path"] == "plot.png" and shown[0]["caption"] == "c"
+    c = TestClient(TestServer(fe.build_app()))
+    await c.start_server()
+    try:
+        r = await c.get(f"/image/{shown[0]['id']}?token={fe.token}")
+        assert r.status == 200 and await r.read() == PNG
+    finally:
+        await c.close()

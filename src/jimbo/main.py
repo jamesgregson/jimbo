@@ -12,6 +12,7 @@ from .core.models import MAIN
 from .core.runner import run_frontend
 from .frontends.registry import build_frontend, pick_ui
 from .providers.preflight import inspect_model
+from .tools.shell import kill_background
 from .wiring import build_session
 
 
@@ -105,6 +106,7 @@ def main() -> None:
             spent = session.run_spend
             if spent.requests:
                 await session.close()
+            await kill_background(session.deps)
             if session.deps.lsp:
                 await session.deps.lsp.close()
             if stop := getattr(frontend, "stop", None):

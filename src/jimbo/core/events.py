@@ -31,6 +31,7 @@ EventKind = Literal[
     "busy",
     "config",
     "session_end",
+    "image",
 ]
 
 

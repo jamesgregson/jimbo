@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
     from .questions import Answers, Question
     from .skills import Skill
     from ..tools.sandbox import Sandbox
+    from ..tools.shell import BackgroundProcess
     from ..tools.todos import TodoItem
 
 
@@ -47,10 +49,14 @@ class Deps:
     midrun_steer: "Callable[[list[Any]], Awaitable[list[Any]]] | None" = None
     agent: "AgentSpec | None" = None  # set while running as an agent
     agents: "dict[str, AgentSpec]" = field(default_factory=dict)  # what this session can start; empty in an agent
-    # Set by wiring, which can build agents: (spec, task, usage to add to, model, requests to leave unused).
+    # Set by wiring, which can build agents: (spec, task, usage to add to, model, requests to leave unused, number of
+    # agents started together, which share the requests left).
     spawn_agent: "Callable[..., Awaitable[AgentResult]] | None" = None
+    agent_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # held by an agent run that can change things
     # Set by wiring from the frontend's ask_questions: asks the user questions. None: nobody can answer.
     ask_user: "Callable[[list[Question]], Awaitable[Answers]] | None" = None
+    # Set by wiring when the frontend can display images: shows (file, path as given, media type, caption).
+    show_image: "Callable[[Path, str, str, str], Awaitable[None]] | None" = None
     compact_requested: str | None = None  # set by the compact tool: compact before the next request, with this focus
     no_questions: str | None = None  # a skill marked `interactive: false` in use this turn: ask_user is hidden
     # Set by wiring: reloads agents if their files changed. Returns warnings, or None if nothing changed.
@@ -58,6 +64,8 @@ class Deps:
     # Set by wiring: reloads skills and their /commands if any SKILL.md changed, or always with force=True.
     reload_skills: "Callable[..., Awaitable[None]] | None" = None
     lsp: "LspManager | None" = None  # set by wiring when lsp = true; agents share it
+    # shell(background=true) processes by id, kept after they exit so their output can be read; agents share it
+    processes: "dict[str, BackgroundProcess]" = field(default_factory=dict)
 
     @property
     def can_use_lsp(self) -> bool:
@@ -83,13 +91,15 @@ class Deps:
         return any(fnmatchcase(Path(path).name, p) for p in self.secret_files)
 
     async def authorize(self, call_id: str | None, tool: str, args: dict, summary: str, *,
-                        detail: str | None = None, read_only: bool = False) -> None:
+                        detail: str | None = None, read_only: bool = False, wording: dict | None = None) -> None:
         """Single choke point for tools. Raises ToolDenied if no policy allows the call. `call_id` ties the
-        decision to the tool_call event, under the id ForwardSink gives an agent's calls."""
+        decision to the tool_call event, under the id ForwardSink gives an agent's calls. `wording` words the
+        prompt, if one is shown (see ApprovalRequest)."""
         if self.agent:
             summary = f"[{self.agent.name}] {summary}"
             call_id = f"{self.agent.name}.{call_id}"
         v = await self.gate.check(ToolCallInfo(call_id=call_id, tool=tool, args=args, summary=summary, detail=detail,
-                                               read_only=read_only, workspace=self.workspace))
+                                               read_only=read_only, workspace=self.workspace,
+                                               wording=wording or {}))
         if v.action != "allow":
             raise ToolDenied(v.reason)

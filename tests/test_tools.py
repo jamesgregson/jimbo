@@ -244,3 +244,195 @@ def test_built_in_provider_defaults(monkeypatch):
     assert not provider_config("openrouter", s).send_num_ctx
     with pytest.raises(CredentialError, match="no API key"):
         build_model_from_spec("openai:gpt", s)
+
+
+# ---- multi_edit, delete_file, move_file ----
+
+async def test_multi_edit_applies_in_order_or_not_at_all(tmp_path):
+    from jimbo.tools.fs import Edit, multi_edit
+    (tmp_path / "a.py").write_text("x = 1\ny = 2\nz = 1\n")
+    c = ctx(tmp_path)
+    out = await multi_edit(c, "a.py", [Edit(old="x = 1", new="x = 10"), Edit(old="x = 10\ny", new="x = 10\nw"),
+                                       Edit(old="1", new="3", replace_all=True)])
+    assert "4 replacement(s)" in out
+    assert (tmp_path / "a.py").read_text() == "x = 30\nw = 2\nz = 3\n"
+    with pytest.raises(ModelRetry, match="edit 2"):
+        await multi_edit(c, "a.py", [Edit(old="w", new="v"), Edit(old="missing", new="")])
+    assert (tmp_path / "a.py").read_text() == "x = 30\nw = 2\nz = 3\n"  # the first edit was not written
+
+
+async def test_multi_edit_is_approved_as_edit_file(tmp_path):
+    from jimbo.tools.fs import Edit, multi_edit
+    (tmp_path / "a.py").write_text("x\n")
+    seen = []
+
+    class Record:
+        name = "record"
+
+        async def evaluate(self, call):
+            seen.append(call.tool)
+            return await Yolo().evaluate(call)
+
+    c = SimpleNamespace(tool_call_id=None, deps=Deps(workspace=tmp_path.resolve(), gate=ApprovalGate([Record()])))
+    await multi_edit(c, "a.py", [Edit(old="x", new="y")])
+    assert seen == ["edit_file"]
+
+
+async def test_delete_and_move_are_undone(tmp_path):
+    from jimbo.tools.fs import delete_file, move_file
+    (tmp_path / "pkg/sub").mkdir(parents=True)
+    (tmp_path / "pkg/a.py").write_text("a")
+    (tmp_path / "pkg/sub/b.py").write_text("b")
+    (tmp_path / "old.txt").write_text("old")
+    c = ctx(tmp_path)
+    c.deps.checkpoints.begin()
+    assert await move_file(c, "pkg", "lib/pkg") == "moved pkg to lib/pkg"
+    assert (tmp_path / "lib/pkg/sub/b.py").read_text() == "b" and not (tmp_path / "pkg").exists()
+    assert "deleted old.txt" == await delete_file(c, "old.txt")
+    assert "2 files" in await delete_file(c, "lib")
+    assert not (tmp_path / "lib").exists()
+    c.deps.checkpoints.undo()
+    assert (tmp_path / "pkg/a.py").read_text() == "a" and (tmp_path / "pkg/sub/b.py").read_text() == "b"
+    assert (tmp_path / "old.txt").read_text() == "old"
+    assert not (tmp_path / "lib/pkg/a.py").exists()
+
+
+async def test_delete_and_move_refuse(tmp_path):
+    from jimbo.tools.fs import delete_file, move_file
+    (tmp_path / "a.txt").write_text("a")
+    (tmp_path / "b.txt").write_text("b")
+    (tmp_path / "d").mkdir()
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("keep")
+    (tmp_path / "link").symlink_to(outside)
+    c = ctx(tmp_path)
+    for coro, why in [(delete_file(c, "link"), "symbolic link"), (delete_file(c, "nope"), "does not exist"),
+                      (delete_file(c, "."), "workspace itself"), (delete_file(c, "../x"), "outside"),
+                      (move_file(c, "a.txt", "b.txt"), "already exists"), (move_file(c, "d", "d/e"), "into itself"),
+                      (move_file(c, "a.txt", "../a.txt"), "outside")]:
+        with pytest.raises(ModelRetry, match=why):
+            await coro
+    assert outside.read_text() == "keep" and (tmp_path / "a.txt").exists()
+
+
+async def test_move_rules_match_both_paths(tmp_path):
+    rules = PatternRules(allow=["move_file:src/*"], deny=["move_file:*.env"])
+
+    def info(src, dst):
+        return ToolCallInfo(tool="move_file", args={"path": src, "destination": dst}, summary="", workspace=tmp_path)
+    assert (await rules.evaluate(info("src/a", "src/b"))).action == "allow"
+    assert (await rules.evaluate(info("src/a", "docs/b"))).action == "ask"
+    assert (await rules.evaluate(info("src/a", "src/.env"))).action == "deny"
+
+
+# ---- background shell ----
+
+async def test_background_process_output_and_kill(tmp_path):
+    from jimbo.tools.shell import kill_background, shell_kill, shell_output
+    c = ctx(tmp_path)
+    out = await shell(c, "echo ready; sleep 30", background=True)
+    assert out.startswith("background process 1: running") and "ready" in out
+    assert await shell_output(c, "1") == "running"  # nothing new since the last read
+    out = await shell_kill(c, "1")
+    assert out.startswith("killed")
+    out = await shell(c, "echo one; sleep 1.5; echo two; exit 4", background=True)
+    assert out.startswith("background process 2: running") and "one" in out  # the first second's output
+    out = await shell_output(c, "2", wait=5)
+    assert out.splitlines() == ["exited with code 4", "two"]
+    with pytest.raises(ModelRetry, match="no background process"):
+        await shell_output(c, "9")
+    await shell(c, "sleep 30", background=True)
+    await kill_background(c.deps)
+    assert c.deps.processes["3"].status() == "killed"
+
+
+async def test_background_output_keeps_the_newest(tmp_path, monkeypatch):
+    from jimbo.tools import shell as sh
+    monkeypatch.setattr(sh, "MAX_OUTPUT_BYTES", 100)
+    c = ctx(tmp_path)
+    await shell(c, "sleep 1.5; seq 1 1000", background=True)
+    out = await sh.shell_output(c, "1", wait=5)
+    assert "earlier bytes omitted" in out and out.endswith("1000") and "\n1\n" not in out
+
+
+# ---- web_fetch ----
+
+async def test_web_fetch(tmp_path, monkeypatch):
+    from jimbo.tools import web
+    from pydantic_ai.messages import BinaryContent
+    pages = {"https://docs.example.com/x": {"url": "https://docs.example.com/x", "title": "X", "content": "body"},
+             "https://example.com/doc.pdf": BinaryContent(b"%PDF", media_type="application/pdf")}
+
+    async def fetch(url):
+        return pages[url]
+    monkeypatch.setattr(web, "_fetcher", lambda: fetch)
+    c = ctx(tmp_path)
+    assert await web.web_fetch(c, "https://docs.example.com/x") == "# X\nhttps://docs.example.com/x\n\nbody"
+    with pytest.raises(ModelRetry, match="application/pdf"):
+        await web.web_fetch(c, "https://example.com/doc.pdf")
+    with pytest.raises(ModelRetry, match="not an http"):
+        await web.web_fetch(c, "file:///etc/passwd")
+
+
+def test_web_fetch_always_is_per_domain(tmp_path):
+    from jimbo.core.approval import RememberedDecisions
+    r = RememberedDecisions()
+
+    def info(domain):
+        return ToolCallInfo(tool="web_fetch", args={"url": f"https://{domain}/", "domain": domain}, summary="",
+                            workspace=tmp_path)
+    r.add(info("docs.python.org"))
+    assert r.allows(info("docs.python.org")) and not r.allows(info("evil.example"))
+
+
+async def test_plan_mode_asks_for_web_fetch(tmp_path):
+    from jimbo.core.approval import PlanMode
+    plan = PlanMode(lambda: True, None)
+    fetch = ToolCallInfo(tool="web_fetch", args={"url": "https://a.b"}, summary="", workspace=tmp_path)
+    delete = ToolCallInfo(tool="delete_file", args={"path": "a"}, summary="", workspace=tmp_path)
+    assert (await plan.evaluate(fetch)).action == "ask"
+    assert (await plan.evaluate(delete)).action == "deny"
+
+
+async def test_web_fetch_names_curl_for_local_addresses(tmp_path):
+    from jimbo.tools import web
+    c = ctx(tmp_path)
+    with pytest.raises(ModelRetry, match="use shell with curl"):
+        await web.web_fetch(c, "http://127.0.0.1:9/")
+
+
+@pytest.mark.parametrize("status, failed", [("exit code 0", False), ("exit code 10", True), ("timed out after 5s (killed)", True),
+                                            ("background process 1: running", False), ("killed", False),
+                                            ("background process 2: exited with code 3", True)])
+def test_shell_failed(status, failed):
+    from jimbo.core.stats import shell_failed
+    assert shell_failed(status) is failed
+
+
+# ---- show_image ----
+
+async def test_show_image(tmp_path):
+    from jimbo.tools.show import show_image
+    shown = []
+
+    async def show(file, path, media_type, caption):
+        shown.append((file.name, path, media_type, caption))
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out/plot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 20)
+    (tmp_path / "chart.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+    (tmp_path / "notes.txt").write_text("x")
+    c = ctx(tmp_path, show_image=show)
+    assert await show_image(c, "out/plot.png", " sales by month ") == "Showed out/plot.png to the user."
+    await show_image(c, "chart.svg")
+    assert shown == [("plot.png", "out/plot.png", "image/png", "sales by month"),
+                     ("chart.svg", "chart.svg", "image/svg+xml", "")]
+    for path, why in [("notes.txt", "not a .png"), ("nope.png", "not a file"), ("../x.png", "outside")]:
+        with pytest.raises(ModelRetry, match=why):
+            await show_image(c, path)
+
+
+def test_show_image_is_offered_only_by_the_web_ui(tmp_path):
+    from jimbo.frontends.web import WebFrontend
+    assert build_session(settings(tmp_path), ScriptedFrontend(), model=TestModel()).deps.show_image is None
+    web = build_session(settings(tmp_path), WebFrontend(open_browser=False), model=TestModel())
+    assert web.deps.show_image is not None

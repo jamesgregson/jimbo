@@ -10,6 +10,7 @@ import yaml
 from .commands import NAME_RE, parse_frontmatter
 from .events import Event
 from .models import MAIN
+from .stats import OUTPUT_TOOLS
 
 if TYPE_CHECKING:
     from .session import AgentSession
@@ -114,7 +115,7 @@ class ForwardSink:
             self._new_text = True
             if event.kind == "error":
                 self.reason = d.get("message")
-            if event.kind == "tool_result" and d.get("tool") == "shell":
+            if event.kind == "tool_result" and d.get("tool") in OUTPUT_TOOLS:
                 self._parent.last_output = d["content"]
             if "id" in d:  # agents and their parent number tool calls separately
                 d = {**d, "id": f"{self._tag['name']}.{d['id']}"}

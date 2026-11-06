@@ -740,3 +740,41 @@ async def test_agent_thinking_text_and_context_reach_the_parent_tagged(tmp_path)
     tag = {"name": "worker", "model": "t:fast"}
     assert "".join(e["text"] for e in kinds(fe, "assistant_text_delta") if e.get("agent") == tag) == "the report"
     assert [e["turn"]["requests"] for e in kinds(fe, "context") if e.get("agent") == tag] == [1, 2, 2]
+
+
+# ---- agents in parallel ----
+
+def two_calls(agent):
+    return {i: DeltaToolCall(name="run_agent", json_args=json.dumps({"agent": agent, "task": f"t{i}"})) for i in (0, 1)}
+
+
+def overlap_model(peak):
+    """An agent model that reports how many runs of it were in a request at once."""
+    active = [0]
+
+    async def stream(messages, info):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        await asyncio.sleep(0.1)
+        active[0] -= 1
+        yield "report"
+    return FunctionModel(stream_function=stream)
+
+
+@pytest.mark.parametrize("tools, together", [("tools: [read_file, grep]\n", 2), ("", 1)])
+async def test_read_only_agents_run_together(tmp_path, tools, together):
+    peak = [0]
+    write_agent(tmp_path, "worker", f"---\ndescription: w\nmodel: fast\n{tools}---\nWork.")
+    s, fe = make(tmp_path, two_calls("worker"), "done", models={"t:fast": overlap_model(peak)})
+    assert await s.send("go") == "done"
+    assert peak[0] == together
+    names = sorted(r["agent"]["name"] for r in kinds(fe, "agent_report"))
+    assert names == (["worker", "worker-2"] if together == 2 else ["worker", "worker"])
+
+
+async def test_agents_started_together_share_the_requests_left(tmp_path):
+    write_agent(tmp_path, "reader", "---\ndescription: r\nmodel: fast\ntools: [read_file]\n---\nRead.")
+    s, fe = make(tmp_path, two_calls("reader"), "done", models={"t:fast": scripted("a", "b")}, request_limit=7)
+    await s.send("go")  # 7 - 1 used - 5 kept back leaves 1 request, not enough for two agents
+    reports = [r["content"] for r in kinds(fe, "tool_result") if r["tool"] == "run_agent"]
+    assert len(reports) == 2 and all("too few requests left" in r for r in reports)

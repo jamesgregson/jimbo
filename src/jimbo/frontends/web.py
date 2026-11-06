@@ -45,6 +45,10 @@ from ..tools.search import list_files
 
 STATIC = Path(__file__).parent / "web_static"
 MAX_REPLAY = 5000
+MAX_SHOWN = 100  # images kept for /image; older ones show as no longer available
+# An SVG opened on its own runs as a page on this origin, so shown images get no scripts and no network.
+IMAGE_HEADERS = {"Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+                 "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400"}
 PORT_ATTEMPTS = 20  # how many ports from the configured one to try
 MAX_WS_MESSAGE = MAX_IMAGES * (MAX_IMAGE_BYTES * 4 // 3 + 1024) + 1_000_000  # base64 images plus text
 
@@ -60,6 +64,7 @@ class WebFrontend:
         self._inputs: asyncio.Queue[str | UserMessage] = asyncio.Queue()
         self._clients: set[web.WebSocketResponse] = set()
         self._history: list[dict] = []
+        self._images: dict[str, tuple[str, bytes]] = {}  # image event id -> (media type, the file as it was shown)
         self._pending: dict[str, tuple[ApprovalRequest, asyncio.Future[ApprovalDecision]]] = {}
         self._runner: web.AppRunner | None = None
         self._cancel: Callable[[], object] | None = None
@@ -91,11 +96,15 @@ class WebFrontend:
         """Called by run_frontend so /trace can show the current session's log; None when logging is off."""
         self._trace_log = log
 
+    shows_images = True  # the show_image tool is offered; see _keep_image
+
     # ---- Frontend protocol ----
     async def next_user_input(self) -> str | None:
         return await self._inputs.get()
 
     async def render(self, event: Event) -> None:
+        if event.kind == "image":
+            self._keep_image(event.data)
         msg = {"type": "event", "event": json.loads(event.model_dump_json())}
         self._history.append(msg)
         del self._history[:-MAX_REPLAY]
@@ -159,6 +168,7 @@ class WebFrontend:
         app.router.add_get("/", self._index)
         app.router.add_get("/ws", self._ws)
         app.router.add_get("/trace", self._trace)
+        app.router.add_get("/image/{id}", self._image)
         return app
 
     async def start(self) -> None:
@@ -202,6 +212,26 @@ class WebFrontend:
             return web.Response(text=trace_page(log), content_type="text/html")
         except OSError:
             raise web.HTTPNotFound(text="this session has no log yet") from None
+
+    def _keep_image(self, d: dict) -> None:
+        """Read the image now, so the page shows it as it was when shown, even if the file changes later. A
+        resumed session's images are read as they are now; missing ones stay unavailable."""
+        try:
+            data = Path(d["file"]).read_bytes()
+        except (OSError, KeyError):
+            return
+        if len(data) <= MAX_IMAGE_BYTES:
+            self._images[d["id"]] = (d["media_type"], data)
+            for old in list(self._images)[:-MAX_SHOWN]:
+                del self._images[old]
+
+    async def _image(self, request: web.Request) -> web.Response:
+        if not self._authorized(request):
+            raise web.HTTPForbidden()
+        if (found := self._images.get(request.match_info["id"])) is None:
+            raise web.HTTPNotFound()
+        media_type, data = found
+        return web.Response(body=data, content_type=media_type, headers=IMAGE_HEADERS)
 
     def _authorized(self, request: web.Request) -> bool:
         if not hmac.compare_digest(request.query.get("token", ""), self.token):

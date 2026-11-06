@@ -24,6 +24,16 @@ def _out(u: dict) -> str:
     return f"{_n(u['output_tokens'])} out" + (f" ({_n(thinking)} thinking)" if thinking else "")
 
 
+OUTPUT_TOOLS = ("shell", "shell_output", "shell_kill")  # results whose first line is a status, then command output
+
+
+def shell_failed(status: str) -> bool:
+    """Whether a shell result's first line says the command failed. A background process still running hasn't."""
+    status = status.removeprefix("background process ").partition(": ")[2] or status
+    return status.startswith("timed out") or (status.startswith(("exit code", "exited with code"))
+                                              and not status.endswith(" 0"))
+
+
 def output_preview(content: str, lines: int = 10) -> list[str]:
     """The last `lines` of a shell result's output (its first line is the exit status)."""
     body = content.strip().splitlines()[1:]

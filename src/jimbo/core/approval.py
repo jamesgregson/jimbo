@@ -19,6 +19,7 @@ class ToolCallInfo(BaseModel):
     read_only: bool = False
     workspace: Path
     assessment: dict | None = None  # advisory summary/risk, filled in by an Assessor
+    wording: dict = {}  # ApprovalRequest fields that word the prompt for this call, e.g. {"title": ...}
 
 
 class Verdict(BaseModel):
@@ -34,7 +35,21 @@ class ApprovalRequest(BaseModel):
     summary: str
     detail: str | None = None
     assessment: dict | None = None
-    always: str = "this session"  # what answering "always" covers, for the prompt
+    always: str | None = "this session"  # what answering "always" covers, for the prompt; None: not offered
+    # How the prompt reads. The defaults suit a tool call; plans and language server starts ask other questions.
+    title: str = ""  # empty: "Approve <tool>"
+    allow_label: str = "Allow once"
+    deny_label: str = "Deny"
+    note_prompt: str = "Why?"  # asked after a denial; the answer goes to the model
+    markdown: bool = False  # `detail` is markdown to render, not a diff or a command
+
+    def model_post_init(self, _) -> None:
+        self.title = self.title or f"Approve {self.tool}"
+
+    def keys(self) -> str:
+        """The answers a line frontend offers, e.g. `[y] allow once / [n] deny / [a] always (this exact command)? `."""
+        always = f" / [a] always ({self.always})" if self.always else ""
+        return f"[y] {self.allow_label.lower()} / [n] {self.deny_label.lower()}{always}? "
 
 
 class ApprovalDecision(BaseModel):
@@ -83,8 +98,9 @@ class ReadOnlyAllow:
 
 
 class PlanMode:
-    """Head of the chain while planning: read-only calls and language server starts fall through to the normal
-    policies, everything else is denied. `exit_plan` is decided here by asking the user, so yolo/remembered can't skip it."""
+    """Head of the chain while planning: read-only calls, language server starts and web fetches (research, not
+    a change) fall through to the normal policies, everything else is denied. `exit_plan` is decided here by
+    asking the user, so yolo/remembered can't skip it."""
 
     name = "plan"
 
@@ -100,12 +116,14 @@ class PlanMode:
         if call.tool == "exit_plan":
             self._n += 1
             d = await self._ask(ApprovalRequest(id=f"plan-{self._n}", call_id=call.call_id, tool=call.tool,
-                                                summary="Approve this plan and start executing?",
-                                                detail=call.detail))
-            return Verdict(action="allow" if d.allow else "deny",
-                           reason=None if d.allow else d.note or "plan rejected; revise it or ask what to change",
+                                                title="Review the plan",
+                                                summary="Approve this plan and start making changes?",
+                                                detail=call.detail, markdown=True, always=None,
+                                                allow_label="Approve and start", deny_label="Revise",
+                                                note_prompt="What should change in the plan?"))
+            return Verdict(action="allow" if d.allow else "deny", reason=None if d.allow else d.note,
                            decided_by="user")
-        if call.read_only or call.tool == "lsp_start":  # a server start, so read-only lsp tools work here too
+        if call.read_only or call.tool in ("lsp_start", "web_fetch"):  # lsp_start: so read-only lsp tools work here too
             return Verdict(action="ask", decided_by=self.name)
         return Verdict(action="deny", reason="plan mode: present a plan instead (call exit_plan)",
                        decided_by=self.name)
@@ -113,15 +131,15 @@ class PlanMode:
 
 class RememberedDecisions:
     """Session-scoped 'always allow'. Fed by AskUser when the user picks remember. Shell is remembered per
-    exact command, because allowing one command must not allow every other one, and lsp_start per server, for
-    the same reason; other tools as a whole."""
+    exact command, because allowing one command must not allow every other one, lsp_start per server and
+    web_fetch per domain, for the same reason; other tools as a whole."""
 
     name = "remembered"
 
     def __init__(self) -> None:
         self._allowed: set[tuple[str, str]] = set()
 
-    KEYS = {"shell": "command", "lsp_start": "server"}  # tools remembered per value of this argument
+    KEYS = {"shell": "command", "lsp_start": "server", "web_fetch": "domain"}  # remembered per value of this arg
 
     @classmethod
     def _key(cls, call: ToolCallInfo) -> tuple[str, str]:
@@ -134,6 +152,8 @@ class RememberedDecisions:
             return "this exact command"
         if call.tool == "lsp_start":
             return f"language server {call.args.get('server')} this session"
+        if call.tool == "web_fetch":
+            return f"fetching from {call.args.get('domain')} this session"
         return f"{call.tool} this session"
 
     def add(self, call: ToolCallInfo) -> None:
@@ -155,15 +175,16 @@ _SHELL_META = re.compile(r"[;&|<>`$()\n]")
 class PatternRules:
     """Allow/deny rules like "shell:git status*", "write_file:docs/*" or "read_file:.env*". Deny wins.
 
-    The part after ':' is a glob matched against the call's first argument (shell command or path); a bare
-    tool name matches every call. Paths are matched relative to the workspace, and deny rules also match the
-    file name, so "read_file:.env*" covers ./.env and svc/.env. Shell allow rules never match compound
+    The part after ':' is a glob matched against the call's first argument (shell command, path or URL); a bare
+    tool name matches every call. For move_file it is matched against both paths, and an allow rule must match
+    each. Paths are matched relative to the workspace, and deny rules also match the file name, so "read_file:.env*" covers ./.env and svc/.env. Shell allow rules never match compound
     commands (pipes, ;, &&, redirects, $...), so "shell:git status*" can't approve "git status; rm -rf ~".
     Shell deny rules match if any segment does. Deny rules are best effort, not a security boundary: use the
     sandbox for that.
     """
 
     name = "rules"
+    PATH_ARGS = ("path", "destination")
 
     def __init__(self, allow: list[str], deny: list[str]) -> None:
         self.allow = [self._parse(r) for r in allow]
@@ -192,14 +213,16 @@ class PatternRules:
             segments = [s.strip() for s in _SHELL_SEGMENTS.split(subject) if s.strip()] or [subject]
             allowable = [] if _SHELL_META.search(subject) else [subject]
         elif next(iter(call.args), None) == "path":
-            allowable = [self._relative(subject, call.workspace)]
-            segments = [*allowable, Path(subject).name]
+            paths = [str(call.args[k]).strip() for k in self.PATH_ARGS if k in call.args]
+            allowable = [self._relative(p, call.workspace) for p in paths]  # each must be allowed
+            segments = [*allowable, *(Path(p).name for p in paths)]
         else:
             segments = allowable = [subject]
         if rule := self._match(self.deny, call.tool, segments):
             return Verdict(action="deny", reason=f"denied by rule {rule!r}", decided_by=self.name)
-        if rule := self._match(self.allow, call.tool, allowable):
-            return Verdict(action="allow", reason=f"allowed by rule {rule!r}", decided_by=self.name)
+        allowed = [self._match(self.allow, call.tool, [s]) for s in allowable]
+        if allowed and all(allowed):
+            return Verdict(action="allow", reason=f"allowed by rule {allowed[0]!r}", decided_by=self.name)
         return Verdict(action="ask", decided_by=self.name)
 
 
@@ -211,7 +234,8 @@ class Yolo:
 
 
 class AutoApprove:
-    """Allows file writes and edits (the tools keep them inside the workspace), and shell commands the
+    """Allows file writes, edits, deletes and moves (the tools keep them inside the workspace, and /undo
+    reverses them), and shell commands the
     assessment model rates medium risk or lower; everything else falls through. The fixed checks can raise a
     command's risk but never approve it on their own: with no model answer (slow or failed) it asks. `assess`
     is None when there is no assessment model, which disables the whole policy."""
@@ -224,7 +248,7 @@ class AutoApprove:
     async def evaluate(self, call: ToolCallInfo) -> Verdict:
         if self.assess is None:
             return Verdict(action="ask", decided_by=self.name)
-        if call.tool in ("write_file", "edit_file"):
+        if call.tool in ("write_file", "edit_file", "delete_file", "move_file"):
             return Verdict(action="allow", decided_by=self.name)
         if call.tool != "shell":
             return Verdict(action="ask", decided_by=self.name)
@@ -260,10 +284,11 @@ class AskUser:
             self._n += 1
             if self._assess is not None and call.assessment is None:
                 await self._assess(call)
-            d = await self._ask(ApprovalRequest(id=str(self._n), call_id=call.call_id, tool=call.tool,
-                                                summary=call.summary, detail=call.detail, assessment=call.assessment,
-                                                always=RememberedDecisions.scope(call)))
-            if d.allow and d.remember == "session" and self._remembered is not None:
+            req = ApprovalRequest(**{"id": str(self._n), "call_id": call.call_id, "tool": call.tool,
+                                     "summary": call.summary, "detail": call.detail, "assessment": call.assessment,
+                                     "always": RememberedDecisions.scope(call), **call.wording})
+            d = await self._ask(req)
+            if d.allow and d.remember == "session" and req.always and self._remembered is not None:
                 self._remembered.add(call)
             reason = None if d.allow else f"User denied this action: {d.note}" if d.note else None
             return Verdict(action="allow" if d.allow else "deny", reason=reason, decided_by="user")

@@ -37,7 +37,21 @@
   body.loaded #drop { display: none; }
   body.drag::after { content: "Drop JSONL trace"; position: fixed; inset: 0; display: grid; place-items: center;
                      background: color-mix(in srgb, var(--bg) 85%, transparent); font-size: 22px; color: var(--accent); }
-  .turn { margin-bottom: 28px; }
+  .turn { margin-bottom: 20px; }
+  .turnbox, .cycle { border: 1px solid var(--line); border-radius: 10px; }
+  .turnbox > summary, .cycle > summary { cursor: pointer; list-style: none; display: flex; gap: 10px;
+                                         align-items: baseline; flex-wrap: wrap; }
+  .turnbox > summary::-webkit-details-marker, .cycle > summary::-webkit-details-marker { display: none; }
+  .turnbox > summary::before, .cycle > summary::before { content: "▸"; color: var(--dim); }
+  .turnbox[open] > summary::before, .cycle[open] > summary::before { content: "▾"; }
+  .turnbox > summary { padding: 8px 12px; font-weight: 600; background: var(--panel); border-radius: 10px; }
+  .turnbox > summary .sum, .cycle > summary .sum { color: var(--dim); font-weight: 400; font-size: 12px; }
+  .turnbox > summary .first { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                               max-width: 50ch; }
+  .turnbody { padding: 0 12px 4px; }
+  .cycle { margin: 8px 0; border-style: dashed; }
+  .cycle > summary { padding: 4px 10px; font: 12px ui-monospace, Menlo, monospace; }
+  .cyclebody { padding: 0 10px 2px; }
   .row { margin: 8px 0; display: flex; gap: 10px; }
   .t { flex: 0 0 56px; color: var(--dim); font: 11px ui-monospace, Menlo, monospace; text-align: right; padding-top: 4px; }
   .body { flex: 1; min-width: 0; }
@@ -173,6 +187,24 @@ function render(events, bad, name) {
   const status = events.find((e) => e.kind === "status");
   const agents = [...new Set(events.filter((e) => e.data.agent).map((e) => e.data.agent.name))];
   const ctx = events.filter((e) => e.kind === "context" && e.data.window && !e.data.agent);
+  // Model requests. A turn's usage event counts the main model's requests and its agents'. Each agent's context
+  // events count its run's requests so far, so the last one before its report is the run's total.
+  const agentRuns = new Map(), reportRequests = new Map();  // agent name -> requests so far; report -> its run's
+  for (const e of events) {
+    if (e.kind === "context" && e.data.agent) agentRuns.set(e.data.agent.name, e.data.turn.requests);
+    else if (e.kind === "agent_report" && e.data.agent) {
+      reportRequests.set(e, agentRuns.get(e.data.agent.name) || 0); agentRuns.delete(e.data.agent.name);
+    }
+  }
+  const byAgents = [...reportRequests.values(), ...agentRuns.values()].reduce((n, r) => n + r, 0);
+  // A turn that never logged usage (jimbo was killed) still has the count of its last main context event. Context
+  // events also follow a turn's usage, so only a message sent after the last usage starts such a turn.
+  const lastUsage = events.findLastIndex((e) => e.kind === "usage");
+  const sentAfter = events.findIndex((e, i) => i > lastUsage && e.kind === "user_message");
+  const openTurn = sentAfter < 0 ? null
+    : events.slice(sentAfter).filter((e) => e.kind === "context" && !e.data.agent).pop();
+  const requests = usage.reduce((n, e) => n + (e.data.requests || 0), 0) + (openTurn ? openTurn.data.turn.requests : 0);
+  const splitRequests = (n, agentN) => `${n} request(s)` + (agentN ? ` (${agentN} by agents)` : "");
   const peak = ctx.reduce((m, e) => Math.max(m, e.data.tokens / e.data.window), 0);
 
   const bar = $("#bar");
@@ -184,7 +216,8 @@ function render(events, bad, name) {
   bar.append(
     stat("session", events[0].session_id), stat("file", name),
     stat("started", new Date(events[0].ts).toLocaleString()), stat("duration", fmtT(rel(last)).slice(1)),
-    stat("turns", count("user_message")), stat("tool calls", count("tool_call")),
+    stat("turns", events.filter((e) => e.kind === "user_message" && !e.data.steer).length), stat("model requests", requests + (byAgents ? ` (${byAgents} by agents)` : "")),
+    stat("tool calls", count("tool_call")),
     stat("errors", nErr, nErr ? "err" : ""), stat("tokens", `${fmtTok(tokIn)} in / ${fmtTok(tokOut)} out`),
   );
   if (usage.some((e) => e.data.cost != null)) bar.append(stat("est. cost", fmtCost(cost) + (unpriced ? ` (+${unpriced} unpriced turns)` : "")));
@@ -236,24 +269,69 @@ function render(events, bad, name) {
     }
   };
   const lastInstructions = new Map();  // by agent name; "" is the main session
-  const newTurn = () => { turn = el("section", "turn"); out.append(turn); seg = null; segStreamed = false; think = null; };
+  let turnAgentRequests = 0;  // requests made by agents in the current turn, for its usage line
+  // Rows nest in turns (one per message you send) and, during a run, in cycles (one per main model request).
+  // A main context event ends a cycle's model output; its tool calls follow. The next model output, or a
+  // request with no output (a context event right after another), starts the next cycle.
+  const turns = [];
+  let cycle = null, cycleDone = false, nTurns = 0;
+  const box = (cls, summaryCls) => {
+    const det = el("details", cls); det.open = true;
+    const sm = el("summary", summaryCls), body = el("div", cls === "turnbox" ? "turnbody" : "cyclebody");
+    det.append(sm, body); return { det, sm, body };
+  };
+  const newTurn = (ev) => {
+    turn = el("section", "turn"); out.append(turn); seg = null; segStreamed = false; think = null;
+    turnAgentRequests = 0; cycle = null; cycleDone = false;
+    if (!ev) return;  // what happened before the first message: not a turn
+    const b = box("turnbox");
+    turn.append(b.det);
+    turn._t = { ...b, n: ++nTurns, text: ev.data.text, start: rel(ev), end: rel(ev), cycles: [], tools: 0, errors: 0,
+                requests: null };
+    turns.push(turn._t);
+  };
+  const newCycle = (ev) => {
+    const t = turn && turn._t;
+    if (!t) return;
+    const b = box("cycle");
+    t.body.append(b.det);
+    cycle = { ...b, n: t.cycles.length + 1, start: rel(ev), end: rel(ev), tools: [], errors: 0, ctx: null };
+    t.cycles.push(cycle); cycleDone = false; seg = null; segStreamed = false; think = null;
+  };
   const row = (cls, ev, node, kind) => {
     const r = el("div", "row " + cls);
     if (kind) r.dataset.kind = kind;
     r.append(el("div", "t", fmtT(rel(ev))));
     const b = el("div", "body"); b.append(node); r.append(b);
-    (turn || (newTurn(), turn)).append(r);
+    if (!turn) newTurn();
+    const t = turn._t;
+    (cycle ? cycle.body : t ? t.body : turn).append(r);
+    if (t) t.end = rel(ev);
+    if (cycle) cycle.end = rel(ev);
     return r;
   };
+  const MODEL_OUTPUT = new Set(["instructions", "assistant_thinking_delta", "assistant_text_delta", "wrap_up", "compaction"]);
+  const TURN_LEVEL = new Set(["user_message", "usage", "run_finished", "session_end"]);
 
   for (const ev of events) {
     const d = ev.data;
+    if (!d.agent && turn && turn._t) {
+      if (TURN_LEVEL.has(ev.kind) && !d.steer) cycle = null;
+      else if (MODEL_OUTPUT.has(ev.kind) && (!cycle || cycleDone)) newCycle(ev);
+      else if (ev.kind === "tool_call" && !cycle) newCycle(ev);  // a log without the output before it
+      if (ev.kind === "context" && d.turn && d.turn.requests) {
+        // the context event after a turn's last request repeats its count: it isn't a new request
+        if (cycle && cycleDone && d.turn.requests !== cycle.requests) newCycle(ev);
+        if (cycle) { cycle.ctx = d; cycle.requests = d.turn.requests; cycleDone = true; }
+        if (typeof turn._t.requests !== "string") turn._t.requests = d.turn.requests;  // until usage gives the total
+      }
+    }
     if (d.agent && (ev.kind === "assistant_thinking_delta" || ev.kind === "assistant_text_delta")) { agentDelta(ev); continue; }
     if (d.agent && ev.kind === "context") continue;  // the agent's request count; the header is the main session's
     if (d.agent && ev.kind === "tool_call") agentSteps.delete(d.agent.name);
     switch (ev.kind) {
       case "user_message": {
-        if (!d.steer) newTurn();
+        if (!d.steer) newTurn(ev);
         const m = el("div", null, d.text);
         if (d.steer) m.prepend(el("span", "chip", "steer · "));
         if (d.attachments && d.attachments.length) {
@@ -294,9 +372,11 @@ function render(events, bad, name) {
         sm.append(el("span", "name", d.tool), el("span", "sum", clip(JSON.stringify(d.args), 140)), badge);
         det.append(sm, section("arguments", el("pre", null, JSON.stringify(d.args, null, 2))));
         if (d.agent) det.append(section("agent", el("pre", null, `${d.agent.name} (${d.agent.model})`)));
-        det._status = badge;
+        det._status = badge; det._cycle = cycle;
         cards.set(d.id, det);
         row("tool", ev, det, "tool");
+        if (cycle && !d.agent) cycle.tools.push(d.tool);
+        if (turn && turn._t) turn._t.tools++;
         break;
       }
       case "tool_result": {
@@ -305,7 +385,7 @@ function render(events, bad, name) {
         det._status.className = "badge " + (d.ok ? "ok" : "err");
         det._status.textContent = d.ok ? "ok" : "error";
         det.append(section(d.ok ? "result" : "error", el("pre", d.ok ? null : "err", d.content)));
-        if (!d.ok) det.open = true;
+        if (!d.ok) { det.open = true; if (det._cycle) det._cycle.errors++; if (turn && turn._t) turn._t.errors++; }
         break;
       }
       case "approval_requested": {
@@ -375,7 +455,7 @@ function render(events, bad, name) {
         break;
       }
       case "agent_report": {
-        seg = null; segStreamed = false; think = null;
+        seg = null; segStreamed = false; think = null; turnAgentRequests += reportRequests.get(ev) || 0;
         const det = el("details", "card");
         const sm = el("summary");
         sm.append(agentTag(d), el("span", "name", "report"), el("span", "sum", clip(d.text, 140)),
@@ -414,6 +494,9 @@ function render(events, bad, name) {
       case "busy":
         if (d.on) row("", ev, el("div", "chip", d.label + "…"), "command");
         break;
+      case "image":  // the log names the file; the image itself isn't kept
+        row("", ev, el("div", "chip", `image shown: ${d.path}${d.caption ? " · " + d.caption : ""} (${fmtBytes(d.bytes)})`));
+        break;
       case "approval_resolved": {
         const ok = d.action === "allow";
         const c = el("div", "chip");
@@ -422,8 +505,10 @@ function render(events, bad, name) {
         break;
       }
       case "usage":
-        row("", ev, el("div", "usage", `${d.requests} request(s) · ${d.input_tokens} in · ${d.output_tokens} out`
+        if (turn && turn._t) turn._t.requests = splitRequests(d.requests, turnAgentRequests);
+        row("", ev, el("div", "usage", `${splitRequests(d.requests, turnAgentRequests)} · ${d.input_tokens} in · ${d.output_tokens} out`
                                         + (d.cost != null ? ` · ${fmtCost(d.cost)} est.` : "")), "usage");
+        turnAgentRequests = 0;  // a direct agent run after this turn logs its own usage
         break;
       case "session_end": {
         const r = d.run;
@@ -433,6 +518,7 @@ function render(events, bad, name) {
         break;
       }
       case "error": {
+        if (turn && turn._t) turn._t.errors++;
         const b = el("div", "errbox");
         const tag = agentTag(d);
         if (tag) b.append(tag, " ");
@@ -448,6 +534,31 @@ function render(events, bad, name) {
     }
   }
 
+  // Summary lines, now that each turn and cycle is complete.
+  const counts = (names) => {
+    const m = new Map(); names.forEach((x) => m.set(x, (m.get(x) || 0) + 1));
+    return [...m].map(([x, n]) => (n > 1 ? `${x} ×${n}` : x)).join(", ");
+  };
+  for (const t of turns) {
+    const first = (t.text || "").split("\n")[0];
+    t.sm.append(`Turn ${t.n}`, el("span", "first", first));
+    const req = typeof t.requests === "string" ? t.requests : t.requests ? `${t.requests} request(s), unfinished` : null;
+    const bits = [req, t.cycles.length ? `${t.cycles.length} cycle(s)` : null, `${t.tools} tool call(s)`,
+                  fmtT(t.end - t.start).slice(1)];
+    t.sm.append(el("span", "sum", bits.filter(Boolean).join(" · ")));
+    if (t.errors) t.sm.append(el("span", "badge err", `${t.errors} error(s)`));
+    let lastLimit = null;  // a cycle still streaming has no context event yet
+    for (const c of t.cycles) {
+      lastLimit = (c.ctx && c.ctx.limit) || lastLimit;
+      const limit = lastLimit ? `/${lastLimit}` : "";
+      const ctxTok = c.ctx && c.ctx.tokens ? `ctx ${fmtTok(c.ctx.tokens)}` : null;
+      c.sm.append(el("b", null, `cycle ${c.n}${limit}`));
+      c.sm.append(el("span", "sum", [ctxTok, c.tools.length ? counts(c.tools) : "text only",
+                                     fmtT(c.end - c.start).slice(1)].filter(Boolean).join(" · ")));
+      if (c.errors) c.sm.append(el("span", "badge err", `${c.errors} error(s)`));
+    }
+  }
+
   function applyHide() {
     const needle = q.value.toLowerCase();
     out.querySelectorAll(".row").forEach((r) => {
@@ -455,6 +566,12 @@ function render(events, bad, name) {
       const off = k && toggles[k] && !toggles[k].checked;
       const miss = needle && !r.textContent.toLowerCase().includes(needle);
       r.classList.toggle("hide", !!(off || miss));
+    });
+    // a cycle or turn with nothing left to show is hidden; while searching, the ones with matches open
+    out.querySelectorAll(".cycle, .turnbox").forEach((b) => {
+      const shown = [...b.querySelectorAll(".row")].some((r) => !r.classList.contains("hide"));
+      b.classList.toggle("hide", !shown);
+      if (needle && shown) b.open = true;
     });
   }
   q.oninput = applyHide;

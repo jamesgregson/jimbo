@@ -1,5 +1,7 @@
+import secrets
 import sys
 from dataclasses import replace
+from itertools import count
 from pathlib import Path
 
 from pydantic_ai.usage import RunUsage
@@ -167,10 +169,12 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                 await holder["s"].emit("command_output", command="agent", ok=True, text=note)
         return found
 
+    running: set[str] = set()  # names of the agent runs in progress
+
     async def spawn_agent(spec: AgentSpec, task: str, usage: RunUsage, *, model: str | None = None,
-                          reserve: int = 0) -> AgentResult:
+                          reserve: int = 0, share: int = 1) -> AgentResult:
         parent = holder["s"]
-        limit = settings.request_limit - usage.requests - reserve
+        limit = (settings.request_limit - usage.requests - reserve) // max(share, 1)
         if limit < 1:
             return AgentResult(False, f"agent {spec.name} didn't start: this turn has too few requests left")
         choice, warning = router.for_agent(spec.name, model or spec.model)
@@ -184,6 +188,9 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
             found, built = ModelFacts(str(e)), None
         if found.problem:
             return AgentResult(False, f"agent {spec.name} didn't start: {found.problem}")
+        if spec.name in running:  # the same agent twice at once: a name of its own tells their calls apart
+            spec = replace(spec, name=next(f"{spec.name}-{k}" for k in count(2) if f"{spec.name}-{k}" not in running))
+        running.add(spec.name)
         sink = ForwardSink(parent, spec.name, choice.spec)
         child = AgentSession(build_agent(settings, built, spec),
                              replace(parent.deps, agent=spec, agents={}, models=router.child(), todos=[]), [sink],
@@ -196,6 +203,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
             report = await child.send(task)
         finally:
             usage.incr(child.turn_usage)
+            running.discard(spec.name)
         if report is None:
             why = "stopped" if sink.cancelled else sink.reason or "it failed"
             text = f"agent {spec.name} didn't finish: {why}" + (f"\n\nIts last text:\n{sink.text}" if sink.text else "")
@@ -209,6 +217,14 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         return result
 
     deps.spawn_agent = spawn_agent
+
+    async def show_image(file: Path, path: str, media_type: str, caption: str) -> None:
+        # the event names the file, not its bytes; the frontend reads it when it renders the event
+        await holder["s"].emit("image", id=secrets.token_hex(8), path=path, file=str(file), media_type=media_type,
+                               bytes=file.stat().st_size, caption=caption)
+
+    if getattr(frontend, "shows_images", False):
+        deps.show_image = show_image
     agent = build_agent(settings, router.resolve("main"))
     session = AgentSession(agent, deps, [FrontendSink(frontend), *(extra_sinks or [])],
                            request_limit=settings.request_limit,

@@ -45,6 +45,7 @@ class Checkpoints:
         for path, before in turn.items():
             if before is None:
                 path.unlink(missing_ok=True)
-            else:
+            else:  # the directory may be gone too: delete_file and move_file take whole directories
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(before)
         return sorted(turn)
