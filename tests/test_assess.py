@@ -251,7 +251,7 @@ def test_check_command_levels(tmp_path):
 
 
 def test_writes_to_the_scratch_directory_are_low(tmp_path):
-    scratch = tmp_path.parent / f"{tmp_path.name}-scratch"
+    scratch = Path("/var/jimbo-scratch-test")  # not under /tmp, which is always allowed (tmp_path is, on Linux)
     assert check_command(f"echo x > {scratch}/out.txt", tmp_path)[0] == "high"
     assert check_command(f"echo x > {scratch}/out.txt", tmp_path, scratch)[0] == "low"
 
