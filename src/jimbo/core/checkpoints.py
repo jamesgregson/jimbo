@@ -36,6 +36,11 @@ class Checkpoints:
             lines[MAX_DIFF_LINES:] = [f"[{len(lines) - MAX_DIFF_LINES} more lines]"]
         return "\n".join(lines)
 
+    def changes(self) -> list[dict]:
+        """The files the latest turn that changed files touched: {"path": absolute, "before": text or None}."""
+        return [{"path": str(path), "before": None if before is None else before.decode("utf-8", "replace")}
+                for path, before in (self._latest() or {}).items()]
+
     def undo(self) -> list[Path]:
         """Restore the latest turn that changed files and forget it. Returns the paths restored."""
         turn = self._latest()

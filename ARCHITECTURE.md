@@ -133,7 +133,8 @@ src/jimbo/
   lsp/               language servers: client.py (JSON-RPC over stdio), servers.py (which server for which files),
                      manager.py (LspManager: start on first use, restart, keep open files in sync)
   providers/         "<provider>:<name>" -> Pydantic AI Model; credentials, rate limits, startup checks (preflight.py)
-  frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page), json
+  frontends/         plain (stdin/stdout), tui (rich + prompt_toolkit), web (aiohttp + browser page), json,
+                     stdio (JSON lines for editor extensions); bridge.py holds the messages web and stdio share
   bundled/           agents, skills and commands shipped with jimbo, laid out like .jimbo/
 ```
 
@@ -444,10 +445,27 @@ A frontend implements three methods of the `Frontend` protocol
 - **web**: a local aiohttp server and single-page UI; approvals appear as a dialog with the diff. The header
   and the dialog each have an approval mode menu, which sends `approval_mode`. The URL carries a one-time
   token because the page can approve file writes.
+- **stdio**: the web page's messages as JSON lines on stdin and stdout, for the VS Code extension in `vscode/`.
+  It writes a `hello` line with `PROTOCOL_VERSION` first. It points file descriptor 1 and `sys.stdout` at stderr
+  and keeps a private copy of stdout, so nothing else can write a line that isn't protocol. End of stdin denies
+  open prompts, cancels the run and quits. It also answers `trace_get`, `image_get` and `changes_get` (the
+  latest turn's files from `Checkpoints.changes()`, through `bind_changes`).
+
+`web` and `stdio` share [frontends/bridge.py](src/jimbo/frontends/bridge.py): `Bridge` keeps the replay history,
+the open prompts (approvals, confirms, secrets, questions) and the shown images, and turns incoming messages into
+inputs and answers. A subclass provides `_broadcast` (to every client) and `_reply` (to the client that asked).
+Approval requests from file tools carry `proposed` (the whole file after the change, from `ToolCallInfo`); `web`
+leaves it out, and the `approval_requested` event never has it.
+
+**VS Code extension** (`vscode/`, TypeScript). It starts `jimbo --ui stdio` for a workspace folder
+(`process.ts`) and shows `web_static/index.html` in a webview (`panel.ts`); the page detects the webview and uses
+`postMessage` in place of the WebSocket. `session.ts` passes messages both ways. It answers `confirm` and `secret`
+with VS Code dialogs, opens a diff editor for `proposed` (`approvals.ts`), checks and opens file paths
+(`links.ts`), and keeps the messages it passed to the page so it can send them again when the webview reloads.
 
 Optional methods: `confirm(message)` (yes/no), `ask_secret(message)` (a line that isn't echoed or kept in
 history, for API keys), `ask_questions(questions)`, and `bind_cancel`, `bind_approval_mode`, `bind_config` and
-`bind_model_list`, which `run_frontend` calls with functions the frontend's own controls can use.
+`bind_model_list`, `bind_trace` and `bind_changes`, which `run_frontend` calls with functions the frontend's own controls can use.
 
 To add a frontend, implement the protocol and register a factory in `FRONTENDS`.
 

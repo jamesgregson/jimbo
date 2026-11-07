@@ -24,7 +24,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("prompt", nargs="?", help="one-shot task; omit for an interactive session")
     ap.add_argument("--model", help="main model for this run: an alias or <provider>:<name>")
     ap.add_argument("--workspace", type=Path, help="directory to work on (default: the current one)")
-    ap.add_argument("--ui", help="tui, plain, web, or json for scripts (default: tui in a terminal, else plain)")
+    ap.add_argument("--ui", help="tui, plain, web, json for scripts, or stdio for editor extensions "
+                         "(default: tui in a terminal, else plain)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--yolo", action="store_true", help="auto-approve everything")
     mode.add_argument("--auto", action="store_true",

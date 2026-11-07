@@ -39,7 +39,7 @@ before the `[tables]`.
 
 ```toml
 # ---- Model ------------------------------------------------------------------------------------
-ui = "auto"                   # auto (tui in a terminal, otherwise plain) | tui | plain | web | json
+ui = "auto"                   # auto (tui in a terminal, otherwise plain) | tui | plain | web | json | stdio
 temperature = 0.2             # sample value; unset by default (the provider's default is used)
 request_timeout = 600         # seconds to wait for a model response
 request_limit = 50            # max model requests per turn; the model is told to wrap up for the last 3
@@ -553,6 +553,23 @@ command = ["/opt/node/bin/pyright-langserver", "--stdio"]
   under the questions). That stops the questions, and the model gets your answers so far and what you typed, then
   asks new questions that take it into account. `json`, agents and skills marked `interactive: false` can't ask
   questions.
+- **`stdio`:** for editor extensions such as the VS Code extension in `vscode/`. jimbo reads JSON messages from
+  stdin and writes them to stdout, one per line; the first line is
+  `{"type": "hello", "protocol": 1, "version": ..., "workspace": ...}`. The messages are the ones the `web` page
+  sends over its WebSocket (listed in `src/jimbo/frontends/bridge.py`), plus `trace_get`, `image_get` and
+  `changes_get` (listed in `src/jimbo/frontends/stdio.py`). Approval requests for `write_file`, `edit_file` and
+  `multi_edit` carry `proposed`: the whole file after the change, for files up to 1 MB. stdout carries only these
+  messages; everything else jimbo or a command prints goes to stderr. When stdin ends, jimbo stops the run and
+  exits.
+- **VS Code extension:** settings, in your user settings (`jimbo.path` and `jimbo.args` are read from user settings
+  only, so a workspace can't choose the command that runs):
+
+  | Setting | Default | Meaning |
+  |---|---|---|
+  | `jimbo.path` | `jimbo` | the command to run, such as `~/.venv/bin/jimbo` or `uvx` |
+  | `jimbo.args` | `[]` | arguments before `--ui stdio`, such as `["--sandbox", "docker"]`, or `["--from", "jimbo-agent", "jimbo"]` with `uvx` |
+  | `jimbo.diffEditorForApprovals` | `true` | open a proposed file change in a diff editor while jimbo asks |
+  | `jimbo.preferredLocation` | `editor` | `editor`: an editor tab beside the current editor; `sidebar`: a view in the Jimbo sidebar |
 - **`tui`:** Enter submits, Shift+Enter or Alt+Enter inserts a newline, and Ctrl+D quits. Pastes over 10 lines
   collapse to `[pasted #1: 240 lines]` and expand on submit. `@path` completes workspace files and inlines
   them for the model. To attach the clipboard image, type `/paste [question]`, or

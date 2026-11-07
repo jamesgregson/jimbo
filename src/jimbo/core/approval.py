@@ -20,6 +20,7 @@ class ToolCallInfo(BaseModel):
     workspace: Path
     assessment: dict | None = None  # advisory summary/risk, filled in by an Assessor
     wording: dict = {}  # ApprovalRequest fields that word the prompt for this call, e.g. {"title": ...}
+    proposed: dict | None = None  # file tools: {"path", "text"}, the whole file after the change
 
 
 class Verdict(BaseModel):
@@ -42,6 +43,9 @@ class ApprovalRequest(BaseModel):
     deny_label: str = "Deny"
     note_prompt: str = "Why?"  # asked after a denial; the answer goes to the model
     markdown: bool = False  # `detail` is markdown to render, not a diff or a command
+    # File tools: {"path": absolute path, "text": the whole file after the change}, for an editor's diff view.
+    # Not in the approval_requested event or the session log, which keep the diff only.
+    proposed: dict | None = None
 
     def model_post_init(self, _) -> None:
         self.title = self.title or f"Approve {self.tool}"
@@ -286,7 +290,8 @@ class AskUser:
                 await self._assess(call)
             req = ApprovalRequest(**{"id": str(self._n), "call_id": call.call_id, "tool": call.tool,
                                      "summary": call.summary, "detail": call.detail, "assessment": call.assessment,
-                                     "always": RememberedDecisions.scope(call), **call.wording})
+                                     "always": RememberedDecisions.scope(call), "proposed": call.proposed,
+                                     **call.wording})
             d = await self._ask(req)
             if d.allow and d.remember == "session" and req.always and self._remembered is not None:
                 self._remembered.add(call)

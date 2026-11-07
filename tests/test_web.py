@@ -252,3 +252,13 @@ async def test_model_shows_an_image_in_the_web_ui(tmp_path):
         assert r.status == 200 and await r.read() == PNG
     finally:
         await c.close()
+
+
+async def test_page_gets_the_diff_not_the_whole_proposed_file(client):
+    ws = await client.ws_connect(ws_url(client))
+    task = asyncio.create_task(client.fe.request_approval(
+        ApprovalRequest(id="5", tool="write_file", summary="s", detail="+x", proposed={"path": "/p", "text": "x"})))
+    msg = await ws.receive_json()
+    assert msg["request"]["detail"] == "+x" and "proposed" not in msg["request"]
+    await ws.send_json({"type": "approve", "id": "5", "decision": "yes"})
+    await asyncio.wait_for(task, 1)

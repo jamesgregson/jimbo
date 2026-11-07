@@ -25,3 +25,6 @@ evals/results/
 
 # Jimbo session logs (if written inside the workspace)
 #*.jsonl
+
+# The VS Code extension's launch config (F5)
+!/vscode/.vscode/

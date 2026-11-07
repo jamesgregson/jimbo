@@ -107,6 +107,8 @@ async def run_frontend(session: AgentSession, frontend: Frontend) -> None:
         bind(lambda mode: set_approval_mode(session, mode))
     if bind := getattr(frontend, "bind_trace", None):  # a link to the session's trace
         bind(lambda: session.store.log_path(session.session_id) if session.store else None)
+    if bind := getattr(frontend, "bind_changes", None):  # what the last turn changed, for an editor's diff view
+        bind(lambda: session.deps.checkpoints.changes())
     if ask := getattr(frontend, "ask_secret", None):
         session.ask_secret = ask
     if session.config is not None:

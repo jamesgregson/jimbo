@@ -26,7 +26,14 @@ def _json(st: Settings) -> Frontend:
     return JsonFrontend()
 
 
-FRONTENDS: dict[str, Callable[[Settings], Frontend]] = {"plain": _plain, "tui": _tui, "web": _web, "json": _json}
+def _stdio(st: Settings) -> Frontend:
+    from .stdio import StdioFrontend
+
+    return StdioFrontend(st.workspace)
+
+
+FRONTENDS: dict[str, Callable[[Settings], Frontend]] = {"plain": _plain, "tui": _tui, "web": _web, "json": _json,
+                                                        "stdio": _stdio}
 
 
 def pick_ui(prompt: str | None, stdin_tty: bool, stdout_tty: bool) -> str:

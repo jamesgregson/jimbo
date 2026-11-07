@@ -115,7 +115,8 @@ class Deps:
         return any(fnmatchcase(Path(path).name, p) for p in self.secret_files)
 
     async def authorize(self, call_id: str | None, tool: str, args: dict, summary: str, *,
-                        detail: str | None = None, read_only: bool = False, wording: dict | None = None) -> None:
+                        detail: str | None = None, read_only: bool = False, wording: dict | None = None,
+                        proposed: dict | None = None) -> None:
         """Single choke point for tools. Raises ToolDenied if no policy allows the call. `call_id` ties the
         decision to the tool_call event, under the id ForwardSink gives an agent's calls. `wording` words the
         prompt, if one is shown (see ApprovalRequest)."""
@@ -124,6 +125,6 @@ class Deps:
             call_id = f"{self.agent.name}.{call_id}"
         v = await self.gate.check(ToolCallInfo(call_id=call_id, tool=tool, args=args, summary=summary, detail=detail,
                                                read_only=read_only, workspace=self.workspace,
-                                               wording=wording or {}))
+                                               wording=wording or {}, proposed=proposed))
         if v.action != "allow":
             raise ToolDenied(v.reason)

@@ -1,0 +1,172 @@
+{
+  "name": "jimbo",
+  "displayName": "Jimbo (prototype)",
+  "description": "Use the jimbo coding agent from a VS Code panel",
+  "version": "0.1.0",
+  "publisher": "jimbo-local",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jamesgregson/jimbo.git",
+    "directory": "vscode"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "jimbo.open",
+        "title": "Open",
+        "category": "Jimbo",
+        "icon": "$(hubot)"
+      },
+      {
+        "command": "jimbo.resume",
+        "title": "Resume Last Session",
+        "category": "Jimbo"
+      },
+      {
+        "command": "jimbo.askSelection",
+        "title": "Ask About Selection",
+        "category": "Jimbo"
+      },
+      {
+        "command": "jimbo.addFile",
+        "title": "Add File to Chat",
+        "category": "Jimbo"
+      },
+      {
+        "command": "jimbo.showChanges",
+        "title": "Show Changes",
+        "category": "Jimbo"
+      },
+      {
+        "command": "jimbo.undo",
+        "title": "Undo Last Turn",
+        "category": "Jimbo"
+      },
+      {
+        "command": "jimbo.stop",
+        "title": "Stop the Current Task",
+        "category": "Jimbo"
+      },
+      {
+        "command": "jimbo.endSession",
+        "title": "End Session",
+        "category": "Jimbo"
+      },
+      {
+        "command": "jimbo.showLog",
+        "title": "Show Log",
+        "category": "Jimbo"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "jimbo.open",
+          "group": "navigation@100"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "jimbo.askSelection",
+          "when": "editorHasSelection",
+          "group": "jimbo@1"
+        },
+        {
+          "command": "jimbo.addFile",
+          "group": "jimbo@2"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "jimbo",
+          "title": "Jimbo",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "jimbo": [
+        {
+          "type": "webview",
+          "id": "jimbo.chat",
+          "name": "Chat",
+          "when": "config.jimbo.preferredLocation == sidebar"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Jimbo",
+      "properties": {
+        "jimbo.path": {
+          "type": "string",
+          "default": "jimbo",
+          "scope": "machine",
+          "description": "The command that runs jimbo, such as jimbo, ~/.venv/bin/jimbo or uvx. Read from user settings only."
+        },
+        "jimbo.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "description": "Arguments added before --ui stdio, such as [\"--sandbox\", \"docker\"]. Read from user settings only."
+        },
+        "jimbo.diffEditorForApprovals": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show proposed file changes in a diff editor while jimbo asks to make them."
+        },
+        "jimbo.preferredLocation": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "sidebar"
+          ],
+          "default": "editor",
+          "enumDescriptions": [
+            "An editor tab beside the current editor",
+            "A view in the Jimbo sidebar"
+          ],
+          "description": "Where the jimbo panel opens."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "copy-page": "node -e \"require('fs').copyFileSync('../src/jimbo/frontends/web_static/index.html','media/index.html')\"",
+    "build": "npm run copy-page && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
+    "typecheck": "tsc --noEmit",
+    "build-tests": "tsc -p test/tsconfig.json",
+    "test": "npm run build && npm run build-tests && node out/test/run.js",
+    "package": "npm run build && node -e \"require('fs').copyFileSync('../LICENSE','LICENSE')\" && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.5",
+    "@types/vscode": "~1.95.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.1.0",
+    "esbuild": "^0.28.2",
+    "mocha": "^12.0.3",
+    "typescript": "^5.9.3"
+  },
+  "allowScripts": {
+    "@vscode/vsce-sign@2.1.0": true,
+    "esbuild@0.28.2": true
+  }
+}

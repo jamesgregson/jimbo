@@ -18,6 +18,18 @@
       --add: #12301b; --del: #3d1a1a; --accent: #7aa2f7; --code: #2a2a26;
     }
   }
+  /* Inside the VS Code extension's webview: VS Code's theme colors and font. */
+  :root.vscode {
+    --bg: var(--vscode-sideBar-background, var(--vscode-editor-background)); --panel: var(--vscode-editor-background);
+    --fg: var(--vscode-foreground); --dim: var(--vscode-descriptionForeground); --line: var(--vscode-widget-border, var(--vscode-panel-border));
+    --user: var(--vscode-editor-inactiveSelectionBackground); --tool: var(--vscode-editorWidget-background);
+    --ok: var(--vscode-testing-iconPassed); --err: var(--vscode-errorForeground); --warn: var(--vscode-editorWarning-foreground);
+    --add: var(--vscode-diffEditor-insertedTextBackground); --del: var(--vscode-diffEditor-removedTextBackground);
+    --accent: var(--vscode-button-background); --code: var(--vscode-textCodeBlock-background);
+  }
+  :root.vscode body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px); }
+  :root.vscode header h1 { display: none; }  /* the tab title says jimbo */
+  a.path { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
@@ -194,6 +206,17 @@ const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const log = $("#log"), input = $("#input"), sendBtn = $("#send"), stopBtn = $("#stop"), statusEl = $("#status");
 const token = new URLSearchParams(location.search).get("token") || "";
+// In the VS Code extension the page runs in a webview: messages go through the extension host, not a WebSocket.
+const HOST = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null;
+if (HOST) document.documentElement.classList.add("vscode");
+// Webviews have no window.confirm, so the extension host asks with a VS Code dialog.
+let hostAsks = 0; const hostAnswers = new Map();
+function askConfirm(message) {
+  if (!HOST) return Promise.resolve(confirm(message));
+  const id = String(++hostAsks);
+  HOST.postMessage({ type: "host_confirm", id, message });
+  return new Promise((resolve) => hostAnswers.set(id, resolve));
+}
 let ws, running = false, seg = null, segText = "", thinkSeg = null, cards = new Map(), pendingId = null;
 let commands = [], lastCtx = null;
 const fmtN = (n) => n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
@@ -229,8 +252,8 @@ function modeControl() {
   sel.onchange = () => {
     const mode = sel.value;
     syncMode(sel);  // keep showing the session's mode until a status event confirms the change
-    if (mode !== "default" && !confirm(MODE_WARNING)) return;
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "approval_mode", mode }));
+    const go = () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "approval_mode", mode })); };
+    if (mode === "default") go(); else askConfirm(MODE_WARNING).then((yes) => { if (yes) go(); });
   };
   label.append(sel); syncMode(sel); return label;
 }
@@ -358,7 +381,7 @@ function onEvent(ev) {
   const sid = $("#sid");
   if (ev.session_id && sid.textContent !== ev.session_id) {  // changes on /clear and /resume
     sid.textContent = ev.session_id; sid.hidden = false;
-    sid.href = "/trace" + location.search;  // carries the token
+    sid.href = HOST ? "#" : "/trace" + location.search;  // carries the token; the extension opens it in a tab
   }
   if (d.agent && AGENT_PROGRESS.has(ev.kind)) { agentProgress(ev.kind, d); return; }
   if (d.agent && ev.kind === "tool_call") endAgentStep();
@@ -381,14 +404,20 @@ function onEvent(ev) {
       }
       thinkSeg.lastChild.textContent += d.text; scroll(); break;
     case "assistant_text":
-      if (!seg) { const m = add(el("div", "msg assistant")); renderMd(m, d.text); }
+      if (!seg) { const m = add(el("div", "msg assistant")); renderMd(m, d.text); linkPaths(m); }
+      else linkPaths(seg);
       seg = null; break;
     case "tool_call": {
       seg = null;
       const det = el("details", "card"), sm = el("summary"), badge = el("span", "badge dim", "running"), verdict = el("span", "verdict");
       sm.append(el("span", "name", agentPrefix(d) + d.tool), el("span", "sum", clip(JSON.stringify(d.args), 140)), verdict, badge);
       det.append(sm, sect(el("pre", null, JSON.stringify(d.args, null, 2))));
-      det._badge = badge; det._verdict = verdict; cards.set(d.id, det); add(det); break;
+      det._badge = badge; det._verdict = verdict; cards.set(d.id, det); add(det);
+      if (HOST && typeof d.args?.path === "string") {  // the file the tool works on opens in the editor
+        const open = el("a", "path", d.args.path); open.onclick = (e) => { e.preventDefault(); HOST.postMessage({ type: "host_open", path: d.args.path }); };
+        sm.insertBefore(open, sm.children[1]);
+      }
+      break;
     }
     case "tool_result": {
       const det = cards.get(d.id); if (!det) break;
@@ -402,7 +431,9 @@ function onEvent(ev) {
       const src = `/image/${encodeURIComponent(d.id)}?token=${encodeURIComponent(token)}`;
       const fig = el("figure", "shown"), link = el("a"), img = el("img");
       link.href = src; link.target = "_blank"; link.rel = "noopener"; link.title = "open full size";
-      img.src = src; img.alt = d.caption || d.path;
+      img.alt = d.caption || d.path;
+      if (HOST) { link.removeAttribute("href"); waitingImages.set(d.id, img); ws.send(JSON.stringify({ type: "image_get", id: d.id })); }
+      else img.src = src;
       img.onerror = () => link.replaceWith(el("div", "note", "image no longer available"));
       link.append(img);
       fig.append(link, el("figcaption", null, d.caption ? `${d.caption} · ${d.path}` : d.path));
@@ -499,8 +530,71 @@ function showApproval(req) {
   dlg.append(why, btns); $("#modal").classList.add("show"); btns.lastChild.focus();
 }
 
+// path or path:line in an answer becomes a link, once the extension host says the file exists.
+const PATH_RE = /(?<![\w/.@-])((?:\.{0,2}\/)?(?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z][\w]{0,9})(?::(\d+)(?::\d+)?)?(?![\w/])/g;
+let pathAsks = 0; const pathRoots = new Map(), waitingImages = new Map();
+function textNodes(root) {
+  const out = [], walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.parentElement.closest("a") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+  while (walk.nextNode()) out.push(walk.currentNode);
+  return out;
+}
+function linkPaths(root) {
+  if (!HOST) return;
+  const found = new Set();
+  for (const n of textNodes(root)) for (const m of n.data.matchAll(PATH_RE)) found.add(m[1]);
+  if (!found.size) return;
+  const id = String(++pathAsks); pathRoots.set(id, root);
+  HOST.postMessage({ type: "host_check_paths", id, paths: [...found] });
+}
+function applyPaths(id, ok) {
+  const root = pathRoots.get(id); pathRoots.delete(id);
+  if (!root || !ok.length) return;
+  const known = new Set(ok);
+  for (const n of textNodes(root)) {
+    const frag = document.createDocumentFragment(); let last = 0, hit = false;
+    for (const m of n.data.matchAll(PATH_RE)) {
+      if (!known.has(m[1])) continue;
+      hit = true; frag.append(n.data.slice(last, m.index));
+      const a = el("a", "path", m[0]), line = m[2] ? Number(m[2]) : undefined;
+      a.onclick = (e) => { e.preventDefault(); HOST.postMessage({ type: "host_open", path: m[1], line }); };
+      frag.append(a); last = m.index + m[0].length;
+    }
+    if (hit) { frag.append(n.data.slice(last)); n.replaceWith(frag); }
+  }
+}
+function onHostMessage(msg) {  // messages from the extension host itself, not from jimbo
+  if (msg.type === "host_confirm_answer") { hostAnswers.get(msg.id)?.(msg.value === true); hostAnswers.delete(msg.id); }
+  else if (msg.type === "host_paths") applyPaths(msg.id, msg.ok || []);
+  else if (msg.type === "host_insert") {
+    const at = input.selectionStart ?? input.value.length;
+    input.value = input.value.slice(0, at) + msg.text + input.value.slice(at);
+    input.focus(); input.selectionStart = input.selectionEnd = at + msg.text.length; input.dispatchEvent(new Event("input"));
+  } else if (msg.type === "host_status") setStatus(msg.text, msg.cls);
+  else if (msg.type === "host_exit") {  // the jimbo process stopped
+    setRunning(false); setStatus("stopped", "off"); sendBtn.disabled = true;
+    const box = add(el("div", "errbox")); box.append(el("div", null, msg.text));
+    if (msg.stderr) box.append(el("pre", null, msg.stderr));
+    box.append(button("Restart", () => HOST.postMessage({ type: "host_restart" }), ""));
+  }
+  else if (msg.type === "host_reset") ws.onopen();  // the host replays everything after this
+}
+
 function connect() {
-  ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  if (HOST) {  // the extension host passes messages to and from the jimbo process
+    ws = { readyState: 1, send: (text) => HOST.postMessage({ type: "to_jimbo", msg: JSON.parse(text) }) };
+    window.addEventListener("message", (e) => {
+      const msg = e.data;
+      if (msg?.type === "from_jimbo") {
+        const m = msg.msg;
+        if (m.type === "image_data") {
+          const img = waitingImages.get(m.id); waitingImages.delete(m.id);
+          if (img && m.data) img.src = `data:${m.media_type};base64,${m.data}`;
+          else if (img) img.parentElement.replaceWith(el("div", "note", "image no longer available"));
+        } else ws.onmessage({ data: JSON.stringify(m) });
+      } else if (msg?.type) onHostMessage(msg);
+    });
+    $("#sid").onclick = (e) => { e.preventDefault(); HOST.postMessage({ type: "host_trace" }); };
+  } else ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
   ws.onopen = () => { log.replaceChildren(); follow = true; cards.clear(); seg = null; agentStep = null; agentRequests = 0; modelLists = {}; setRunning(false); };  // history is replayed
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
@@ -516,6 +610,7 @@ function connect() {
     else if (msg.type === "questions_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
     else if (msg.type === "models") { modelLists[msg.provider] = msg.models || { error: msg.error }; renderModelPicker(); fillModelNames(lastSpecInput); }
   };
+  if (HOST) { ws.onopen(); HOST.postMessage({ type: "host_ready" }); return; }
   ws.onclose = () => { setStatus("disconnected — retrying…", "off"); sendBtn.disabled = true; setTimeout(connect, 1500); };
 }
 
@@ -730,7 +825,7 @@ function providersTab() {
     head.append(el("span", "name", p.name), el("span", "dim", [p.builtin && "built in", p.changed && "changed"].filter(Boolean).join(", ")));
     head.append(button("Test", () => configSet({ op: "provider_test", name: p.name })));
     if (p.changed) head.append(button(p.builtin ? "Reset" : "Remove", () => {
-      if (confirm(p.builtin ? `Remove your settings for ${p.name}?` : `Remove provider ${p.name}?`)) configSet({ op: "provider_rm", name: p.name });
+      askConfirm(p.builtin ? `Remove your settings for ${p.name}?` : `Remove provider ${p.name}?`).then((yes) => { if (yes) configSet({ op: "provider_rm", name: p.name }); });
     }));
     const url = el("div", "row"), u = textField(p.base_url, "default URL");
     url.append(el("span", "dim", "URL"), u, button("Save", () => configSet({ op: "provider_set", name: p.name, base_url: u.value })));

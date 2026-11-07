@@ -139,6 +139,13 @@ approve calls, change approval modes, and change providers and API keys. The URL
 history. The connection is not encrypted. If you change `web_host` to an address other than `127.0.0.1`,
 other computers on the network can reach the server.
 
+## The VS Code extension
+
+The extension in `vscode/` runs the same jimbo, with the same approvals, sandbox and risks. Answering an
+approval in a VS Code notification is the same as answering it in the panel. `jimbo.path` and `jimbo.args` say
+which command VS Code runs; they are read from user settings only, but anyone who can change your user settings
+can make VS Code run another program.
+
 ## Saved sessions
 
 Jimbo saves each session in `~/.jimbo/sessions`: the conversation, file contents the model read, command

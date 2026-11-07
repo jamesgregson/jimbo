@@ -89,6 +89,8 @@ Other ways to run it:
 | `jimbo --user-accepts-risks` | accept the risk warning without being asked |
 | `cat log.txt \| jimbo --user-accepts-risks "explain this"` | include piped text with the task |
 
+A prototype VS Code extension is in [vscode/](vscode/README.md). It is not released; you build and install it yourself.
+
 ## What jimbo can do
 
 The model works through these tools:

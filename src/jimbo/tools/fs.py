@@ -16,6 +16,7 @@ MAX_READ_BYTES = 64_000
 MAX_LIST_ENTRIES = 500
 MAX_TREE_FILES = 1000  # most files delete_file and move_file keep for /undo
 MAX_TREE_BYTES = 50_000_000
+MAX_PROPOSED_BYTES = 1_000_000  # largest file an approval carries whole, for an editor's diff view
 
 
 async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: int = 500) -> str | list:
@@ -67,6 +68,11 @@ async def list_dir(ctx: RunContext[Deps], path: str = ".") -> str:
     return "\n".join(names) or "[empty]"
 
 
+def _proposed(p: Path, text: str) -> dict | None:
+    """The file as it will be after a change, for frontends that show it in an editor; None if too large."""
+    return {"path": str(p), "text": text} if len(text.encode("utf-8")) <= MAX_PROPOSED_BYTES else None
+
+
 def _diff(path: str, old: str, new: str) -> str:
     d = difflib.unified_diff(old.splitlines(), new.splitlines(), f"a/{path}", f"b/{path}", lineterm="")
     return "\n".join(list(d)[:200])
@@ -79,7 +85,7 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
         old = p.read_text("utf-8") if p.is_file() else ""
         verb = "overwrite" if p.is_file() else "create"
         await ctx.deps.authorize(ctx.tool_call_id, "write_file", {"path": path}, f"{verb} {path}",
-                                 detail=_diff(path, old, content))
+                                 detail=_diff(path, old, content), proposed=_proposed(p, content))
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
     except UnicodeDecodeError:
@@ -122,7 +128,7 @@ async def _edit(ctx: RunContext[Deps], path: str, edits: list[Edit]) -> tuple[Pa
             total += n
         # multi_edit is approved as edit_file, so rules and "always" for edit_file cover it
         await ctx.deps.authorize(ctx.tool_call_id, "edit_file", {"path": path}, f"edit {path}",
-                                 detail=_diff(path, text, updated))
+                                 detail=_diff(path, text, updated), proposed=_proposed(p, updated))
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
     except UnicodeDecodeError:
