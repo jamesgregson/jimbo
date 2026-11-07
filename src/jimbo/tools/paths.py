@@ -14,8 +14,9 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path:
     return p
 
 
-def resolve_readable(workspace: Path, path: str, extra_roots: list[Path]) -> Path:
-    """Like resolve_in_workspace, but reads may also fall under `extra_roots` (e.g. skill directories)."""
+def resolve_in_roots(workspace: Path, path: str, extra_roots: list[Path]) -> Path:
+    """Like resolve_in_workspace, but `path` may also fall under `extra_roots` (the scratch directory, and skill
+    directories for reads)."""
     try:
         return resolve_in_workspace(workspace, path)
     except PathEscape:

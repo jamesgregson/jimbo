@@ -126,17 +126,19 @@ def available() -> bool:
     return r.returncode == 0
 
 
-def build_sandbox(settings: "Settings", workspace: Path) -> Sandbox | None:
-    """The sandbox `settings.sandbox` asks for. Raises ValueError when it is required and can't be had."""
+def build_sandbox(settings: "Settings", workspace: Path, scratch: Path | None = None) -> Sandbox | None:
+    """The sandbox `settings.sandbox` asks for, with `scratch` writable too. Raises ValueError when it is required
+    and can't be had."""
     mode = settings.sandbox
     if mode == "off":
         return None
     if mode in ("docker", "podman"):
         from . import container_sandbox
-        return container_sandbox.build(settings, workspace, mode)
+        return container_sandbox.build(settings, workspace, mode, scratch)
     if not available():
         if mode == "on":
             raise ValueError("sandbox='on' but sandbox-exec is unavailable (macOS only, and not nested in "
                              "another sandbox); use 'auto' or 'off'")
         return None
-    return SeatbeltSandbox([*default_writable(workspace), *settings.sandbox_writable], settings.sandbox_network)
+    extra = [scratch] if scratch else []
+    return SeatbeltSandbox([*default_writable(workspace), *extra, *settings.sandbox_writable], settings.sandbox_network)

@@ -349,6 +349,18 @@ Git in a workspace that is a subdirectory of a repo can't write the repo's `.git
 `sandbox_writable`. If jimbo itself runs inside a macOS sandbox, `auto` falls back to unsandboxed, because macOS
 doesn't allow nesting.
 
+### Scratch directory
+
+Each time jimbo starts, it makes a scratch directory in the system temp folder, such as
+`$TMPDIR/jimbo-scratch-1a2b3c4d`, and deletes it when jimbo exits. The model is told its path and is asked to put
+throwaway files there, such as one-off scripts and screenshots, instead of in `/tmp`.
+
+- The file tools (`read_file`, `list_dir`, `write_file`, `edit_file`, `multi_edit`, `delete_file`, `move_file`,
+  `show_image`) accept absolute paths in it. They still refuse other paths outside the workspace.
+- Changes there need the same approval as changes in the workspace, and `/undo` covers them.
+- Every sandbox lets commands write to it. A container sandbox mounts it at the same path.
+- Agents share the scratch directory with the main session.
+
 ### Container sandbox (Docker or Podman)
 
 ```toml
@@ -364,8 +376,8 @@ unsandboxed.
 commands use the same container, so a server started with `background = true` can be reached by a later
 `curl localhost`. The container:
 
-- mounts the workspace, `sandbox_writable` and `sandbox_readonly` (read-only) at the same paths as on the
-  host, and nothing else. jimbo won't mount `/`, your home directory, or a path that holds the Docker or Podman socket.
+- mounts the workspace, the [scratch directory](#scratch-directory), `sandbox_writable` and `sandbox_readonly`
+  (read-only) at the same paths as on the host, and nothing else. jimbo won't mount `/`, your home directory, or a path that holds the Docker or Podman socket.
 - runs commands as your user id, not root, with no Linux capabilities. Commands can't install system
   packages; put them in the image.
 - gets none of your environment variables, only `HOME=/home/jimbo`, `TERM`, `LANG` and `sandbox_env`.

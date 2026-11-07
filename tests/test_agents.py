@@ -341,11 +341,11 @@ async def test_main_model_runs_an_agent(tmp_path):
 
 async def test_agent_index_and_hidden_agents(tmp_path):
     log = Log()
-    write_agent(tmp_path, "private", "No description.")
-    s, fe = make(tmp_path, call("run_agent", agent="private", task="t"), "ok")
-    s.agent.model = scripted(call("run_agent", agent="private", task="t"), "ok", log=log)
+    write_agent(tmp_path, "unlisted", "No description.")
+    s, fe = make(tmp_path, call("run_agent", agent="unlisted", task="t"), "ok")
+    s.agent.model = scripted(call("run_agent", agent="unlisted", task="t"), "ok", log=log)
     await s.send("go")
-    assert "- explore:" in log.instructions and "private" not in log.instructions
+    assert "- explore:" in log.instructions and "unlisted" not in log.instructions
     assert "unknown agent" in kinds(fe, "tool_result")[0]["content"]  # the model can't run it
 
 

@@ -1,5 +1,8 @@
+import atexit
 import secrets
+import shutil
 import sys
+import tempfile
 from dataclasses import replace
 from itertools import count
 from pathlib import Path
@@ -70,7 +73,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
             return
         deps = holder["s"].deps
         where = deps.sandbox.describe() if deps.sandbox else "NOT sandboxed"
-        a = await assess_shell(router, str(call.args["command"]), deps.workspace,
+        a = await assess_shell(router, str(call.args["command"]), deps.workspace, scratch=deps.scratch,
                                timeout=settings.task(ASSESS_TASK).timeout, where=f"Execution: {where}")
         call.assessment = a.model_dump() if a else None
         if a is not None and a.model:
@@ -109,7 +112,11 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                                **({"detail": call.detail} if unseen else {}))  # no prompt showed this diff
 
     workspace = settings.workspace.resolve()
-    sandbox = build_sandbox(settings, workspace)
+    # Somewhere other than the workspace for throwaway scripts and screenshots, which models otherwise put in /tmp.
+    # The kernel checks real paths (/tmp is /private/tmp), so resolve it.
+    scratch = Path(tempfile.mkdtemp(prefix="jimbo-scratch-")).resolve()
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)
+    sandbox = build_sandbox(settings, workspace, scratch)
     gate = ApprovalGate(policies, observe)
     # Started with --yolo or --auto: "default" means the normal chain, not that one.
     default_chain = (settings.approval if not {"yolo", "auto"} & set(settings.approval)
@@ -117,7 +124,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     modes = ApprovalModes(gate, available, settings.approval, default_chain, auto_available=assess_mode != "off")
     deps = Deps(workspace=workspace, gate=gate, sandbox=sandbox,
                 shell_timeout=settings.shell_timeout, shell_timeout_max=settings.shell_timeout_max,
-                models=router, secret_files=settings.secret_files,
+                models=router, secret_files=settings.secret_files, scratch=scratch,
                 ask_user=getattr(frontend, "ask_questions", None))
     if settings.lsp:
         if isinstance(sandbox, ContainerSandbox):  # servers run in the container, so look for them in its image

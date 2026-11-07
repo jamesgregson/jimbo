@@ -10,7 +10,7 @@ from pydantic_ai.messages import BinaryContent
 from ..core.attachments import IMAGE_SUFFIXES, check_image
 from ..core.deps import Deps, ToolDenied
 from .lsp import errors_after_edit
-from .paths import PathEscape, resolve_in_workspace, resolve_readable
+from .paths import PathEscape
 
 MAX_READ_BYTES = 64_000
 MAX_LIST_ENTRIES = 500
@@ -24,7 +24,7 @@ async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: in
     An image (.png, .jpg, .jpeg, .gif, .webp) is returned as the image itself, so you can look at it."""
     try:
         await ctx.deps.authorize(ctx.tool_call_id, "read_file", {"path": path}, f"read {path}", read_only=True)
-        p = resolve_readable(ctx.deps.workspace, path, ctx.deps.read_roots())
+        p = ctx.deps.readable(path)
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
     if not p.is_file():
@@ -55,7 +55,7 @@ async def list_dir(ctx: RunContext[Deps], path: str = ".") -> str:
     """List entries of a workspace directory. Directories end with '/'."""
     try:
         await ctx.deps.authorize(ctx.tool_call_id, "list_dir", {"path": path}, f"list {path}", read_only=True)
-        p = resolve_readable(ctx.deps.workspace, path, ctx.deps.read_roots())
+        p = ctx.deps.readable(path)
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
     if not p.is_dir():
@@ -73,9 +73,9 @@ def _diff(path: str, old: str, new: str) -> str:
 
 
 async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
-    """Create or overwrite a text file in the workspace (parent directories are created)."""
+    """Create or overwrite a text file in the workspace or the scratch directory (parent directories are created)."""
     try:
-        p = resolve_in_workspace(ctx.deps.workspace, path)
+        p = ctx.deps.writable(path)
         old = p.read_text("utf-8") if p.is_file() else ""
         verb = "overwrite" if p.is_file() else "create"
         await ctx.deps.authorize(ctx.tool_call_id, "write_file", {"path": path}, f"{verb} {path}",
@@ -112,7 +112,7 @@ async def _edit(ctx: RunContext[Deps], path: str, edits: list[Edit]) -> tuple[Pa
     """Apply `edits` in order to the file's text, then ask once and write once. Returns the path, the text
     before, and the number of replacements."""
     try:
-        p = resolve_in_workspace(ctx.deps.workspace, path)
+        p = ctx.deps.writable(path)
         if not p.is_file():
             raise ModelRetry(f"{path!r} is not a file")
         text = updated = p.read_text("utf-8")
@@ -151,13 +151,16 @@ async def multi_edit(ctx: RunContext[Deps], path: str, edits: list[Edit]) -> str
 
 
 def _confined(ctx: RunContext[Deps], path: str) -> Path:
-    """`path` in the workspace, not followed if it is a link: deleting or moving a link must not touch its target."""
+    """`path` in the workspace or the scratch directory, not followed if it is a link: deleting or moving a link
+    must not touch its target."""
     lexical = Path(os.path.normpath(ctx.deps.workspace / path))
     if lexical.is_symlink():
         raise ModelRetry(f"{path!r} is a symbolic link; use shell for links")
-    p = resolve_in_workspace(ctx.deps.workspace, path)
+    p = ctx.deps.writable(path)
     if p == ctx.deps.workspace.resolve():
         raise PathEscape(f"{path!r} is the workspace itself")
+    if p in (r.resolve() for r in ctx.deps.write_roots()):
+        raise PathEscape(f"{path!r} is the scratch directory itself")
     return p
 
 
@@ -179,7 +182,8 @@ def _files_under(p: Path, path: str) -> list[Path]:
 
 
 async def delete_file(ctx: RunContext[Deps], path: str) -> str:
-    """Delete a file, or a directory and everything in it, in the workspace. /undo can restore it."""
+    """Delete a file, or a directory and everything in it, in the workspace or the scratch directory. /undo can
+    restore it."""
     try:
         p = _confined(ctx, path)
         if not p.exists():
@@ -199,13 +203,13 @@ async def delete_file(ctx: RunContext[Deps], path: str) -> str:
 
 
 async def move_file(ctx: RunContext[Deps], path: str, destination: str) -> str:
-    """Move or rename a file or directory in the workspace. `destination` must not exist; its parent
-    directories are created. /undo can move it back. Imports and other references are not updated."""
+    """Move or rename a file or directory in the workspace or the scratch directory. `destination` must not exist;
+    its parent directories are created. /undo can move it back. Imports and other references are not updated."""
     try:
         src = _confined(ctx, path)
         if not src.exists():
             raise ModelRetry(f"{path!r} does not exist")
-        dst = resolve_in_workspace(ctx.deps.workspace, destination)
+        dst = ctx.deps.writable(destination)
         if dst.exists():
             raise ModelRetry(f"{destination!r} already exists")
         if dst.is_relative_to(src):
@@ -219,7 +223,7 @@ async def move_file(ctx: RunContext[Deps], path: str, destination: str) -> str:
         ctx.deps.checkpoints.record(f)
         ctx.deps.checkpoints.record(dst / f.relative_to(src) if src.is_dir() else dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    src.rename(dst)
+    shutil.move(src, dst)  # not rename: the scratch directory can be on another file system
     return f"moved {path} to {destination}"
 
 

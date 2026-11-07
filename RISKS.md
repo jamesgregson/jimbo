@@ -49,7 +49,7 @@ as your attention when you answer it.
 |---------|------|
 | `sandbox = "auto"` on Linux and other systems | There is no sandbox. Commands can read and write everything your user can. |
 | `sandbox = "auto"` on macOS (`sandbox-exec`) | Commands can **read every file** your user can, including `~/.ssh`, `~/.aws`, browser profiles and password stores. They can write to the project, temp folders and cache folders. The network is open. Commands inherit jimbo's environment variables, including API keys such as `OPENROUTER_API_KEY`. |
-| `sandbox = "docker"` or `"podman"` | The project is mounted read-write. The network is open unless `sandbox_network = false`. Folders added with `sandbox_writable` or `sandbox_readonly` are reachable. The container engine and the kernel are shared with your computer. |
+| `sandbox = "docker"` or `"podman"` | The project and jimbo's scratch directory are mounted read-write. The network is open unless `sandbox_network = false`. Folders added with `sandbox_writable` or `sandbox_readonly` are reachable. The container engine and the kernel are shared with your computer. |
 | `sandbox = "off"` | There is no sandbox. |
 
 No sandbox protects the project folder. An approved command can change or delete any file in it, including

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .approval import ApprovalGate, ToolCallInfo
 from .checkpoints import Checkpoints
+from ..tools.paths import PathEscape, resolve_in_roots
 
 if TYPE_CHECKING:
     from .agents import AgentResult, AgentSpec
@@ -38,6 +39,7 @@ class Deps:
     project_instructions: str = ""
     vision: bool = True  # False: the model can't read images, so none are sent to it
     user_dir: Path | None = None  # ~/.jimbo, set by wiring: where user memory lives
+    scratch: Path | None = None  # set by wiring: a temporary directory for this run, deleted when jimbo exits
     skills: "dict[str, Skill]" = field(default_factory=dict)
     secret_files: list[str] = field(default_factory=list)  # file-name globs the model must not read
     checkpoints: Checkpoints = field(default_factory=Checkpoints)
@@ -83,9 +85,30 @@ class Deps:
         """Whether the model may ask the user questions: a frontend can ask, and no agent or quiet skill runs."""
         return self.ask_user is not None and self.agent is None and self.no_questions is None
 
+    def write_roots(self) -> list[Path]:
+        """Directories outside the workspace that file tools may change: the scratch directory."""
+        return [self.scratch] if self.scratch else []
+
     def read_roots(self) -> list[Path]:
-        """Directories outside the workspace that read-only file tools may access: loaded skills' folders."""
-        return [s.path.parent for s in self.skills.values()]
+        """Directories outside the workspace that read-only file tools may access: the scratch directory and
+        loaded skills' folders."""
+        return [*self.write_roots(), *(s.path.parent for s in self.skills.values())]
+
+    def readable(self, path: str) -> Path:
+        """`path` resolved for a read-only file tool. Raises PathEscape."""
+        return self._resolve(path, self.read_roots())
+
+    def writable(self, path: str) -> Path:
+        """`path` resolved for a file tool that changes it. Raises PathEscape."""
+        return self._resolve(path, self.write_roots())
+
+    def _resolve(self, path: str, roots: list[Path]) -> Path:
+        try:
+            return resolve_in_roots(self.workspace, path, roots)
+        except PathEscape as e:
+            if self.scratch:  # models reach for /tmp; say where temporary files go instead
+                raise PathEscape(f"{e}; use the scratch directory {self.scratch} for temporary files") from None
+            raise
 
     def is_secret(self, path: str) -> bool:
         return any(fnmatchcase(Path(path).name, p) for p in self.secret_files)

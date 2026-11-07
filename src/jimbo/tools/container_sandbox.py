@@ -502,16 +502,17 @@ async def _run(*argv: str) -> int:
     return await p.wait()
 
 
-def build(settings: "Settings", workspace: Path, cli: str = "docker") -> ContainerSandbox:
-    """The sandbox for `sandbox = "docker"` or `"podman"`. Checks the runtime and gets the image now, before any
-    UI starts."""
+def build(settings: "Settings", workspace: Path, cli: str = "docker", scratch: Path | None = None) -> ContainerSandbox:
+    """The sandbox for `sandbox = "docker"` or `"podman"`, with `scratch` mounted too. Checks the runtime and gets
+    the image now, before any UI starts."""
     try:
         runtime = probe(cli)
     except Unavailable as e:
         raise ValueError(f'sandbox = "{cli}" but {cli.capitalize()} is not available: {e}. {_advice(cli)}, or set '
                          'sandbox to "auto" or "off".') from None
     image = settings.sandbox_image or bundled_image()
-    sandbox = ContainerSandbox(image, workspace, runtime=runtime, writable=settings.sandbox_writable,
+    writable = [*([scratch] if scratch else []), *settings.sandbox_writable]
+    sandbox = ContainerSandbox(image, workspace, runtime=runtime, writable=writable,
                                readonly=settings.sandbox_readonly, network=settings.sandbox_network,
                                ports=[parse_port(p) for p in settings.sandbox_ports], env=settings.sandbox_env,
                                memory=settings.sandbox_memory, cpus=settings.sandbox_cpus)

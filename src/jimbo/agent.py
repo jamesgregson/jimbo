@@ -31,7 +31,8 @@ Use the provided tools to inspect the code before answering; do not guess file c
 Find files with glob and search text with grep; read them with read_file.
 You can create and modify files with write_file (whole file), edit_file (exact replace) and multi_edit
 (several replacements in one file); read a file before editing it. Delete and move files with delete_file and
-move_file, not shell, so /undo can reverse it. Paths are relative to the workspace root.
+move_file, not shell, so /undo can reverse it. Paths are relative to the workspace root; use an absolute path
+for the scratch directory.
 Use shell to run commands (tests, builds, git); it is non-interactive and runs in the workspace root. Run
 servers and other long-running commands with background=true.
 Use web_fetch to read documentation and other web pages.
@@ -167,6 +168,10 @@ def project_context(ctx: RunContext[Deps]) -> str:
         parts.append(AGENT_PLAN_PROMPT if deps.agent else PLAN_PROMPT)
     if deps.project_instructions:
         parts.append(deps.project_instructions)
+    if deps.scratch:
+        parts.append(f"# Scratch directory\nPut throwaway files that don't belong in the project (one-off scripts, "
+                     f"screenshots, test output) in {deps.scratch}, not /tmp. The file tools and shell can both use "
+                     "it, by absolute path. It is deleted when jimbo exits, so put anything to keep in the workspace.")
     for name in deps.agent.skills if deps.agent else ():
         if skill := deps.skills.get(name):
             parts.append(f"# Skill {name}\nSkill directory: {skill.path.parent}\n\n{skill.body}")

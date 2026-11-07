@@ -250,6 +250,12 @@ def test_check_command_levels(tmp_path):
     assert risk("echo ls | sort") == "low"
 
 
+def test_writes_to_the_scratch_directory_are_low(tmp_path):
+    scratch = tmp_path.parent / f"{tmp_path.name}-scratch"
+    assert check_command(f"echo x > {scratch}/out.txt", tmp_path)[0] == "high"
+    assert check_command(f"echo x > {scratch}/out.txt", tmp_path, scratch)[0] == "low"
+
+
 # -- other users of the router ----------------------------------------------------------------------
 
 async def test_compaction_uses_its_own_model(tmp_path):

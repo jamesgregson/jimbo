@@ -527,7 +527,9 @@ the `approval_requested` / `approval_resolved` events.
 These limit what a call can do after it is approved:
 
 1. **Path confinement** ([tools/paths.py](src/jimbo/tools/paths.py)): file tools resolve symlinks and reject
-   paths outside the workspace (`PathEscape`). Read-only tools may also read the folders of loaded skills.
+   paths outside the workspace (`PathEscape`). They also accept the scratch directory (`Deps.scratch`), a temp
+   directory `build_session()` makes for each run and deletes at exit, which every sandbox makes writable.
+   Read-only tools may also read the folders of loaded skills.
 2. **Sandbox** ([tools/sandbox.py](src/jimbo/tools/sandbox.py)): `shell` and language servers start processes
    with `spawn(sandbox, argv, ...)` and stop them with `kill(sandbox, proc)`, which take `Deps.sandbox` (a
    `Sandbox`, or None to run directly). The approval prompt states where the command runs (`describe()`).

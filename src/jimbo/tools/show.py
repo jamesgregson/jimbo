@@ -3,7 +3,7 @@ from pydantic_ai.tools import ToolDefinition
 
 from ..core.attachments import IMAGE_SUFFIXES, MAX_IMAGE_BYTES, check_image
 from ..core.deps import Deps, ToolDenied
-from .paths import PathEscape, resolve_readable
+from .paths import PathEscape
 
 SHOWABLE = {**IMAGE_SUFFIXES, ".svg": "image/svg+xml"}
 
@@ -11,12 +11,12 @@ SHOWABLE = {**IMAGE_SUFFIXES, ".svg": "image/svg+xml"}
 async def show_image(ctx: RunContext[Deps], path: str, caption: str = "") -> str:
     """Show an image file to the user, e.g. a chart, diagram or screenshot you made with a shell command.
 
-    Save the image in the workspace first (.png, .jpg, .jpeg, .gif, .webp or .svg, up to 5 MB). Only the user
-    sees it; to look at an image yourself, use read_file.
+    Save the image in the workspace or the scratch directory first (.png, .jpg, .jpeg, .gif, .webp or .svg, up
+    to 5 MB). Only the user sees it; to look at an image yourself, use read_file.
     """
     try:
         await ctx.deps.authorize(ctx.tool_call_id, "show_image", {"path": path}, f"show {path}", read_only=True)
-        p = resolve_readable(ctx.deps.workspace, path, ctx.deps.read_roots())
+        p = ctx.deps.readable(path)
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
     if not p.is_file():

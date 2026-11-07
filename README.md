@@ -10,13 +10,13 @@ model with Ollama. It runs in a terminal, in a browser, or as a JSON event strea
 
 This is a hobby project of mine that takes control of your computer.
 
-> **DANGER**: It will destroy your system and data. It will find and leak confidential information.
+> **DANGER**: It may destroy your system and data. It may find and leak confidential information.
 
 Do not use this on anything you care about or where failures have non-trivial consequence. It is provided without warranty or any claim of fitness for any purpose. Use at your own risk.
 
-[RISKS.md](RISKS.md) lists the ways it can cause harm and the limits of its safety features.
+[RISKS.md](RISKS.md) lists some of the ways it can cause harm and the limits of its safety features.
 
-## What you can use it for
+## Things you might try it on, knowing the risks
 
 - **Fix bugs.** Give it an error, a failing test or a description. It reproduces the problem, finds the cause,
   fixes it and runs the tests.
@@ -155,9 +155,12 @@ where commands run. Language servers run in the same sandbox.
 |---------|--------------------|-------------------|--------------------|
 | `sandbox = "auto"` (default), on macOS | under `sandbox-exec` | everything | the project, temp folders and caches |
 | `sandbox = "auto"` (default), elsewhere | with no sandbox | everything | everything |
-| `sandbox = "docker"` | in a Docker container, on macOS and Linux | the project only | the project only |
-| `sandbox = "podman"` | in a Podman container, on macOS and Linux | the project only | the project only |
+| `sandbox = "docker"` | in a Docker container, on macOS and Linux | the project and the scratch directory | the project and the scratch directory |
+| `sandbox = "podman"` | in a Podman container, on macOS and Linux | the project and the scratch directory | the project and the scratch directory |
 | `sandbox = "off"` | with no sandbox | everything | everything |
+
+The scratch directory is a temp folder jimbo makes for each run and deletes when it exits, for throwaway
+scripts and screenshots. See [Scratch directory](docs/reference.md#scratch-directory).
 
 The container sandboxes also keep your home folder and environment variables, such as API keys, away from
 commands. Docker and Podman work the same way. To use Docker, start it and add this line to the top of

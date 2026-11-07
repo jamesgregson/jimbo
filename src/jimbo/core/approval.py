@@ -234,7 +234,7 @@ class Yolo:
 
 
 class AutoApprove:
-    """Allows file writes, edits, deletes and moves (the tools keep them inside the workspace, and /undo
+    """Allows file writes, edits, deletes and moves (the tools keep them inside the workspace and the scratch directory, and /undo
     reverses them), and shell commands the
     assessment model rates medium risk or lower; everything else falls through. The fixed checks can raise a
     command's risk but never approve it on their own: with no model answer (slow or failed) it asks. `assess`

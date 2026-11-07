@@ -140,6 +140,7 @@ def test_build_sandbox_modes(tmp_path, monkeypatch):
     s = build("auto", sandbox_writable=[tmp_path / "extra"], sandbox_network=False)
     assert tmp_path.resolve() in s.writable and (tmp_path / "extra").resolve() in s.writable
     assert "network-outbound" in s.profile()
+    assert (tmp_path / "scratch").resolve() in sb.build_sandbox(settings(tmp_path), tmp_path, tmp_path / "scratch").writable
 
 
 @pytest.mark.parametrize("tool,arg,expected", [
@@ -315,6 +316,37 @@ async def test_delete_and_move_refuse(tmp_path):
         with pytest.raises(ModelRetry, match=why):
             await coro
     assert outside.read_text() == "keep" and (tmp_path / "a.txt").exists()
+
+
+async def test_file_tools_use_the_scratch_directory(tmp_path):
+    from jimbo.tools.fs import delete_file, edit_file, move_file, write_file
+    ws, scratch = tmp_path / "ws", tmp_path / "scratch"
+    ws.mkdir(), scratch.mkdir()
+    c = ctx(ws, scratch=scratch)
+    c.deps.checkpoints.begin()
+    await write_file(c, f"{scratch}/probe.py", "print(1)\n")
+    await edit_file(c, f"{scratch}/probe.py", "1", "2")
+    assert "print(2)" in await read_file(c, f"{scratch}/probe.py")
+    await move_file(c, f"{scratch}/probe.py", "kept.py")  # out of scratch, into the workspace
+    assert (ws / "kept.py").read_text() == "print(2)\n"
+    await move_file(c, "kept.py", f"{scratch}/sub/back.py")
+    await delete_file(c, f"{scratch}/sub")
+    for coro, why in [(delete_file(c, str(scratch)), "scratch directory itself"),
+                      (write_file(c, "/tmp/other.txt", "x"), f"outside the workspace; use the scratch directory {scratch}"),
+                      (read_file(c, f"{tmp_path}/other.txt"), "use the scratch directory")]:
+        with pytest.raises(ModelRetry, match=why):
+            await coro
+    c.deps.checkpoints.undo()
+    assert not (scratch / "probe.py").exists() and not (ws / "kept.py").exists()
+    with pytest.raises(ModelRetry, match="outside"):  # no scratch directory: the workspace only
+        await write_file(ctx(ws), f"{scratch}/probe.py", "x")
+
+
+def test_session_has_a_scratch_directory(tmp_path):
+    from jimbo.agent import project_context
+    s = build_session(settings(tmp_path), ScriptedFrontend(), model=TestModel())
+    assert s.deps.scratch.is_dir() and not s.deps.scratch.is_relative_to(tmp_path.resolve())
+    assert str(s.deps.scratch) in project_context(SimpleNamespace(deps=s.deps))
 
 
 async def test_move_rules_match_both_paths(tmp_path):
