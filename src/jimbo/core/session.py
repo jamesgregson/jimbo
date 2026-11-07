@@ -35,6 +35,7 @@ from .cost import Spend, estimate_cost
 from .stats import OUTPUT_TOOLS, thinking_tokens
 from .deps import Deps
 from .events import Event, EventKind, EventSink
+from .scratch import remove_if_empty
 from .store import REPLAY_KINDS, SessionStore
 
 
@@ -81,6 +82,7 @@ class AgentSession:
         self._todos_sent: list = []
         self._instructions_sent: str | None = None  # logged again whenever they change, and in each new log
         self._task: asyncio.Task | None = None
+        self._use_scratch()
 
     async def emit(self, kind: EventKind, **data) -> None:
         if kind in ("run_finished", "command_output") and not data.get("ok", True):
@@ -138,6 +140,21 @@ class AgentSession:
         self._seq = 0
         self.spend = Spend()
         self._instructions_sent = None
+        self._use_scratch()
+
+    def _use_scratch(self) -> None:
+        """Point deps.scratch at this session id's folder, and remove the previous id's folder if it is empty.
+        An agent keeps its parent's."""
+        root = self.deps.scratch_root
+        if root is None or self.nested:
+            return
+        old, self.deps.scratch = self.deps.scratch, root / self.session_id
+        try:
+            self.deps.scratch.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # the shell reports it if a command needs it
+        if old and old != self.deps.scratch:
+            remove_if_empty(old)
 
     async def resume(self, prefix: str) -> str:
         """Load a saved session into this one: history, todos and id (so the log keeps appending to the
@@ -149,6 +166,7 @@ class AgentSession:
         events = self.store.events(saved.id)
         self.history = saved.history
         self.session_id = saved.id
+        self._use_scratch()
         self._seq = max((e.seq for e in events), default=0)
         self._instructions_sent = None
         self.deps.todos = [TodoItem.model_validate(t) for t in saved.todos]

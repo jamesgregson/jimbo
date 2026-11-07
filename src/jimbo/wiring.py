@@ -2,7 +2,6 @@ import atexit
 import secrets
 import shutil
 import sys
-import tempfile
 from dataclasses import replace
 from itertools import count
 from pathlib import Path
@@ -22,6 +21,7 @@ from .core.deps import Deps
 from .core.events import EventSink
 from .core.interaction import Frontend
 from .core.models import ModelRouter
+from .core.scratch import prune as prune_scratch, remove_if_empty
 from .core.store import SessionStore
 from .core.skills import load_project_instructions, load_skills
 from .core.session import AgentSession
@@ -113,10 +113,12 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
 
     workspace = settings.workspace.resolve()
     # Somewhere other than the workspace for throwaway scripts and screenshots, which models otherwise put in /tmp.
-    # The kernel checks real paths (/tmp is /private/tmp), so resolve it.
-    scratch = Path(tempfile.mkdtemp(prefix="jimbo-scratch-")).resolve()
-    atexit.register(shutil.rmtree, scratch, ignore_errors=True)
-    sandbox = build_sandbox(settings, workspace, scratch)
+    # The session uses a folder per session id in it. The sandbox gets the whole root, so /clear and /resume don't
+    # need a new container. The kernel checks real paths, so resolve it.
+    scratch_root = (settings.user_dir / "scratch").expanduser().resolve()
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    prune_scratch(scratch_root, settings.scratch_keep_days)
+    sandbox = build_sandbox(settings, workspace, scratch_root)
     gate = ApprovalGate(policies, observe)
     # Started with --yolo or --auto: "default" means the normal chain, not that one.
     default_chain = (settings.approval if not {"yolo", "auto"} & set(settings.approval)
@@ -124,7 +126,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     modes = ApprovalModes(gate, available, settings.approval, default_chain, auto_available=assess_mode != "off")
     deps = Deps(workspace=workspace, gate=gate, sandbox=sandbox,
                 shell_timeout=settings.shell_timeout, shell_timeout_max=settings.shell_timeout_max,
-                models=router, secret_files=settings.secret_files, scratch=scratch,
+                models=router, secret_files=settings.secret_files, scratch_root=scratch_root,
                 ask_user=getattr(frontend, "ask_questions", None))
     if settings.lsp:
         if isinstance(sandbox, ContainerSandbox):  # servers run in the container, so look for them in its image
@@ -245,6 +247,14 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                            compact_keep=settings.compact_keep)
     if settings.log_sessions:
         session.store = SessionStore(settings.log_dir, workspace)
+
+    def drop_scratch() -> None:  # kept for a resumable session unless empty; the rest go when they get old
+        if deps.scratch and not settings.log_sessions:
+            shutil.rmtree(deps.scratch, ignore_errors=True)
+        elif deps.scratch:
+            remove_if_empty(deps.scratch)
+
+    atexit.register(drop_scratch)
     session.replay_sink = FrontendSink(frontend)
     session.approval_modes = modes
     session.config = ConfigControl(settings, inspector)

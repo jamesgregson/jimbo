@@ -20,8 +20,8 @@ BUNDLED_DIR = Path(__file__).parent / "bundled"
 UNTRUSTED_KEYS = {"model", "api_key", "ollama_base_url", "openai_base_url", "openrouter_base_url",
                   "workspace", "web_host", "approval", "approval_allow", "sandbox", "sandbox_writable",
                   "sandbox_network", "sandbox_image", "sandbox_readonly", "sandbox_ports", "sandbox_env",
-                  "sandbox_memory", "sandbox_cpus", "log_dir", "user_dir", "providers", "model_aliases", "models",
-                  "tasks", "secret_files", "lsp_servers"}
+                  "sandbox_memory", "sandbox_cpus", "log_dir", "user_dir", "scratch_keep_days", "providers",
+                  "model_aliases", "models", "tasks", "secret_files", "lsp_servers"}
 RENAMED_TASKS = {"shell_assess": "jimbo-shell-assess", "compaction": "jimbo-compaction"}
 
 
@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     log_sessions: bool = True
     log_dir: Path = Path.home() / ".jimbo" / "sessions"
     user_dir: Path = Path.home() / ".jimbo"  # config.toml, commands/ (and later skills/)
+    scratch_keep_days: float = 7  # session scratch folders unchanged for this long are deleted at startup
     bundled: bool = True  # False: load nothing from BUNDLED_DIR. A repo may set this; it only removes files
     tool_retries: int = 3
 

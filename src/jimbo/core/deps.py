@@ -39,7 +39,8 @@ class Deps:
     project_instructions: str = ""
     vision: bool = True  # False: the model can't read images, so none are sent to it
     user_dir: Path | None = None  # ~/.jimbo, set by wiring: where user memory lives
-    scratch: Path | None = None  # set by wiring: a temporary directory for this run, deleted when jimbo exits
+    scratch_root: Path | None = None  # set by wiring: <user_dir>/scratch, which holds a folder per session
+    scratch: Path | None = None  # set by the session: <scratch_root>/<session id>; agents use their parent's
     skills: "dict[str, Skill]" = field(default_factory=dict)
     secret_files: list[str] = field(default_factory=list)  # file-name globs the model must not read
     checkpoints: Checkpoints = field(default_factory=Checkpoints)

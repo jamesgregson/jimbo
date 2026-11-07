@@ -345,8 +345,21 @@ async def test_file_tools_use_the_scratch_directory(tmp_path):
 def test_session_has_a_scratch_directory(tmp_path):
     from jimbo.agent import project_context
     s = build_session(settings(tmp_path), ScriptedFrontend(), model=TestModel())
-    assert s.deps.scratch.is_dir() and not s.deps.scratch.is_relative_to(tmp_path.resolve())
+    assert s.deps.scratch == (tmp_path / "user" / "scratch" / s.session_id).resolve() and s.deps.scratch.is_dir()
     assert str(s.deps.scratch) in project_context(SimpleNamespace(deps=s.deps))
+
+
+def test_old_scratch_folders_are_pruned(tmp_path):
+    from jimbo.core.scratch import prune
+    old, recent, touched = (tmp_path / n for n in ("old", "recent", "touched"))
+    for d in (old, recent, touched):
+        d.mkdir()
+        (d / "f.txt").write_text("x")
+    week_ago = time.time() - 8 * 86400
+    for p in (old, old / "f.txt", touched):
+        os.utime(p, (week_ago, week_ago))
+    prune(tmp_path, 7)
+    assert not old.exists() and recent.exists() and touched.exists()  # a recently changed file keeps its folder
 
 
 async def test_move_rules_match_both_paths(tmp_path):

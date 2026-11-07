@@ -171,7 +171,8 @@ def project_context(ctx: RunContext[Deps]) -> str:
     if deps.scratch:
         parts.append(f"# Scratch directory\nPut throwaway files that don't belong in the project (one-off scripts, "
                      f"screenshots, test output) in {deps.scratch}, not /tmp. The file tools and shell can both use "
-                     "it, by absolute path. It is deleted when jimbo exits, so put anything to keep in the workspace.")
+                     "it, by absolute path. It is kept for this session but deleted after a few days unused, so put "
+                     "anything to keep in the workspace.")
     for name in deps.agent.skills if deps.agent else ():
         if skill := deps.skills.get(name):
             parts.append(f"# Skill {name}\nSkill directory: {skill.path.parent}\n\n{skill.body}")

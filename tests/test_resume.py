@@ -114,7 +114,23 @@ async def test_instructions_are_logged_when_they_change_and_in_each_new_log(tmp_
     s, fe, _ = make(tmp_path, ["one", "two", "/clear", "three"])
     await run_frontend(s, fe)
     texts = [e.data["text"] for e in fe.events if e.kind == "instructions"]
-    assert len(texts) == 2 and texts[0] == texts[1] and texts[0]  # unchanged on "two"; logged again after /clear
+    assert len(texts) == 2 and texts[0]  # unchanged on "two"; logged again after /clear
+    first, second = (t.split("scratch/")[1].split(",")[0] for t in texts)  # each id has its own scratch folder
+    assert first != second and texts[0].replace(first, "") == texts[1].replace(second, "")
+
+
+async def test_each_session_id_has_its_own_scratch_folder(tmp_path):
+    s, fe, _ = make(tmp_path, ["one"])
+    await run_frontend(s, fe)
+    first = s.deps.scratch
+    assert first.name == s.session_id and first.parent == s.deps.scratch_root and first.is_dir()
+    (first / "keep.txt").write_text("x")
+    s.new_session()
+    assert s.deps.scratch.name == s.session_id and s.deps.scratch.is_dir()
+    empty = s.deps.scratch
+    await s.resume(first.name)
+    assert s.deps.scratch == first and (first / "keep.txt").exists()
+    assert not empty.exists()  # an empty folder is removed when the session moves on
 
 
 async def test_trace_opens_the_session_log_in_the_viewer(tmp_path, monkeypatch):

@@ -29,7 +29,7 @@ Settings are read from these sources, highest priority first:
 A workspace config arrives with whatever repo you cloned, so it can't loosen security. These keys are
 ignored there, with a warning, and only read from `~/.jimbo/config.toml`: `model`, `api_key`, the
 `*_base_url` settings, `providers`, `model_aliases`, `models`, `tasks`, `web_host`, `approval`,
-`approval_allow`, `log_dir`, `user_dir`, `workspace`, `lsp_servers` and the `sandbox*` settings. Its
+`approval_allow`, `log_dir`, `user_dir`, `scratch_keep_days`, `workspace`, `lsp_servers` and the `sandbox*` settings. Its
 `approval_deny` rules and `lsp_disabled` list are added to yours.
 
 ## All settings
@@ -92,6 +92,7 @@ web_open_browser = true
 # ---- Sessions ---------------------------------------------------------------------------------
 log_sessions = true           # false also disables --resume
 log_dir = "/Users/you/.jimbo/sessions"   # default is ~/.jimbo/sessions; write it absolute, "~" isn't expanded
+scratch_keep_days = 7         # scratch folders unchanged for this many days are deleted when jimbo starts
 
 # ---- Model aliases and per-task models (sample values; `main` is required) ---------------------
 [model_aliases]
@@ -351,14 +352,23 @@ doesn't allow nesting.
 
 ### Scratch directory
 
-Each time jimbo starts, it makes a scratch directory in the system temp folder, such as
-`$TMPDIR/jimbo-scratch-1a2b3c4d`, and deletes it when jimbo exits. The model is told its path and is asked to put
-throwaway files there, such as one-off scripts and screenshots, instead of in `/tmp`.
+Each session has a scratch directory, `~/.jimbo/scratch/<session id>` (under `user_dir`). The session id is
+the same one used for `~/.jimbo/sessions/<session id>.jsonl` and `--resume`. The model is told its path and is
+asked to put throwaway files there, such as one-off scripts and screenshots, instead of in `/tmp`.
+
+- `/clear` starts a new session id, so the model gets a new scratch directory. `--resume` and `/resume` go back
+  to the resumed session's directory, with its files.
+- When jimbo exits, it removes the directory if it is empty. With `log_sessions = false`, it removes it in any
+  case, because the session can't be resumed.
+- When jimbo starts, it deletes scratch directories in which nothing has changed for `scratch_keep_days`
+  days (default 7).
 
 - The file tools (`read_file`, `list_dir`, `write_file`, `edit_file`, `multi_edit`, `delete_file`, `move_file`,
   `show_image`) accept absolute paths in it. They still refuse other paths outside the workspace.
 - Changes there need the same approval as changes in the workspace, and `/undo` covers them.
-- Every sandbox lets commands write to it. A container sandbox mounts it at the same path.
+- Every sandbox lets commands write to the whole `~/.jimbo/scratch` folder, so commands can also reach other
+  sessions' scratch directories. A container sandbox mounts `~/.jimbo/scratch` at the same path, so `/clear`
+  and `/resume` don't need a new container. Nothing else in `~/.jimbo` is writable or mounted.
 - Agents share the scratch directory with the main session.
 
 ### Container sandbox (Docker or Podman)
@@ -376,7 +386,7 @@ unsandboxed.
 commands use the same container, so a server started with `background = true` can be reached by a later
 `curl localhost`. The container:
 
-- mounts the workspace, the [scratch directory](#scratch-directory), `sandbox_writable` and `sandbox_readonly`
+- mounts the workspace, `~/.jimbo/scratch` (the [scratch directories](#scratch-directory)), `sandbox_writable` and `sandbox_readonly`
   (read-only) at the same paths as on the host, and nothing else. jimbo won't mount `/`, your home directory, or a path that holds the Docker or Podman socket.
 - runs commands as your user id, not root, with no Linux capabilities. Commands can't install system
   packages; put them in the image.

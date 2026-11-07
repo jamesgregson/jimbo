@@ -127,8 +127,8 @@ def available() -> bool:
 
 
 def build_sandbox(settings: "Settings", workspace: Path, scratch: Path | None = None) -> Sandbox | None:
-    """The sandbox `settings.sandbox` asks for, with `scratch` writable too. Raises ValueError when it is required
-    and can't be had."""
+    """The sandbox `settings.sandbox` asks for, with `scratch` (the scratch root) writable too. Raises ValueError
+    when it is required and can't be had."""
     mode = settings.sandbox
     if mode == "off":
         return None

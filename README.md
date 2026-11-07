@@ -165,8 +165,8 @@ where commands run. Language servers run in the same sandbox.
 | `sandbox = "podman"` | in a Podman container, on macOS and Linux | the project and the scratch directory | the project and the scratch directory |
 | `sandbox = "off"` | with no sandbox | everything | everything |
 
-The scratch directory is a temp folder jimbo makes for each run and deletes when it exits, for throwaway
-scripts and screenshots. See [Scratch directory](docs/reference.md#scratch-directory).
+The scratch directory is a folder for throwaway scripts and screenshots, one per session, in
+`~/.jimbo/scratch/<session id>`. Folders unused for 7 days are deleted. See [Scratch directory](docs/reference.md#scratch-directory).
 
 The container sandboxes also keep your home folder and environment variables, such as API keys, away from
 commands. Docker and Podman work the same way. To use Docker, start it and add this line to the top of
