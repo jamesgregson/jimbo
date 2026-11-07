@@ -3,6 +3,7 @@
 
 import asyncio
 import os
+import shutil
 import socket
 import subprocess
 import time
@@ -345,13 +346,22 @@ async def test_eval_trial_runs_in_its_own_container(rt, tmp_path):
         if isinstance(messages[-1].parts[-1], ToolReturnPart):
             yield "done"
         else:
-            yield {0: DeltaToolCall(name="shell", json_args=json.dumps({"command": "grep ^ID= /etc/os-release"}))}
+            # conftest.py runs when the check's pytest starts: it records which system the check ran on
+            command = ("grep ^ID= /etc/os-release; printf 'import pathlib\\npathlib.Path(\"where\").write_text("
+                       "pathlib.Path(\"/etc/os-release\").read_text())\\n' > conftest.py")
+            yield {0: DeltaToolCall(name="shell", json_args=json.dumps({"command": command}))}
 
-    cfg = RunConfig(sandbox=rt.cli, user_config=tmp_path / "none.toml", lsp=False,
+    cfg = RunConfig(sandbox=rt.cli, user_config=tmp_path / "none.toml", lsp=False, keep=True,
                     main_model=FunctionModel(stream_function=stream))
     run_dir = await run_suite(load_tasks(["bug-paginate"]), cfg, results_dir=tmp_path)
     log = (run_dir / "bug-paginate" / "1" / "session.jsonl").read_text()
     assert "ID=debian" in log
+    row = json.loads((run_dir / "results.jsonl").read_text().splitlines()[0])
+    ws = Path(row["workspace"])
+    try:
+        assert "ID=debian" in (ws / "where").read_text()  # the check ran in the container, not on the host
+    finally:
+        shutil.rmtree(ws.parent, ignore_errors=True)
     left = subprocess.run([rt.cli, "ps", "-a", "--filter", f"label={ds.PID_LABEL}={os.getpid()}", "-q"],
                           capture_output=True, text=True).stdout
     assert left.strip() == ""

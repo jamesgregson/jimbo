@@ -25,6 +25,7 @@ from jimbo.providers.preflight import ModelFacts, inspect_model
 from jimbo.providers.registry import all_providers, build_model_from_spec, provider_config
 from jimbo.tools import container_sandbox
 from jimbo.tools.sandbox import available as sandbox_available
+from jimbo.tools.shell import kill_background
 from jimbo.wiring import build_session
 
 from .grading import JUDGE_TASK, Outcome, check_events, judge, run_check
@@ -197,15 +198,16 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
                     error = (errors[-1] if errors else "run failed")[:500]
                     break
         finally:
-            if session is not None and session.deps.lsp:
-                await session.deps.lsp.close()
-            if session is not None and session.deps.sandbox:
-                await session.deps.sandbox.close()
+            if session is not None:
+                await kill_background(session.deps)
+                if session.deps.lsp:
+                    await session.deps.lsp.close()
             sink.close()
         diff = await asyncio.to_thread(workspace_diff, ws)
         (out / "diff.patch").write_text(diff)
         outcomes: list[Outcome] = []
-        if checked := await run_check(task, ws):
+        # In the trial's sandbox: the check runs code the model wrote, and sees what the model's commands built.
+        if checked := await run_check(task, ws, session.deps.sandbox):
             outcomes.append(checked)
         if evented := check_events(task, collector.events):
             outcomes.append(evented)
@@ -216,6 +218,8 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
         error = f"{type(e).__name__}: {e}"[:500]
         outcomes = []
     finally:
+        if session is not None and session.deps.sandbox:
+            await session.deps.sandbox.close()
         if not cfg.keep:
             shutil.rmtree(tmp, ignore_errors=True)
     log = _name_log(out, session.session_id if session else None)

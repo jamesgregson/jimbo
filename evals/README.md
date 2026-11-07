@@ -144,7 +144,10 @@ evals/tasks/<id>/
   solution/    copied over the fixture by check-task; the check must pass with it
 ```
 
-Put hidden tests in `check/eval_check/`. `{python}` in the command is the Python that runs the evals.
+Put hidden tests in `check/eval_check/`. The check runs code the model wrote, so it runs in the trial's sandbox
+after the model finishes: under `sandbox-exec`, in the trial's container, or unconfined with `--sandbox off`.
+`{python}` in the command is the Python that runs the evals, or `python3` in a container. A check in a container
+can only use what the image has.
 
 Then run:
 
@@ -153,7 +156,8 @@ uv run python -m evals check-task <id>
 ```
 
 It runs the check on the unchanged fixture, where it must fail, and with `solution/` applied, where it must
-pass. `uv run pytest` runs this for every task.
+pass. `uv run pytest` runs this for every task. `--sandbox docker` (or `podman`, `seatbelt`) runs the checks
+in that sandbox, to make sure they work there.
 
 ## Side tasks
 

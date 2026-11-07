@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from jimbo.core.events import Event
 from jimbo.core.llm_tasks import run_task
 from jimbo.core.models import ModelRouter
+from jimbo.tools.sandbox import Sandbox, kill, spawn
 
 from .tasks import EventCheck, Task
 
@@ -34,28 +35,30 @@ def copy_tree(src: Path, dst: Path) -> None:
         shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
-async def run_command(command: str, cwd: Path, timeout: float) -> Outcome:
-    """Run a check command with a shell. `{python}` stands for the Python running the evals."""
-    cmd = command.replace("{python}", shlex.quote(sys.executable))
-    proc = await asyncio.create_subprocess_shell(cmd, cwd=cwd, stdin=asyncio.subprocess.DEVNULL,
-                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                                                 start_new_session=True)
+async def run_command(command: str, cwd: Path, timeout: float, sandbox: Sandbox | None = None) -> Outcome:
+    """Run a check command with a shell, in `sandbox` when given: the check runs code the model wrote.
+    `{python}` stands for the Python running the evals, or the image's python3 in a container."""
+    python = "python3" if sandbox and sandbox.container else shlex.quote(sys.executable)
+    shell = sandbox.shell if sandbox else "/bin/sh"
+    proc = await spawn(sandbox, [shell, "-c", command.replace("{python}", python)], cwd=cwd,
+                       stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                       stderr=asyncio.subprocess.STDOUT)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
     except TimeoutError:
-        proc.kill()
+        await kill(sandbox, proc)
         await proc.wait()
         return Outcome(False, f"$ {command}\ncheck timed out after {timeout:g}s", None)
     text = out.decode(errors="replace")
     return Outcome(proc.returncode == 0, f"$ {command}\n{text}\nexit {proc.returncode}", proc.returncode)
 
 
-async def run_check(task: Task, workspace: Path) -> Outcome | None:
-    """Copy check/ into the workspace and run the check command. None when the task has no command."""
+async def run_check(task: Task, workspace: Path, sandbox: Sandbox | None = None) -> Outcome | None:
+    """Copy check/ into the workspace and run the check command in `sandbox`. None when the task has no command."""
     if not task.check.command:
         return None
     copy_tree(task.check_dir, workspace)
-    return await run_command(task.check.command, workspace, task.check.timeout)
+    return await run_command(task.check.command, workspace, task.check.timeout, sandbox)
 
 
 def count(events: list[Event], check: EventCheck) -> int:

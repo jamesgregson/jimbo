@@ -95,7 +95,7 @@ async def cmd_compare(args) -> int:
 async def cmd_check_task(args) -> int:
     bad = 0
     for task in load_tasks(args.task or None):
-        problems = await check_task(task)
+        problems = await check_task(task, args.sandbox)
         bad += bool(problems)
         status = "ok" if not problems else "FAIL"
         note = "" if task.check.command else " (no check command: parsed only)"
@@ -157,6 +157,8 @@ def main() -> None:
 
     p = sub.add_parser("check-task", help="check that tasks' checks fail unsolved and pass solved")
     p.add_argument("task", nargs="*")
+    p.add_argument("--sandbox", choices=["seatbelt", "docker", "podman", "off"], default="off",
+                   help="run each check in this sandbox, as a trial with --sandbox does (default: off)")
     p.set_defaults(fn=cmd_check_task)
 
     p = sub.add_parser("assess", help="rate the shell commands in evals/assess/shell.toml")

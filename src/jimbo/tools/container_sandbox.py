@@ -384,8 +384,9 @@ class ContainerSandbox:
         flags = ["-i"] if kw.get("stdin") == asyncio.subprocess.PIPE else []
         for k, v in {**(env or {}), "JIMBO_RUN": run}.items():
             flags += ["-e", f"{k}={v}"]
-        proc = await asyncio.create_subprocess_exec(self.cli, "exec", *flags, "-w", str(cwd), self.name, *argv,
-                                                    start_new_session=True, **kw)
+        # Mounts are at resolved paths (/var/folders is /private/var/folders on macOS).
+        proc = await asyncio.create_subprocess_exec(self.cli, "exec", *flags, "-w", str(cwd.resolve()), self.name,
+                                                    *argv, start_new_session=True, **kw)
         self._runs[proc.pid] = run
         return proc
 
