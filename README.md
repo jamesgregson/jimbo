@@ -1,10 +1,20 @@
 # Jimbo
 
-A coding agent for your terminal. You describe a task, and jimbo reads your code, edits files, runs commands
+A coding agent. You describe a task, and jimbo reads your code, edits files, runs commands
 and tests, and reports what it did. It asks before it changes a file, runs a command or fetches a web page.
 
 It works with any model that supports tool calling, through OpenRouter, OpenAI or a compatible API, or a local
 model with Ollama. It runs in a terminal, in a browser, or as a JSON event stream for scripts.
+
+## Why you should not use it
+
+This is a hobby project of mine that takes control of your computer.
+
+> **DANGER**: It will destroy your system and data. It will find and leak confidential information.
+
+Do not use this on anything you care about or where failures have non-trivial consequence. It is provided without warranty or any claim of fitness for any purpose. Use at your own risk.
+
+[RISKS.md](RISKS.md) lists the ways it can cause harm and the limits of its safety features.
 
 ## What you can use it for
 
@@ -307,3 +317,12 @@ every option and how to add a task.
 
 [docs/reference.md](docs/reference.md) lists every setting and command, and covers other providers such as
 OpenAI and local models with Ollama.
+
+## License
+
+Copyright (C) 2026 James Gregson
+
+Jimbo is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General
+Public License as published by the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version. It is distributed WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.

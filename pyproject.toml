@@ -3,6 +3,8 @@ name = "jimbo"
 version = "0.1.0"
 description = "A simple coding agent built on Pydantic AI"
 readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "pydantic-ai-slim[openai,web-fetch]",
