@@ -139,3 +139,41 @@ def test_requests_per_minute_override(tmp_path):
     assert limits(None) == {"work": 5, "openrouter": None}
     assert limits(20) == {"work": 20, "openrouter": 20}
     assert limits(0) == {"work": None, "openrouter": None}
+
+
+@pytest.mark.parametrize("cmd", ["run", "assess", "compaction", "check_task"])
+@pytest.mark.parametrize("flag,answer,refused", [(True, None, False), (False, "y", False), (False, "n", True),
+                                                  (False, EOFError, True)])
+def test_eval_commands_need_the_risks_accepted(cmd, flag, answer, refused, monkeypatch, capsys):
+    import evals.__main__ as cli
+    from jimbo.core.runner import RISK_WARNING
+
+    def fake_input(prompt):
+        if answer is None:
+            raise AssertionError("asked although the flag was given")
+        if answer is EOFError:
+            raise EOFError
+        return answer
+
+    ran = []
+
+    async def fake_cmd(args):
+        ran.append(cmd)
+        return 0
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr(cli, f"cmd_{cmd}", fake_cmd)
+    monkeypatch.setattr("sys.argv", ["evals", cmd.replace("_", "-"), *(["--user-accepts-risks"] if flag else [])])
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert RISK_WARNING in capsys.readouterr().err
+    assert (ran == []) == refused
+    assert ("--user-accepts-risks" in str(e.value.code)) == refused
+
+
+def test_report_and_compare_do_not_ask(monkeypatch):
+    import evals.__main__ as cli
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("asked"))
+    monkeypatch.setattr("sys.argv", ["evals", "compare", "no-such-a", "no-such-b"])
+    with pytest.raises(SystemExit, match="no run"):
+        cli.main()

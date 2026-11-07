@@ -15,10 +15,10 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from .. import __version__
 from .sandbox import SandboxError, kill_group
 
 if TYPE_CHECKING:
@@ -58,10 +58,7 @@ class Unavailable(Exception):
 
 
 def bundled_image() -> str:
-    try:
-        return f"{IMAGE_NAME}:{version('jimbo')}"
-    except PackageNotFoundError:
-        return f"{IMAGE_NAME}:dev"
+    return f"{IMAGE_NAME}:{__version__}"
 
 
 def _cli(cli: str, *args: str, timeout: float = 30) -> subprocess.CompletedProcess:

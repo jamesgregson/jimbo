@@ -1,5 +1,5 @@
 [project]
-name = "jimbo"
+name = "jimbo-agent"  # "jimbo" on PyPI is another project; the import name and command stay jimbo
 version = "0.1.0"
 description = "A simple coding agent built on Pydantic AI"
 readme = "README.md"
@@ -16,6 +16,10 @@ dependencies = [
     "tomlkit>=0.15.2",
     "basedpyright>=1.40.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jamesgregson/jimbo"
+Issues = "https://github.com/jamesgregson/jimbo/issues"
 
 [project.scripts]
 jimbo = "jimbo.main:main"

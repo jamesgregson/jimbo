@@ -13,6 +13,12 @@ from .session import AgentSession
 
 
 ESCALATE_WITHIN = 2.0  # seconds: a second Ctrl+C this soon after one that cancelled a run quits jimbo
+# Shown by every frontend at startup. The same warning is at the top of the README.
+RISK_WARNING = ("Jimbo takes control of your computer with a LLM. It may destroy your system and data, it may find and leak "
+                "confidential information and it may access systems/services unpredictably. It may have software bugs that "
+                "trigger unwanted behavior. It is provided without warranty of any kind. Use at your own risk. Potential "
+                "risks are incompletely summarized at https://github.com/jamesgregson/jimbo/blob/main/RISKS.md")
+ACCEPT_FLAG = "--user-accepts-risks"
 
 
 def make_sigint_handler(session: AgentSession, loop: asyncio.AbstractEventLoop, *,
@@ -45,6 +51,21 @@ def _interrupt_cancels_run(session: AgentSession):
         yield
     finally:
         signal.signal(signal.SIGINT, prev)
+
+
+async def accept_risks(session: AgentSession, frontend: Frontend, accepted: bool) -> str | None:
+    """Show the risk warning before anything else happens. The user must answer yes to it, unless they started
+    jimbo with ACCEPT_FLAG (`accepted`). Returns why jimbo must not start, or None."""
+    if not accepted:
+        confirm = getattr(frontend, "confirm", None)
+        if confirm is None:
+            return f"this frontend can't ask you to accept the risks; start jimbo with {ACCEPT_FLAG}"
+        if not await confirm(f"{RISK_WARNING}\n\nDo you understand and accept these risks?"):
+            return f"you didn't accept the risks. Start jimbo with {ACCEPT_FLAG} to accept them without being asked"
+    how = f"with {ACCEPT_FLAG}" if accepted else "at the prompt"
+    await session.emit("warning", text=f"{RISK_WARNING}\n\nYou accepted these risks {how}.",
+                       accepted="flag" if accepted else "prompt")
+    return None
 
 
 async def _handle(session: AgentSession, msg: str | UserMessage) -> bool:

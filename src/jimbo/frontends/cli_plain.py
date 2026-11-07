@@ -77,6 +77,8 @@ class PlainFrontend:
                 flags = "".join(f" · {f}" for f, on in (("plan mode", d["mode"] == "plan"), ("YOLO", d["yolo"]), ("AUTO", d.get("auto"))) if on)
                 print(f"[jimbo: {d['model']} · {d['workspace']} · {sandbox}{flags} · session {event.session_id}]",
                       file=sys.stderr)
+            case "warning":
+                print(f"[warning] {d['text']}", file=sys.stderr)
             case "user_message":
                 print("[working…]", file=sys.stderr)
             case "busy" if d["on"]:
@@ -123,6 +125,14 @@ class PlainFrontend:
             case "run_finished" if d.get("cancelled"):
                 self._streamed = False
                 print("\n[interrupted]", file=sys.stderr)
+
+    async def confirm(self, message: str) -> bool:
+        """A yes/no question; only y or yes counts, and a closed stdin is no."""
+        print(f"\n{message}", file=sys.stderr)
+        try:
+            return (await self._stdin.line("[y]es / [n]o? ")).strip().lower() in ("y", "yes")
+        except EOFError:
+            return False
 
     async def ask_secret(self, message: str) -> str | None:
         """A line read without echo (from the terminal, not stdin, when there is one)."""

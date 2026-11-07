@@ -4,12 +4,13 @@ import os
 import sys
 from pathlib import Path
 
+from . import __version__
 from .config import Settings
 from .core.approval import AUTO_CHAIN, YOLO_CHAIN
 from .core.commands import QuitSession
 from .core.jsonl import JsonlSink
 from .core.models import MAIN
-from .core.runner import run_frontend
+from .core.runner import ACCEPT_FLAG, accept_risks, run_frontend
 from .frontends.registry import build_frontend, pick_ui
 from .providers.preflight import inspect_model
 from .tools.container_sandbox import rebuild
@@ -19,6 +20,7 @@ from .wiring import build_session
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="jimbo", description="A simple coding agent")
+    ap.add_argument("--version", action="version", version=f"jimbo {__version__}")
     ap.add_argument("prompt", nargs="?", help="one-shot task; omit for an interactive session")
     ap.add_argument("--model", help="main model for this run: an alias or <provider>:<name>")
     ap.add_argument("--workspace", type=Path, help="directory to work on (default: the current one)")
@@ -29,6 +31,8 @@ def parser() -> argparse.ArgumentParser:
                       help="auto-approve file edits, and shell commands the assessment model rates medium risk or lower")
     ap.add_argument("--resume", nargs="?", const="", metavar="ID",
                     help="continue a saved session (the most recent if no id/prefix is given)")
+    ap.add_argument(ACCEPT_FLAG, action="store_true",
+                    help="you have read the risk warning and accept it: show it without asking you to confirm")
     ap.add_argument("--sandbox", choices=["auto", "on", "off", "docker", "podman"],
                     help="where shell commands run, in place of the sandbox setting: auto (sandbox-exec on macOS "
                          "when available), on (sandbox-exec or refuse to start), off, docker or podman")
@@ -113,6 +117,8 @@ def main() -> None:
         if start:
             await start()
         try:
+            if refused := await accept_risks(session, frontend, args.user_accepts_risks):
+                raise SystemExit(f"jimbo: {refused}")
             if args.resume is not None:
                 if session.store is None:
                     raise SystemExit("jimbo: --resume needs log_sessions = true")

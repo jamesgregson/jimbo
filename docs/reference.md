@@ -517,6 +517,10 @@ command = ["/opt/node/bin/pyright-langserver", "--stdio"]
 
 ## Interfaces
 
+- **Risk warning (all):** at startup, before anything else, jimbo shows a warning about its risks and asks
+  whether you accept them: yes starts the session, anything else exits. `--user-accepts-risks` skips the question
+  and shows the warning with a note that you accepted it. `json` can't ask, and in `plain` piped stdin is the task,
+  so both need the flag. The `warning` event records how the risks were accepted (`prompt` or `flag`).
 - **All:** Ctrl+C during a run stops it and keeps the partial turn. In `plain`, a second Ctrl+C within 2 seconds,
   or one at the prompt, quits. In `tui`, press it twice at the prompt, or Ctrl+D. The current model and any plan,
   auto or yolo mode are shown in the `tui` toolbar and at the top of the `web` page. `tui` and `plain` show the end of
@@ -525,9 +529,9 @@ command = ["/opt/node/bin/pyright-langserver", "--stdio"]
   switches between Ask first, Auto and YOLO, like `/approve`. Choosing Auto or YOLO asks you to confirm first. It
   works while the agent is running. A change made from a prompt applies to later calls; you still answer the one on
   screen.
-- **Approval mode (`tui`):** `/approve auto` and `/approve yolo` ask you to confirm, and so does starting with
-  `--auto` or `--yolo`. If you don't answer `y`, the mode stays as it was, or the session starts in the default
-  mode. `plain`, `json` and one-shot runs don't ask.
+- **Approval mode (`tui`, `plain`, `web`):** `/approve auto` and `/approve yolo` ask you to confirm, and so does
+  starting with `--auto` or `--yolo`. If you don't answer yes, the mode stays as it was, or the session starts in
+  the default mode. `json` and one-shot runs don't ask.
 - **Steering (`tui`, `web`):** type while the agent works and your message reaches the model at its next
   step. A skill (`/name [args]`) steers the same way: its instructions reach the model at its next step. Other
   slash commands are refused mid-run, except `/approve`, which changes the approval mode for the calls

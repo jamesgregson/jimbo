@@ -7,6 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from jimbo.core.runner import ACCEPT_FLAG, RISK_WARNING
 from jimbo.providers.registry import build_model_from_spec
 
 from .html_report import write_html_report
@@ -48,6 +49,27 @@ def model_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--jobs", type=int, default=4, help="trials or cases at once (default 4)")
     p.add_argument("--requests-per-minute", type=int, metavar="N",
                    help="cap requests to each provider, replacing requests_per_minute in the config; 0 for no cap")
+    accept_arg(p)
+
+
+def accept_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument(ACCEPT_FLAG, action="store_true",
+                   help="you have read the risk warning and accept it: show it without asking you to confirm")
+
+
+def accept_risks(accepted: bool) -> str | None:
+    """jimbo's startup risk gate, once for the whole command. Returns why the evals must not start, or None."""
+    print(RISK_WARNING, file=sys.stderr)
+    if not accepted:
+        print("\nDo you understand and accept these risks?", file=sys.stderr)
+        try:
+            answer = input("[y]es / [n]o? ")
+        except EOFError:  # a closed stdin is no
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            return f"you didn't accept the risks. Run with {ACCEPT_FLAG} to accept them without being asked"
+    print(f"\nYou accepted these risks {f'with {ACCEPT_FLAG}' if accepted else 'at the prompt'}.", file=sys.stderr)
+    return None
 
 
 async def cmd_run(args) -> int:
@@ -159,6 +181,7 @@ def main() -> None:
     p.add_argument("task", nargs="*")
     p.add_argument("--sandbox", choices=["seatbelt", "docker", "podman", "off"], default="off",
                    help="run each check in this sandbox, as a trial with --sandbox does (default: off)")
+    accept_arg(p)
     p.set_defaults(fn=cmd_check_task)
 
     p = sub.add_parser("assess", help="rate the shell commands in evals/assess/shell.toml")
@@ -170,6 +193,8 @@ def main() -> None:
     p.set_defaults(fn=cmd_compaction)
 
     args = ap.parse_args()
+    if hasattr(args, "user_accepts_risks") and (refused := accept_risks(args.user_accepts_risks)):
+        raise SystemExit(f"evals: {refused}")
     try:
         raise SystemExit(asyncio.run(args.fn(args)))
     except ValueError as e:

@@ -416,6 +416,7 @@ when a server was found, and `remember` and `reload_skills` in the main session.
 | `command_output`, `commands` | slash command results; the command list for completion |
 | `error`, `run_finished` | failure; end of turn (`ok`, `cancelled`) |
 | `status` | model, workspace, plan/auto/yolo mode and sandbox: sent at startup and when they change |
+| `warning` | `text`, `accepted`: the risk warning every frontend shows at startup, and how the user accepted it (`prompt`, or `flag` for `--user-accepts-risks`) |
 | `busy` | `label` and `on`: a slow command outside a run (`/compact`) started or finished; sent by `session.busy()` |
 | `config` | aliases, task models and providers (never key values): sent at startup, after each saved change, and on request |
 

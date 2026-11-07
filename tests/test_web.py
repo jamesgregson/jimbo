@@ -173,6 +173,24 @@ async def test_secret_dialog_and_config_messages(client):
     assert await ws.receive_json() == {"type": "models", "provider": "x", "error": "can't reach x"}
 
 
+async def test_confirm_is_yes_or_no_and_replayed(client):
+    asked = asyncio.ensure_future(client.fe.confirm("accept?"))
+    await asyncio.sleep(0)
+    ws = await client.ws_connect(ws_url(client))  # connects after the question: it is replayed
+    msg = await ws.receive_json()
+    while msg["type"] != "confirm":
+        msg = await ws.receive_json()
+    assert msg["message"] == "accept?"
+    await ws.send_json({"type": "confirm_answer", "id": msg["id"], "value": "yes"})  # only true counts
+    assert await asyncio.wait_for(asked, 1) is False
+    asked = asyncio.ensure_future(client.fe.confirm("accept?"))
+    msg = await ws.receive_json()
+    while msg["type"] != "confirm":
+        msg = await ws.receive_json()
+    await ws.send_json({"type": "confirm_answer", "id": msg["id"], "value": True})
+    assert await asyncio.wait_for(asked, 1) is True
+
+
 async def test_cancelled_secret_is_none(client):
     ws = await client.ws_connect(ws_url(client))
     asked = asyncio.ensure_future(client.fe.ask_secret("key: "))

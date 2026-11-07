@@ -28,6 +28,10 @@ commands in its own container from the bundled image; works on Linux), `--sandbo
 needed on other systems without Docker or Podman), `--no-lsp` (start no language servers, to compare a run with one that
 has them), `--config <path>` (a different `config.toml`).
 
+`run`, `assess`, `compaction` and `check-task` show jimbo's risk warning once at the start and ask you to accept it. Any
+answer other than yes, or a closed stdin, exits before anything runs. To accept the risks without being asked,
+pass `--user-accepts-risks`. `report` and `compare` don't ask.
+
 With `--retry-failed-only`, a task's trials run one after another and stop at the first pass. Different tasks
 still run at the same time. A task passes if any of its trials passes, and the reports count tasks instead of
 trials: the pass column shows `pass on #2` or `FAIL x3`. Use it to find tasks a model can't do at all, not

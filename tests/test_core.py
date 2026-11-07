@@ -10,7 +10,7 @@ from helpers import ScriptedFrontend, settings
 from jimbo.core.approval import (ApprovalDecision, ApprovalRequest, AskUser, RememberedDecisions, ToolCallInfo,
                                  parse_answer)
 from jimbo.core.events import Event
-from jimbo.core.runner import run_frontend
+from jimbo.core.runner import RISK_WARNING, accept_risks, run_frontend
 from jimbo.core.stats import output_preview
 from jimbo.frontends.cli_json import JsonFrontend
 from jimbo.frontends.cli_plain import PlainFrontend
@@ -301,6 +301,39 @@ async def test_status_reports_changes(tmp_path):
     assert states[0]["model"] == "t:m" and states[0]["workspace"] == str(tmp_path.resolve())
 
 
+class Asking(ScriptedFrontend):
+    def __init__(self, reply):
+        super().__init__()
+        self.reply, self.asked = reply, []
+
+    async def confirm(self, message):
+        self.asked.append(message)
+        return self.reply
+
+
+@pytest.mark.parametrize("reply,flag,accepted", [(True, False, "prompt"), (False, None, None), (None, True, "flag")])
+async def test_the_user_must_accept_the_risks(tmp_path, capsys, reply, flag, accepted):
+    fe = Asking(reply)
+    s = build_session(settings(tmp_path), fe, model=TestModel())
+    refused = await accept_risks(s, fe, bool(flag))
+    warnings = [e for e in fe.events if e.kind == "warning"]
+    assert (refused is None) == bool(accepted) and [e.data["accepted"] for e in warnings] == ([accepted] if accepted else [])
+    assert len(fe.asked) == (0 if flag else 1) and (flag or RISK_WARNING in fe.asked[0])
+    if accepted:
+        await PlainFrontend().render(warnings[0])
+        assert f"You accepted these risks {'with --user-accepts-risks' if flag else 'at the prompt'}." in capsys.readouterr().err
+    else:
+        assert "--user-accepts-risks" in refused
+
+
+async def test_json_needs_the_flag_to_start(tmp_path, capsys):
+    fe = JsonFrontend()
+    s = build_session(settings(tmp_path), fe, model=TestModel())
+    assert "can't ask" in await accept_risks(s, fe, False)
+    assert await accept_risks(s, fe, True) is None
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["data"]["accepted"] == "flag"
+
+
 @pytest.mark.parametrize("prompt,stdin_tty,stdout_tty,ui", [
     (None, True, True, "tui"), ("task", True, True, "plain"), (None, False, True, "plain"), (None, True, False, "plain"),
 ])
@@ -314,6 +347,14 @@ async def test_json_frontend_prints_events_and_denies(capsys):
     assert json.loads(capsys.readouterr().out)["kind"] == "error"
     d = await fe.request_approval(ApprovalRequest(id="1", tool="shell", summary="run"))
     assert not d.allow and await fe.next_user_input() is None
+
+
+async def test_plain_confirm_takes_only_yes(monkeypatch):
+    lines = iter(["yes", "y", "no", "sure"])
+    monkeypatch.setattr("builtins.input", lambda: next(lines))
+    assert [await PlainFrontend().confirm("ok?") for _ in range(4)] == [True, True, False, False]
+    monkeypatch.setattr("builtins.input", lambda: (_ for _ in ()).throw(EOFError))
+    assert await PlainFrontend().confirm("ok?") is False
 
 
 async def test_plain_closed_stdin_denies(monkeypatch):

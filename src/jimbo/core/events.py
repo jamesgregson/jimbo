@@ -29,6 +29,7 @@ EventKind = Literal[
     "agent_report",
     "status",
     "busy",
+    "warning",
     "config",
     "session_end",
     "image",

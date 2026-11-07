@@ -73,6 +73,7 @@ class WebFrontend:
         self._list_models: Callable[[str], Awaitable[list[str] | str]] | None = None
         self._trace_log: Callable[[], Path | None] | None = None
         self._secrets: dict[str, tuple[str, asyncio.Future[str | None]]] = {}
+        self._confirms: dict[str, tuple[str, asyncio.Future[bool]]] = {}
         self._questions: dict[str, tuple[list[Question], asyncio.Future[Answers]]] = {}
         self._tasks: set[asyncio.Task] = set()
 
@@ -119,6 +120,18 @@ class WebFrontend:
         finally:
             self._pending.pop(req.id, None)
             await self._broadcast({"type": "approval_closed", "id": req.id})
+
+    async def confirm(self, message: str) -> bool:
+        """A dialog with Yes and No. Only Yes counts."""
+        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        cid = secrets.token_hex(8)
+        self._confirms[cid] = (message, fut)
+        await self._broadcast({"type": "confirm", "id": cid, "message": message})
+        try:
+            return await fut
+        finally:
+            self._confirms.pop(cid, None)
+            await self._broadcast({"type": "confirm_closed", "id": cid})
 
     async def ask_secret(self, message: str) -> str | None:
         """A password field in a dialog. The answer is never added to the replayed history."""
@@ -252,6 +265,8 @@ class WebFrontend:
             await ws.send_json({"type": "secret", "id": sid, "message": message})
         for qid, (questions, _) in self._questions.items():
             await ws.send_json(self._questions_msg(qid, questions))
+        for cid, (message, _) in self._confirms.items():
+            await ws.send_json({"type": "confirm", "id": cid, "message": message})
         self._clients.add(ws)
         try:
             async for m in ws:
@@ -290,6 +305,10 @@ class WebFrontend:
             fut = self._secrets[msg["id"]][1]
             if not fut.done():
                 fut.set_result(msg["value"] if isinstance(msg.get("value"), str) else None)
+        elif kind == "confirm_answer" and msg.get("id") in self._confirms:
+            fut = self._confirms[msg["id"]][1]
+            if not fut.done():
+                fut.set_result(msg.get("value") is True)
         elif kind == "answers" and msg.get("id") in self._questions:
             self._answer_questions(msg["id"], msg.get("answers"), msg.get("feedback"))
         elif kind == "approve" and msg.get("id") in self._pending:

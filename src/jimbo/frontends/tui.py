@@ -449,6 +449,8 @@ class TuiFrontend:
                                  style="dim"))
                 self._status = d
                 self._invalidate()
+            case "warning":
+                c.print(Panel(d["text"], title="warning", border_style="yellow"))
             case "user_message":
                 if d.get("steer"):
                     self._stop_live()

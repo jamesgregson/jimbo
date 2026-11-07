@@ -67,13 +67,18 @@ jimbo                          # interactive session
 jimbo "summarize this repo"    # run one task and exit
 ```
 
+Each time it starts, jimbo shows a warning about its risks and asks whether you accept them. Answer yes to
+start; any other answer exits. To accept the risks without being asked, start it with `--user-accepts-risks`;
+the warning is still shown, with a note that you accepted it. `--ui json` and piped input can't answer the
+question, so they need the flag.
+
 Other ways to run it:
 
 | Command | What it does |
 |---------|--------------|
 | `jimbo --ui web` | interactive session in your browser |
 | `jimbo --ui plain` | interactive session with plain text output |
-| `jimbo --ui json "<task>"` | run one task and print events as JSON lines, for scripts. Calls that would ask are refused |
+| `jimbo --ui json --user-accepts-risks "<task>"` | run one task and print events as JSON lines, for scripts. Calls that would ask are refused |
 | `jimbo --resume` | continue the last session in this project |
 | `jimbo --resume <id>` | continue a saved session by id or the start of its id |
 | `jimbo --auto` | make file changes, and run shell commands rated low or medium risk, without asking |
@@ -81,7 +86,8 @@ Other ways to run it:
 | `jimbo --model <name>` | use a different model for this run |
 | `jimbo --sandbox docker` | run commands in a Docker container for this run (`podman` for Podman; see [Sandbox](#sandbox)) |
 | `jimbo --workspace <dir>` | work on another folder instead of the current one |
-| `cat log.txt \| jimbo "explain this"` | include piped text with the task |
+| `jimbo --user-accepts-risks` | accept the risk warning without being asked |
+| `cat log.txt \| jimbo --user-accepts-risks "explain this"` | include piped text with the task |
 
 ## What jimbo can do
 
@@ -288,6 +294,22 @@ uv run jimbo sandbox build podman        # the same for the Podman tests
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) describes how the code is organized.
+
+### Release
+
+The version number is set in `pyproject.toml` only. `jimbo --version` and the sandbox image tag read it from
+the installed package. The package is `jimbo-agent` on PyPI, because `jimbo` is taken by another project. The
+command is still `jimbo`.
+
+```bash
+uv version --bump minor                  # or patch or major; updates pyproject.toml and uv.lock
+git commit -am "Release $(uv version --short)"
+git tag "v$(uv version --short)" && git push origin main "v$(uv version --short)"
+```
+
+Pushing the tag runs [.github/workflows/release.yml](.github/workflows/release.yml). It checks that the tag
+matches the version, runs the tests, builds the wheel and sdist, publishes them to PyPI and makes a GitHub
+release with them.
 
 ## Evals
 

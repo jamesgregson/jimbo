@@ -89,6 +89,7 @@
                      border-radius: 8px; background: #fff; }  /* white behind transparent charts, in dark mode too */
   figure.shown figcaption { font-size: 12px; color: var(--dim); margin-top: 4px; }
   .errbox { border: 1px solid var(--err); color: var(--err); border-radius: 8px; padding: 8px 12px; margin: 10px auto; }
+  .warnbox { border: 1px solid var(--warn); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin: 10px auto; }
   .a { background: var(--add); display: block; } .d { background: var(--del); display: block; }
   .cmd { background: var(--tool); border: 1px solid var(--line); font: 12.5px/1.45 ui-monospace, Menlo, monospace;
          white-space: pre-wrap; }
@@ -437,6 +438,7 @@ function onEvent(ev) {
       box.append(el("div", "head", "/" + d.command), d.text); break;
     }
     case "error": seg = null; add(el("div", "errbox", `${agentPrefix(d)}${d.type}: ${d.message}`)); break;
+    case "warning": seg = null; add(el("div", "warnbox", d.text)); break;
     case "run_finished":
       seg = null; endThinking(); setRunning(false); input.focus();
       if (d.cancelled) add(el("div", "note warn", "interrupted"));
@@ -507,6 +509,8 @@ function connect() {
     else if (msg.type === "approval") showApproval(msg.request);
     else if (msg.type === "approval_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
     else if (msg.type === "secret") showSecret(msg);
+    else if (msg.type === "confirm") showConfirm(msg);
+    else if (msg.type === "confirm_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
     else if (msg.type === "secret_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
     else if (msg.type === "questions") showQuestions(msg);
     else if (msg.type === "questions_closed" && msg.id === pendingId) { $("#modal").classList.remove("show"); pendingId = null; }
@@ -592,6 +596,18 @@ function showSecret(msg) {
   btns.append(cancel, ok);
   dlg.replaceChildren(el("h2", null, "Key"), el("div", "sum", msg.message), field, btns);
   $("#modal").classList.add("show"); field.focus();
+}
+
+function showConfirm(msg) {
+  pendingId = msg.id;
+  const dlg = $("#dlg"), btns = el("div", "btns");
+  const answer = (value) => ws.send(JSON.stringify({ type: "confirm_answer", id: msg.id, value }));
+  const no = el("button", "sec", "No"), yes = el("button", null, "Yes");
+  no.type = yes.type = "button"; no.onclick = () => answer(false); yes.onclick = () => answer(true);
+  btns.append(no, yes);
+  const sum = el("div", "sum", msg.message); sum.style.whiteSpace = "pre-wrap";
+  dlg.replaceChildren(el("h2", null, "Confirm"), sum, btns);
+  $("#modal").classList.add("show"); no.focus();
 }
 
 // The model's questions. Typing in the box below them stops the round and sends that text instead.
