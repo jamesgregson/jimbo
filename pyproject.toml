@@ -1,6 +1,6 @@
 [project]
 name = "jimbo-agent"  # "jimbo" on PyPI is another project; the import name and command stay jimbo
-version = "0.1.0"
+version = "0.2.0"
 description = "A simple coding agent built on Pydantic AI"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
