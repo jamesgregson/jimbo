@@ -24,9 +24,20 @@ jobs:
           fi
       - run: uv sync --locked
       - run: uv run pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the VS Code extension into the package, with the package's version
+        working-directory: vscode
+        run: |
+          npm ci
+          npm pkg set version="$(uv version --short)"
+          npm run bundle
       - run: uv build
-      - name: Check the wheel installs and runs
-        run: uv run --isolated --no-project --with dist/*.whl jimbo --version
+      - name: Check the wheel installs and runs, and has the extension
+        run: |
+          uv run --isolated --no-project --with dist/*.whl jimbo --version
+          unzip -l dist/*.whl | grep -q 'jimbo/bundled/jimbo.vsix'
       - uses: actions/upload-artifact@v4
         with:
           name: dist

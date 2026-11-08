@@ -31,6 +31,14 @@ dev = ["pytest", "pytest-asyncio"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+artifacts = ["src/jimbo/bundled/jimbo.vsix"]  # git ignores it, so hatch needs telling; `npm run bundle` in vscode/
+
+[tool.hatch.build.targets.sdist]
+# hatch reads only the root .gitignore, so vscode/.gitignore's build outputs are repeated here
+exclude = ["vscode/node_modules", "vscode/.vscode-test", "vscode/out", "vscode/dist", "vscode/*.vsix",
+           "vscode/media/index.html", "vscode/LICENSE"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/jimbo"]
 

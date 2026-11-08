@@ -153,7 +153,8 @@
     "typecheck": "tsc --noEmit",
     "build-tests": "tsc -p test/tsconfig.json",
     "test": "npm run build && npm run build-tests && node out/test/run.js",
-    "package": "npm run build && node -e \"require('fs').copyFileSync('../LICENSE','LICENSE')\" && vsce package --no-dependencies"
+    "package": "npm run build && node -e \"require('fs').copyFileSync('../LICENSE','LICENSE')\" && vsce package --no-dependencies",
+    "bundle": "npm run package -- -o ../src/jimbo/bundled/jimbo.vsix"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

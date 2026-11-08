@@ -89,7 +89,7 @@ Other ways to run it:
 | `jimbo --user-accepts-risks` | accept the risk warning without being asked |
 | `cat log.txt \| jimbo --user-accepts-risks "explain this"` | include piped text with the task |
 
-A prototype VS Code extension is in [vscode/](vscode/README.md). It is not released; you build and install it yourself.
+A prototype VS Code extension is in [vscode/](vscode/README.md). It ships with jimbo; `jimbo vscode install` installs it.
 
 ## What jimbo can do
 
@@ -310,8 +310,9 @@ git tag "v$(uv version --short)" && git push origin main "v$(uv version --short)
 ```
 
 Pushing the tag runs [.github/workflows/release.yml](.github/workflows/release.yml). It checks that the tag
-matches the version, runs the tests, builds the wheel and sdist, publishes them to PyPI and makes a GitHub
-release with them.
+matches the version, runs the tests, builds the VS Code extension into the package with the same version,
+builds the wheel and sdist, publishes them to PyPI and makes a GitHub release with them. The version in
+`vscode/package.json` is not used for releases.
 
 ## Evals
 

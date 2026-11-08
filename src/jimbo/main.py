@@ -15,6 +15,7 @@ from .frontends.registry import build_frontend, pick_ui
 from .providers.preflight import inspect_model
 from .tools.container_sandbox import rebuild
 from .tools.shell import kill_background
+from .vscode_install import install as install_vscode
 from .wiring import build_session
 
 
@@ -60,6 +61,12 @@ def main() -> None:
     if sys.argv[1:3] == ["sandbox", "build"] and len(sys.argv) <= 4:
         try:
             rebuild(build_cli(sys.argv[3:]))
+        except ValueError as e:
+            raise SystemExit(f"jimbo: {e}") from None
+        return
+    if sys.argv[1:3] == ["vscode", "install"] and len(sys.argv) <= 4:
+        try:
+            install_vscode(sys.argv[3:])
         except ValueError as e:
             raise SystemExit(f"jimbo: {e}") from None
         return

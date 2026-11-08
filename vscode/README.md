@@ -1,14 +1,22 @@
 # Jimbo for VS Code (prototype)
 
-This extension runs jimbo in a VS Code panel. It is a prototype and is not released or published. It has the
-same risks as jimbo; read [RISKS.md](../RISKS.md) first.
+This extension runs jimbo in a VS Code panel. It is a prototype. It ships inside the jimbo package and is not
+on the VS Code Marketplace. It has the same risks as jimbo; read [RISKS.md](../RISKS.md) first.
 
 The extension starts `jimbo --ui stdio` for the open folder. The panel is jimbo's web page, in VS Code's
 colors. File changes are shown in VS Code's diff editor while jimbo asks to make them.
 
 ## Install
 
-You need jimbo installed (see the [README](../README.md#install)) and Node.js 20 or later.
+You need jimbo installed (see the [README](../README.md#install)). A jimbo release includes the extension:
+
+```bash
+jimbo vscode install              # uses the code command; or name another: cursor, codium, code-insiders
+```
+
+Run it again after you upgrade jimbo, so the extension matches.
+
+To build it from a clone instead, you need Node.js 20 or later:
 
 ```bash
 cd vscode
@@ -16,6 +24,9 @@ npm install
 npm run package                                   # builds jimbo-0.1.0.vsix
 code --install-extension jimbo-0.1.0.vsix
 ```
+
+`npm run bundle` builds it into `src/jimbo/bundled/jimbo.vsix` instead, where `jimbo vscode install` and
+`uv build` find it.
 
 To run it from source instead, open the `vscode` folder in VS Code and press F5. A second VS Code window opens
 with the extension loaded.

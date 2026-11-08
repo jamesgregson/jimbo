@@ -26,5 +26,8 @@ evals/results/
 # Jimbo session logs (if written inside the workspace)
 #*.jsonl
 
+# The VS Code extension, built into the package by `npm run bundle` in vscode/
+/src/jimbo/bundled/jimbo.vsix
+
 # The VS Code extension's launch config (F5)
 !/vscode/.vscode/
