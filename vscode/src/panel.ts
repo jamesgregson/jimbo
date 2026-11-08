@@ -4,6 +4,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { editorColumn } from "./approvals";
 
 /** The web UI page, copied into media/ by `npm run build`; from the repo when running from source without a build. */
 function pageSource(extensionPath: string): string {
@@ -33,7 +34,7 @@ export function chatHtml(extensionPath: string, webview: vscode.Webview): string
 
 /** The session trace in its own tab. The trace page is self-contained; it gets inline scripts but no network. */
 export function openTrace(html: string): void {
-  const panel = vscode.window.createWebviewPanel("jimbo.trace", "jimbo trace", vscode.ViewColumn.Active,
+  const panel = vscode.window.createWebviewPanel("jimbo.trace", "jimbo trace", editorColumn(),
                                                  { enableScripts: true, localResourceRoots: [] });
   const csp = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'";
   panel.webview.html = html.replace(/<head>/i, `<head>\n<meta http-equiv="Content-Security-Policy" content="${csp}">`);

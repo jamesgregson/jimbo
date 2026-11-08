@@ -31,9 +31,16 @@ export async function closeDiff(uri: vscode.Uri): Promise<void> {
   if (tabs.length) await vscode.window.tabGroups.close(tabs, true);
 }
 
-/** The column for diff editors: where the user last edited, not the jimbo tab. */
-function editorColumn(): vscode.ViewColumn {
-  return vscode.window.activeTextEditor?.viewColumn ?? vscode.window.visibleTextEditors[0]?.viewColumn ?? vscode.ViewColumn.One;
+export const isChatTab = (t: vscode.Tab | undefined): boolean =>
+  t?.input instanceof vscode.TabInputWebview && t.input.viewType.endsWith("jimbo.chat");
+
+/** The column for files, diffs and the trace: a group that isn't showing the jimbo panel, so they don't cover it.
+ * Beside the panel when every group shows it; the active group when the panel is in the sidebar. */
+export function editorColumn(): vscode.ViewColumn {
+  const groups = vscode.window.tabGroups.all;
+  const others = groups.filter((g) => !isChatTab(g.activeTab));
+  if (others.length === groups.length) return vscode.window.tabGroups.activeTabGroup.viewColumn;
+  return (others.find((g) => g.activeTab) ?? others[0])?.viewColumn ?? vscode.ViewColumn.Beside;
 }
 
 export async function exists(uri: vscode.Uri): Promise<boolean> {

@@ -53,6 +53,18 @@ describe("jimbo extension", () => {
     assert.ok(tabLabels().includes("jimbo"));
   });
 
+  it("keeps files opened elsewhere out of the panel's group", async () => {
+    const chatGroup = () => vscode.window.tabGroups.all.find((g) => g.tabs.some((t) => t.label === "jimbo"))!;
+    await until("the panel to be active", () => vscode.window.tabGroups.activeTabGroup === chatGroup());
+    const file = vscode.Uri.file(path.join(folder().uri.fsPath, "opened.txt"));
+    fs.writeFileSync(file.fsPath, "x\n");
+    await vscode.commands.executeCommand("vscode.open", file);  // what the Explorer does: no column given
+    const opened = await until("the file's tab", () => vscode.window.tabGroups.all.find((g) =>
+      g.tabs.some((t) => t.input instanceof vscode.TabInputText && t.input.uri.fsPath === file.fsPath)));
+    assert.notStrictEqual(opened, chatGroup());
+    assert.strictEqual(chatGroup().activeTab?.label, "jimbo");
+  });
+
   it("shows a proposed file in a diff editor and writes it when allowed", async () => {
     const session = api.sessionFor(folder());
     let allow!: (choice: string) => void;

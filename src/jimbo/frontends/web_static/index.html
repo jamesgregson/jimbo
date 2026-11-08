@@ -582,8 +582,11 @@ function onHostMessage(msg) {  // messages from the extension host itself, not f
 function connect() {
   if (HOST) {  // the extension host passes messages to and from the jimbo process
     ws = { readyState: 1, send: (text) => HOST.postMessage({ type: "to_jimbo", msg: JSON.parse(text) }) };
-    window.addEventListener("message", (e) => {
-      const msg = e.data;
+    const fromHost = (msg) => {
+      if (msg?.type === "host_replay") {  // the history after the page (re)loads, all in one task: one paint
+        for (const m of msg.msgs) try { fromHost(m); } catch (err) { console.error(err); }  // as if sent one by one
+        scroll(); return;
+      }
       if (msg?.type === "from_jimbo") {
         const m = msg.msg;
         if (m.type === "image_data") {
@@ -592,7 +595,8 @@ function connect() {
           else if (img) img.parentElement.replaceWith(el("div", "note", "image no longer available"));
         } else ws.onmessage({ data: JSON.stringify(m) });
       } else if (msg?.type) onHostMessage(msg);
-    });
+    };
+    window.addEventListener("message", (e) => fromHost(e.data));
     $("#sid").onclick = (e) => { e.preventDefault(); HOST.postMessage({ type: "host_trace" }); };
   } else ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
   ws.onopen = () => { log.replaceChildren(); follow = true; cards.clear(); seg = null; agentStep = null; agentRequests = 0; modelLists = {}; setRunning(false); };  // history is replayed

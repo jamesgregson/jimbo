@@ -120,7 +120,8 @@ export class Session implements vscode.Disposable {
         break;
       case "host_ready":
         this.pageReady = true;
-        for (const msg of this.history) void this.webview?.postMessage(msg);
+        // One message, so the page renders the history in one pass instead of one paint per event.
+        if (this.history.length) void this.webview?.postMessage({ type: "host_replay", msgs: this.history });
         for (const text of this.inserts.splice(0)) this.post({ type: "host_insert", text });
         break;
       case "host_confirm": {

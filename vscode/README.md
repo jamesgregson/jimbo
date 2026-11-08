@@ -39,7 +39,9 @@ variables such as `OPENROUTER_API_KEY`; start it from a terminal with `code`, or
 ## Use
 
 - **Jimbo: Open** (or the jimbo icon in the editor title bar) opens the panel beside the current editor and
-  starts jimbo. VS Code asks you to accept the risk warning each time jimbo starts.
+  starts jimbo. VS Code asks you to accept the risk warning each time jimbo starts. When the panel is alone in
+  its editor group, the group is locked (the lock icon in the group's title bar), so files you open go to
+  another group. Click the lock to unlock it.
 - Type a task in the panel and press Enter. The panel works like `jimbo --ui web`.
 - When jimbo asks to write or edit a file, VS Code opens a diff of the file and the proposed change, and shows
   a notification with **Allow once**, **Always** and **Deny**. You can also answer in the panel.

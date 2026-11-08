@@ -2,7 +2,7 @@
 
 import * as path from "path";
 import * as vscode from "vscode";
-import { exists } from "./approvals";
+import { editorColumn, exists } from "./approvals";
 
 function resolve(folder: string, p: string): vscode.Uri {
   return vscode.Uri.file(path.isAbsolute(p) ? p : path.join(folder, p));
@@ -20,12 +20,10 @@ export async function openPath(folder: string, p: string, line?: number): Promis
     vscode.window.showWarningMessage(`jimbo: ${p} was not found.`);
     return;
   }
-  const options: vscode.TextDocumentShowOptions = { preview: true };
+  const options: vscode.TextDocumentShowOptions = { preview: true, viewColumn: editorColumn() };
   if (line && line > 0) {
     const pos = new vscode.Position(line - 1, 0);
     options.selection = new vscode.Range(pos, pos);
   }
-  const column = vscode.window.visibleTextEditors[0]?.viewColumn;
-  if (column) options.viewColumn = column;
   await vscode.window.showTextDocument(uri, options);
 }

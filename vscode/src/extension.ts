@@ -1,7 +1,7 @@
 // Commands, the status bar, and where the panel opens. See session.ts for how a panel talks to jimbo.
 
 import * as vscode from "vscode";
-import { SCHEME, VirtualFiles, relative } from "./approvals";
+import { SCHEME, VirtualFiles, isChatTab, relative } from "./approvals";
 import { Session, State } from "./session";
 
 interface Open { session: Session; panel?: vscode.WebviewPanel }
@@ -42,7 +42,8 @@ export function activate(context: vscode.ExtensionContext): { sessionFor: typeof
   context.subscriptions.push(
     output, status,
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, files),
-    vscode.window.registerWebviewViewProvider("jimbo.chat", { resolveWebviewView: (view) => resolveSidebar(view) }),
+    vscode.window.registerWebviewViewProvider("jimbo.chat", { resolveWebviewView: (view) => resolveSidebar(view) },
+                                              { webviewOptions: { retainContextWhenHidden: true } }),
     { dispose: () => { for (const { session } of sessions.values()) session.dispose(); sessions.clear(); } },
   );
   return { sessionFor };  // for the extension's tests
@@ -103,11 +104,23 @@ async function open(extra: string[] = [], uri?: vscode.Uri): Promise<Session | u
   return found.session;
 }
 
+/** Lock the new panel's group, so files opened from the Explorer or elsewhere go to another group instead of
+ * covering the panel. Only when the panel is alone there: a group the user shares with it stays as it is. The
+ * lock command acts on the active group, and the tab groups update a moment after the panel is created. */
+async function lockIfAlone(): Promise<void> {
+  const groups = vscode.window.tabGroups;
+  for (let i = 0; i < 40 && !isChatTab(groups.activeTabGroup.activeTab); i++) await new Promise((r) => setTimeout(r, 25));
+  if (groups.activeTabGroup.tabs.length === 1 && isChatTab(groups.activeTabGroup.activeTab))
+    await vscode.commands.executeCommand("workbench.action.lockEditorGroup");
+}
+
 function makePanel(session: Session): vscode.WebviewPanel {
   const multi = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
   const panel = vscode.window.createWebviewPanel("jimbo.chat", multi ? `jimbo: ${session.folder.name}` : "jimbo",
                                                  { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
-                                                 { enableScripts: true, localResourceRoots: [] });
+                                                 // kept while hidden: reloading means replaying the whole history
+                                                 { enableScripts: true, localResourceRoots: [], retainContextWhenHidden: true });
+  void lockIfAlone();
   panel.iconPath = vscode.Uri.joinPath(vscode.Uri.file(extensionPath), "media", "icon.svg");
   session.attach(panel.webview, (fn) => panel.onDidChangeViewState((e) => fn(e.webviewPanel.visible)));
   panel.onDidChangeViewState((e) => { if (e.webviewPanel.active) use(session); });
