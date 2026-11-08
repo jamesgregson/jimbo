@@ -34,6 +34,7 @@ from .tools.sandbox import build_sandbox
 
 
 ASSESS_WARN_AFTER = 3  # failed shell assessments in a row before the user is told
+DIFF_TOOLS = ("write_file", "edit_file", "lsp_rename", "remember")  # their approval detail is a diff of files
 
 
 class FrontendSink:
@@ -105,7 +106,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     async def observe(call, v):
         if v.action == "allow" and call.assessment is None and assess_mode == "always":
             await assess(call)  # also describe calls a policy allowed without asking
-        unseen = v.action == "allow" and v.decided_by != "user" and call.tool in ("write_file", "edit_file")
+        unseen = v.action == "allow" and v.decided_by != "user" and call.tool in DIFF_TOOLS
         await holder["s"].emit("approval_resolved", call_id=call.call_id, tool=call.tool, action=v.action,
                                decided_by=v.decided_by, reason=v.reason,
                                **({"assessment": call.assessment} if call.assessment else {}),

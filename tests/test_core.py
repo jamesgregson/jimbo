@@ -227,6 +227,16 @@ async def test_shell_allowed_by_rule_without_asking(tmp_path):
                          "reason": "allowed by rule 'shell:echo *'"}]
 
 
+@pytest.mark.parametrize("tool,shown", [("write_file", True), ("edit_file", True), ("lsp_rename", True),
+                                        ("remember", True), ("delete_file", False)])
+async def test_diff_sent_when_no_prompt_showed_it(tmp_path, tool, shown):
+    fe = ScriptedFrontend(allow=False)  # would deny if asked
+    s = build_session(settings(tmp_path, approval_allow=[f"{tool}:*"]), fe, model=TestModel())
+    await s.deps.authorize(None, tool, {"path": "a.py"}, f"{tool} a.py", detail="+x")
+    [resolved] = [e.data for e in fe.events if e.kind == "approval_resolved"]
+    assert resolved["action"] == "allow" and resolved.get("detail") == ("+x" if shown else None)
+
+
 # -- approval answers ---------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text,allow,remember,note", [

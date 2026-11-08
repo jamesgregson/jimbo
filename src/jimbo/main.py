@@ -113,6 +113,8 @@ def main() -> None:
             raise SystemExit(1)
 
     async def go() -> None:
+        sandbox = session.deps.sandbox
+        print(f"jimbo: commands run {sandbox.describe() if sandbox else 'NOT sandboxed'}", file=sys.stderr)
         await preflight()
         start = getattr(frontend, "start", None)
         if start:
