@@ -128,11 +128,21 @@ async def test_sandbox_confines_writes(tmp_path):
         outside.unlink(missing_ok=True)
 
 
+def no_containers(monkeypatch):
+    from jimbo.tools import container_sandbox as cs
+
+    def probe(cli, timeout=10):
+        raise cs.Unavailable(f"{cli} is not installed")
+    monkeypatch.setattr(cs, "probe", probe)
+
+
 def test_build_sandbox_modes(tmp_path, monkeypatch):
     def build(mode, **kw):
         return sb.build_sandbox(settings(tmp_path, sandbox=mode, **kw), tmp_path)
+    no_containers(monkeypatch)
     assert build("off") is None
     monkeypatch.setattr(sb, "available", lambda: False)
+    assert build("seatbelt") is None
     assert build("auto") is None
     with pytest.raises(ValueError):
         build("on")
@@ -141,6 +151,59 @@ def test_build_sandbox_modes(tmp_path, monkeypatch):
     assert tmp_path.resolve() in s.writable and (tmp_path / "extra").resolve() in s.writable
     assert "network-outbound" in s.profile()
     assert (tmp_path / "scratch").resolve() in sb.build_sandbox(settings(tmp_path), tmp_path, tmp_path / "scratch").writable
+
+
+def test_auto_tries_podman_then_docker_then_seatbelt(tmp_path, monkeypatch):
+    from jimbo.tools import container_sandbox as cs
+    tried = []
+
+    def probe(cli, timeout=10):
+        tried.append((cli, timeout))
+        if cli == "podman":
+            raise cs.Unavailable('machine "podman-machine-default" is not running')
+        return cs.Runtime(engine=cli)
+
+    monkeypatch.setattr(cs, "probe", probe)
+    monkeypatch.setattr(cs, "build", lambda st, ws, cli, scratch=None, runtime=None: f"{cli} sandbox")
+    skipped = []
+    assert sb.build_sandbox(settings(tmp_path, sandbox="auto"), tmp_path, skipped=skipped) == "docker sandbox"
+    assert tried == [("podman", sb.PROBE_TIMEOUT), ("docker", sb.PROBE_TIMEOUT)]
+    assert skipped == [{"kind": "podman", "reason": 'machine "podman-machine-default" is not running'}]
+
+    def fails(st, ws, cli, scratch=None, runtime=None):
+        raise ValueError("building sandbox image x failed (docker build exited with code 1). More text")
+    monkeypatch.setattr(cs, "build", fails)
+    monkeypatch.setattr(sb, "available", lambda: True)
+    skipped = []
+    s = sb.build_sandbox(settings(tmp_path, sandbox="auto"), tmp_path, skipped=skipped)
+    assert s.kind == "seatbelt" and [x["kind"] for x in skipped] == ["podman", "docker"]
+    assert skipped[1]["reason"] == "building sandbox image x failed (docker build exited with code 1)"
+    assert sb.startup_note(s, skipped).startswith("sandbox: using seatbelt (podman: machine")
+    monkeypatch.setattr(sb, "available", lambda: False)
+    skipped = []
+    assert sb.build_sandbox(settings(tmp_path, sandbox="auto"), tmp_path, skipped=skipped) is None
+    assert [x["kind"] for x in skipped] == ["podman", "docker", "seatbelt"]
+    assert sb.startup_note(None, skipped).startswith("sandbox: NONE. Commands run as you with no limits")
+    assert sb.startup_note(s, []) is None
+
+
+def test_sandbox_label():
+    assert sb.label("podman") == "podman sandbox"
+    assert sb.label("seatbelt", network=False) == "seatbelt sandbox (no network)"
+    assert sb.label(None) == "NOT sandboxed"
+
+
+async def test_status_event_describes_the_sandbox(tmp_path, monkeypatch):
+    from helpers import ScriptedFrontend
+    from jimbo.wiring import build_session
+    monkeypatch.setattr(sb, "available", lambda: False)
+    fe = ScriptedFrontend()
+    s = build_session(settings(tmp_path, sandbox="seatbelt"), fe, model=TestModel())
+    s.deps.sandbox_skipped = [{"kind": "podman", "reason": "not installed"}]
+    await s.emit_status(initial=True)
+    d = next(e.data for e in fe.events if e.kind == "status")
+    assert d["sandbox"] is None and d["sandbox_detail"].startswith("NOT sandboxed")
+    assert d["sandbox_skipped"] == [{"kind": "podman", "reason": "not installed"}] and d["sandbox_network"] is True
 
 
 @pytest.mark.parametrize("tool,arg,expected", [

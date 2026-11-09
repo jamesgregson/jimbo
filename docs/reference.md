@@ -29,8 +29,9 @@ Settings are read from these sources, highest priority first:
 A workspace config arrives with whatever repo you cloned, so it can't loosen security. These keys are
 ignored there, with a warning, and only read from `~/.jimbo/config.toml`: `model`, `api_key`, the
 `*_base_url` settings, `providers`, `model_aliases`, `models`, `tasks`, `web_host`, `approval`,
-`approval_allow`, `log_dir`, `user_dir`, `scratch_keep_days`, `workspace`, `lsp_servers` and the `sandbox*` settings. Its
-`approval_deny` rules and `lsp_disabled` list are added to yours.
+`approval_allow`, `log_dir`, `user_dir`, `scratch_keep_days`, `workspace`, `lsp_servers`, `git_write`, `read_paths`,
+`shell_env_keep`, `secret_files_shell`, `protected_write` and the `sandbox*` settings. Its
+`approval_deny` rules, `protected_paths` and `lsp_disabled` list are added to yours.
 
 ## All settings
 
@@ -63,12 +64,21 @@ approval_allow = []           # see Approvals
 approval_deny = []
 approval = ["rules", "readonly", "remembered", "ask"]   # policy chain; rarely worth changing
 secret_files = [".env", ".env.local", "*.pem", "*.key", "id_rsa"]   # shortened here; see Approvals
+secret_files_shell = false    # true: shell commands can't read secret_files either; see Sandbox
+protected_paths = [".git/hooks/**", ".git/config", ".github/**", ".gitlab-ci.yml", ".vscode/**", ".idea/**",
+                   ".envrc", ".husky/**", ".claude/settings*.json"]   # see Protected files
+protected_write = "deny"      # ask: file tools may change protected files, asking each time
+git_write = false             # true: shell commands may change the local repository; see Git
+read_paths = []               # extra read-only folders for the file tools, e.g. library source
 
 # ---- Shell and sandbox ------------------------------------------------------------------------
 shell_timeout = 120           # seconds, per command
 shell_timeout_max = 600       # the most the model may ask for
-sandbox = "auto"              # auto | on (refuse to run without it) | off | docker | podman
+sandbox = "auto"              # auto | seatbelt | on | off | docker | podman; see Sandbox
 sandbox_writable = []         # extra writable paths
+sandbox_readable = []         # seatbelt: extra folders in your home folder that commands may read
+sandbox_system_temp = false   # seatbelt: true lets commands write /tmp again
+shell_env_keep = []           # variables passed to commands even though their names look secret
 sandbox_network = true        # false blocks outbound network from shell commands
 sandbox_image = ""            # docker, podman: empty means the bundled image, built on first use
 sandbox_readonly = []         # docker, podman: extra paths mounted read-only
@@ -321,34 +331,168 @@ approval_deny  = ["shell:sudo *", "shell:rm -rf*", "read_file:secrets/*"]
 **Auto mode:** `jimbo --auto` or `/approve auto` makes file writes, edits, deletes and moves without asking, and runs shell
 commands without asking when the `jimbo-shell-assess` model rates them low or medium risk. Commands that
 change source control or external state are rated high (see Shell risk assessment), so they still ask.
-Staging with `git add` is not covered and can run without asking. Deny rules and `secret_files` still apply. The fixed checks can raise the risk but can't approve a command on their
+Git changes are denied whatever the mode (see Git). Deny rules and `secret_files` still apply. The fixed checks can raise the risk but can't approve a command on their
 own, so if the model is slow or fails, jimbo asks. Auto mode needs the assessment model: with `[tasks.jimbo-shell-assess]` `mode = "off"`,
 `--auto` and `/approve auto` give an error, and file changes are not auto-approved either. `/approve default` turns it off.
 
 `secret_files` lists file names the model can't read or `grep`, even with `--yolo`. The default covers `.env`
-and its usual variants (not `.env.example`), `*.pem`, `*.key`, `id_rsa` and `id_ed25519`. Set it in
-`~/.jimbo/config.toml` to change it; a workspace config can't. It doesn't stop a shell command you approve,
-or an `@path` you type yourself.
+and its usual variants (not `.env.example`), `*.pem`, `*.key`, SSH keys (`id_rsa`, `id_ed25519`, `id_ecdsa`,
+`id_dsa`), key stores (`*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`), `.netrc`, `.npmrc`, `.pypirc`,
+`.git-credentials`, `credentials.json`, `service-account*.json`, Terraform state (`*.tfstate`,
+`*.tfstate.backup`), `.htpasswd` and `kubeconfig`. Set it in `~/.jimbo/config.toml` to change it; a workspace
+config can't. It doesn't stop an `@path` you type yourself. By default it doesn't stop a shell command either;
+`secret_files_shell = true` does, in a sandbox (see Sandbox).
+
+## Git
+
+git is read-only by default. Shell commands may run git commands that read, such as `status`, `diff`, `log`,
+`show`, `blame`, `grep`, `branch` and `tag` with no arguments, and `stash list`. jimbo denies any command that
+changes the repository (`commit`, `add`, `checkout`, `stash`, `reset`, `branch <name>`, ...) without asking,
+even inside a longer command such as `pytest && git commit -m x`, and tells the model to leave the changes
+uncommitted. It also denies git subcommands it doesn't know, such as aliases.
+
+Commands that change a remote are always denied, in every approval mode including `--yolo`, and no setting
+allows them: `git push`, `git remote add`, `set-url`, `rename` and `remove`, `git send-email`, `git lfs push`,
+`gh` commands that change GitHub (`gh pr create`, `gh release`, `gh api -X POST`, ...) and `gh auth token`.
+
+`git_write = true` in `~/.jimbo/config.toml` lets commands change the local repository. Each such command asks,
+in every mode including `--yolo` and auto, the prompt names the git part first (`This command changes git:
+...`), and "always" is not offered. `git fetch`, `git pull`, `git ls-remote`, `git clone` and read-only `gh`
+commands such as `gh pr view` also need `git_write`.
+
+These rules read the command's text, so a script or `python -c` that runs git gets past them. The sandbox stops
+those too:
+
+- With `git_write = false`, commands can't write the workspace's `.git` folder (or, for a worktree or
+  submodule, the folders its `.git` file points to). With `git_write = true`, they can't write `.git/hooks` or
+  `.git/config`.
+- Commands get no git credentials: credential helpers are turned off and git can't use SSH (`GIT_CONFIG_*`
+  variables), the SSH agent and token variables are removed, and the macOS sandbox can't read `~/.ssh`,
+  `~/.config/gh` or `~/.git-credentials`. A container has no credentials at all.
+- With the macOS sandbox, git can still read passwords saved in the macOS keychain, because it gets them from
+  a system service, not a file.
+- Commands get `GIT_OPTIONAL_LOCKS=0`, so `git status` works with `.git` read-only.
+
+Without a sandbox, only the text rules and the environment apply. The file tools never change anything under
+`.git`. A repository in the scratch directory is not limited, except for remote changes, so the model can make
+one there for a test.
+
+**Secrets in a commit.** With `git_write = true`, before asking about a command that runs `git commit`, jimbo
+checks what the commit would add: staged changes, or all changes and untracked files if the same command runs
+`git add` or uses `commit -a`. If a file name matches `secret_files` or an added line has a secret (see
+Secrets in output), the prompt starts with `Staged changes contain a secret: config/prod.pem (secret file),
+src/app.py:12 (aws access key)`.
+
+## Protected files
+
+`protected_paths` lists files that run code when you use the project later: git hooks and config, CI files,
+editor task files, `.envrc`, husky hooks and Claude Code settings. Patterns are relative to the workspace;
+`**` matches any depth, and a pattern without `/` matches that name in any folder.
+
+- With `protected_write = "deny"` (the default), the file tools refuse to create, change, delete or move them,
+  in every approval mode including `--yolo`. The model is told to ask you. Deleting or moving a folder that
+  holds one is refused too.
+- With `protected_write = "ask"` (in `~/.jimbo/config.toml` only), the file tools may change them, but each
+  change asks you, in every approval mode including `--yolo` and auto, and "always" is not offered. The prompt
+  starts with `This changes a protected file: .github/workflows/ci.yml`. `lsp_rename` still refuses them.
+- Either way, the file tools never change `.git`, or a folder that holds a nested `.git`.
+- In the macOS sandbox, commands can't write them, whatever `protected_write` says. In a container, the ones
+  that exist when it starts are mounted read-only.
+- Set `protected_paths` in `~/.jimbo/config.toml` to change the list. A workspace config can add entries but
+  not remove them. `.git/hooks/**` and `.git/config` are always protected.
+
+## Secrets in output
+
+Before a tool result or a retry message goes to the model and the session log, jimbo replaces secrets in it with
+`[redacted: <kind>]`. The approval prompt shows the same text. It looks for:
+
+- private key blocks, and AWS (`AKIA...`, `ASIA...`), GitHub (`ghp_`, `github_pat_`, ...), GitLab (`glpat-`),
+  Slack (`xox?-`), Stripe (`sk_live_`, `rk_live_`), Google (`AIza...`), Anthropic (`sk-ant-`), OpenRouter
+  (`sk-or-`) and OpenAI (`sk-...`) keys, and JWTs
+- your provider API keys, however they are configured
+- the values of environment variables whose names look secret (see Environment under Sandbox), when they are
+  12 characters or longer and not a path
+
+## Other checks on tool calls
+
+- **Changed files.** `write_file`, `edit_file` and `multi_edit` refuse to change a file that changed since the
+  model last read or wrote it, for example because you edited it, or a command such as a formatter did. The
+  model is told to read it again. The check runs before the approval prompt and again just before writing.
+- **Repeated failures.** When the same tool call (same tool and arguments) fails the same way 3 times in a turn,
+  the model is told to try something else. A failure is a retry message, or a shell command that exits non-zero
+  or times out. On the 5th, the turn ends: the model's next reply is text only, and you see
+  `jimbo stopped this turn: shell failed the same way 5 times.`
 
 ## Sandbox
 
 `shell` runs bash non-interactively in the workspace root, with a timeout. Language servers run the same way.
 Approval prompts say where a command runs. There are two sandboxes:
 
-- **macOS sandbox** (`sandbox = "auto"` or `"on"`): commands run under `sandbox-exec`. They can read anything
-  but write only to the workspace, temp directories, `~/.cache` and `~/Library/Caches`. `auto` uses it when
-  available and runs commands unsandboxed elsewhere; `on` refuses to start without it.
-- **Container sandbox** (`sandbox = "docker"` or `"podman"`, macOS and Linux): commands run in a container
-  that sees only the workspace, so they can't read your home directory or your environment variables either.
+- **Container sandbox** (`sandbox = "podman"` or `"docker"`, macOS and Linux): commands run in a container
+  that sees only the workspace and the scratch directories, so they can't read your home folder or your
+  environment variables either. See [Container sandbox](#container-sandbox-docker-or-podman).
+- **macOS sandbox** (`sandbox = "seatbelt"` or `"on"`): commands run under `sandbox-exec`, with the limits
+  below. `seatbelt` uses it when it is available and runs commands unsandboxed otherwise; `on` refuses to start
+  without it.
+
+`sandbox = "auto"`, the default, tries Podman, then Docker, then the macOS sandbox, and uses the first that
+works. A container runtime is skipped if it doesn't answer within 5 seconds, its machine isn't running, or its
+image can't be built. jimbo prints what it skipped and why, for example
+`jimbo: sandbox: using docker (podman: Cannot connect to Podman)`. If none works, it prints
+`jimbo: sandbox: NONE. Commands run as you with no limits (...)` and runs commands unsandboxed.
 
 `sandbox = "off"` turns sandboxing off. `jimbo --sandbox <mode>` sets the mode for one run, in place of the setting.
 
 - `sandbox_writable = ["~/other"]` adds writable paths. In a container sandbox they are mounted at the same path.
 - `sandbox_network = false` blocks outbound network, and hides `web_fetch`.
 
+**Where the sandbox is shown.** Every interface shows which sandbox is in use: the tui and plain banner and
+the tui toolbar (`podman sandbox`, `seatbelt sandbox (no network)`, `NOT sandboxed`, in red), the web page's
+status bar (click it for what the sandbox allows and what `auto` skipped), and the VS Code status bar item
+(hover for the same). The `status` event has `sandbox` (`podman`, `docker`, `seatbelt` or null),
+`sandbox_network`, `sandbox_detail` (the text the approval prompt shows) and `sandbox_skipped` (a list of
+`{"kind", "reason"}` for what `auto` tried first).
+
+**macOS sandbox limits.**
+
+- Reads: commands can't read your home folder or `/Volumes`, except the workspace, the scratch directory,
+  skill folders, tool folders (`~/.cache`, `~/Library/Caches`, `~/.local`, `~/.cargo`, `~/.rustup`, `~/.npm`,
+  `~/.nvm`, `~/.pyenv`, `~/go`, `~/.gradle`, `~/.m2`, `~/.gitconfig`, `~/.config/git` and similar), folders on
+  `PATH`, and `sandbox_readable`. They can still see that a file exists and its size, but not its contents.
+- Writes: the workspace, the scratch directories, `~/.cache`, `~/Library/Caches`, macOS's per-user temp and
+  cache folders (Apple's tools such as `mktemp` use them whatever `TMPDIR` says) and `sandbox_writable`.
+  Not `/tmp`, unless `sandbox_system_temp = true`. The workspace's git folder is read-only; see Git.
+- With `secret_files_shell = true`, commands can't read files matching `secret_files` either. A dev server or
+  test that loads `.env` then can't read it.
+
+**Environment.** Commands and language servers don't get jimbo's environment variables whose names look
+secret: names containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or `_AUTH`, `AWS_*`,
+`AZURE_*`, `GOOGLE_APPLICATION_CREDENTIALS`, `SSH_AUTH_SOCK`, and the variables your providers read keys from
+(`api_key_env`, `fallback_key_envs`). `shell_env_keep = ["NPM_TOKEN"]` passes a variable anyway. Every command
+gets `TMPDIR` set to `tmp` in the session's scratch directory, so `tempfile`, `pytest` and most tools put
+temporary files there, and the git variables described under Git.
+
+**When the sandbox stops a command.** If a command's output says `Operation not permitted`, `Permission denied`
+or `Read-only file system` for a path outside the workspace or in `.git`, jimbo adds a note to the result, for
+example `[jimbo: the sandbox blocks writing /tmp/out.txt. Write temporary files to the scratch directory ...]`.
+
+**Paths outside the workspace.** The model is told to stay in the workspace and the scratch directory. An
+approval prompt for a command that names a path outside them adds a line such as `Reaches outside the
+workspace: ~/Downloads (read), /tmp/out.txt (write)`, and the shell risk check rates it medium for reads and
+high for writes. After the third try in a turn to reach outside (a denied command or file tool call, or a
+command the sandbox stopped), the model is told again to stay inside and ask you instead.
+
 Git in a workspace that is a subdirectory of a repo can't write the repo's `.git` unless you add it to
-`sandbox_writable`. If jimbo itself runs inside a macOS sandbox, `auto` falls back to unsandboxed, because macOS
-doesn't allow nesting.
+`sandbox_writable`. If jimbo itself runs inside a macOS sandbox, `seatbelt` and `auto` can't use it, because
+macOS doesn't allow nesting.
+
+### Library source
+
+`read_file`, `list_dir`, `grep` and `glob` can read folders outside the workspace that hold the project's
+library source, by absolute path: the active virtualenv's `site-packages` (from `VIRTUAL_ENV`), Cargo's
+`registry/src` and Go's module cache, when they exist, and the folders in `read_paths`. They are read-only, and
+`secret_files` still apply. The model is given the list, so it uses these tools instead of `cat` through
+`shell`.
 
 ### Scratch directory
 
@@ -375,12 +519,12 @@ asked to put throwaway files there, such as one-off scripts and screenshots, ins
 
 ```toml
 sandbox = "docker"                    # or "podman"
-sandbox_readonly = ["~/.gitconfig"]   # for git commits with your name
+sandbox_readonly = ["~/.gitconfig"]   # for git commits with your name, with git_write = true
 ```
 
-Docker and Podman behave the same, except as described under [Podman](#podman). jimbo checks the runtime when
-it starts and exits if it isn't running. It does not fall back to running commands
-unsandboxed.
+Docker and Podman behave the same, except as described under [Podman](#podman). With `sandbox = "docker"` or
+`"podman"`, jimbo checks the runtime when it starts and exits if it isn't running. It does not fall back to
+running commands unsandboxed. With `sandbox = "auto"`, it tries the next sandbox instead.
 
 **The container.** jimbo starts one container at the first command and removes it when jimbo exits. Later
 commands use the same container, so a server started with `background = true` can be reached by a later
@@ -390,7 +534,12 @@ commands use the same container, so a server started with `background = true` ca
   (read-only) at the same paths as on the host, and nothing else. jimbo won't mount `/`, your home directory, or a path that holds the Docker or Podman socket.
 - runs commands as your user id, not root, with no Linux capabilities. Commands can't install system
   packages; put them in the image.
-- gets none of your environment variables, only `HOME=/home/jimbo`, `TERM`, `LANG` and `sandbox_env`.
+- gets none of your environment variables, only `HOME=/home/jimbo`, `TERM`, `LANG`, `sandbox_env`, `TMPDIR`
+  and the git variables described under Git, plus `safe.directory=*`, because mounted files can look owned by
+  another user.
+- mounts the workspace's `.git` read-only (see Git). With `secret_files_shell = true`, files matching
+  `secret_files` that exist when the container starts are covered with `/dev/null`. Files created later are
+  not covered.
 - keeps `~/.cache` in the volume `jimbo-cache`, shared by all sessions, so pip, uv and npm caches survive.
 - has a memory limit (`sandbox_memory`, default 8g), an optional CPU limit (`sandbox_cpus`) and a limit of
   1024 processes.

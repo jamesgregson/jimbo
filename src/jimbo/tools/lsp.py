@@ -1,12 +1,13 @@
 """Tools that ask a language server about the code, and the errors an edit introduced (for fs.py)."""
 
+import hashlib
 import re
 from pathlib import Path
 
 from pydantic_ai import ModelRetry, RunContext, Tool
 from pydantic_ai.tools import ToolDefinition
 
-from ..core.deps import Deps, ToolDenied
+from ..core.deps import Deps, ToolDenied, protected_match
 from ..lsp.client import LspClient, LspError, path_uri, str_index, uri_path, utf16_col
 from ..lsp.manager import LspUnavailable
 from ..lsp.servers import BLOCKING
@@ -438,6 +439,13 @@ async def lsp_rename(ctx: RunContext[Deps], path: str, line: int, symbol: str, n
         if target is None:
             return f"Nothing was changed: the rename would change {f or uri}, which is outside the workspace."
         try:
+            deps.writable(str(target))
+        except PathEscape as e:
+            return f"Nothing was changed: {e}."
+        if protected_match(target, deps.workspace.resolve(), deps.protected):
+            return (f"Nothing was changed: the rename would change {lines.rel(target)}, which is protected "
+                    "(protected_paths). Use edit_file for it.")
+        try:
             old = target.read_text("utf-8")
         except (OSError, UnicodeDecodeError) as e:
             return f"Nothing was changed: can't read {lines.rel(target)} ({e})."
@@ -454,6 +462,7 @@ async def lsp_rename(ctx: RunContext[Deps], path: str, line: int, symbol: str, n
     for f, (_, new, _) in changes.items():
         deps.checkpoints.record(f)
         f.write_text(new, "utf-8")
+        deps.seen_files[f] = hashlib.sha256(new.encode("utf-8")).hexdigest()  # the model asked for this change
     edits = sum(n for _, _, n in changes.values())
     report = "\n".join([f"renamed {symbol} to {new_name}: {edits} edit(s) in {len(changes)} file(s):",
                         *(f"  {lines.rel(f)} ({n})" for f, (_, _, n) in changes.items())])

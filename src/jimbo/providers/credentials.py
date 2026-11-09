@@ -69,6 +69,9 @@ def resolve_api_key(name: str, cfg: ProviderConfig) -> SecretStr | None:
     if not value and cfg.require_key:
         raise CredentialError(f"provider {name} has no API key configured "
                         f"(set api_key_env, api_key_file or api_key_cmd under [providers.{name}])")
+    if value:
+        from ..core.redact import add_secret
+        add_secret(value, f"{name} api key")  # hidden if it ever shows up in a tool result
     return SecretStr(value) if value else None
 
 

@@ -14,7 +14,7 @@ import { Exit, JimboProcess, Msg } from "./process";
 const MAX_HISTORY = 20_000;
 const TRANSIENT = new Set(["files", "models", "image_data"]);  // replies to one request; not replayed
 
-export interface State { model: string; mode: string; running: boolean; alive: boolean }
+export interface State { model: string; mode: string; running: boolean; alive: boolean; sandbox: string; sandboxDetail: string }
 
 export class Session implements vscode.Disposable {
   private proc: JimboProcess | undefined;
@@ -26,7 +26,7 @@ export class Session implements vscode.Disposable {
   private approvals = new Map<string, vscode.Uri | null>();  // open approval id -> its proposed diff, if shown
   private stateChanged = new vscode.EventEmitter<State>();
   readonly onState = this.stateChanged.event;
-  state: State = { model: "", mode: "default", running: false, alive: false };
+  state: State = { model: "", mode: "default", running: false, alive: false, sandbox: "", sandboxDetail: "" };
 
   constructor(readonly folder: vscode.WorkspaceFolder, private extensionPath: string, private files: VirtualFiles,
               private output: vscode.OutputChannel) {}
@@ -185,7 +185,7 @@ export class Session implements vscode.Disposable {
 
   private track(ev: { kind: string; data: any }): void {
     const d = ev.data ?? {};
-    if (ev.kind === "status") this.setState({ model: d.model ?? "", mode: d.yolo ? "yolo" : d.auto ? "auto" : d.mode === "plan" ? "plan" : "default" });
+    if (ev.kind === "status") this.setState({ model: d.model ?? "", mode: d.yolo ? "yolo" : d.auto ? "auto" : d.mode === "plan" ? "plan" : "default", ...sandboxState(d) });
     else if (ev.kind === "user_message" && !d.steer) this.setState({ running: true });
     else if (ev.kind === "run_finished") this.setState({ running: false });
     else if (ev.kind === "busy") this.setState({ running: !!d.on });
@@ -237,4 +237,11 @@ export class Session implements vscode.Disposable {
     await closeDiff(uri);
     this.files.remove(uri);
   }
+}
+
+/** The sandbox fields of State, from a status event: "podman", "seatbelt (no network)" or "NOT sandboxed". */
+export function sandboxState(d: any): Pick<State, "sandbox" | "sandboxDetail"> {
+  const sandbox = d.sandboxed ? `${d.sandbox}${d.sandbox_network === false ? " (no network)" : ""}` : "NOT sandboxed";
+  const skipped = (d.sandbox_skipped ?? []).map((x: any) => `skipped ${x.kind}: ${x.reason}`);
+  return { sandbox, sandboxDetail: [d.sandbox_detail, ...skipped].filter(Boolean).join("\n") };
 }

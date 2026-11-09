@@ -289,7 +289,7 @@ class TuiFrontend:
         if not d:
             return ""
         flags = "".join(f" [{f}]" for f, on in (("PLAN", d["mode"] == "plan"), ("YOLO", d["yolo"]), ("AUTO", d.get("auto"))) if on)
-        return f"{d['model']}{flags} · {self._session_id} · "
+        return f"{d['model']}{flags} · {sandbox_label(d)} · {self._session_id} · "
 
     def _toolbar(self) -> str | None:
         stats = self._state() + self._stats
@@ -446,7 +446,7 @@ class TuiFrontend:
                 if self._status is None:
                     sandbox = sandbox_label(d)
                     c.print(Text(f"jimbo · {d['model']} · {d['workspace']} · {sandbox} · session {event.session_id}",
-                                 style="dim"))
+                                 style="dim" if d.get("sandboxed") else "bold red"))
                 self._status = d
                 self._invalidate()
             case "warning":

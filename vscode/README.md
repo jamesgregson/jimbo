@@ -16,17 +16,15 @@ jimbo vscode install              # uses the code command; or name another: curs
 
 Run it again after you upgrade jimbo, so the extension matches.
 
-To build it from a clone instead, you need Node.js 20 or later:
+To build it from a clone instead, you need Node.js 20 or later. From the jimbo folder:
 
 ```bash
-cd vscode
-npm install
-npm run package                                   # builds jimbo-0.1.0.vsix
-code --install-extension jimbo-0.1.0.vsix
+jimbo vscode build                # builds src/jimbo/bundled/jimbo.vsix; installs npm packages in vscode/ the first time
+jimbo vscode install              # then install it, as above
 ```
 
-`npm run bundle` builds it into `src/jimbo/bundled/jimbo.vsix` instead, where `jimbo vscode install` and
-`uv build` find it.
+`jimbo vscode build` runs `npm run bundle` in `vscode/`. A later `uv build` then includes the extension in the package. To install a
+VSIX you built some other way, run `code --install-extension <file>.vsix` yourself.
 
 To run it from source instead, open the `vscode` folder in VS Code and press F5. A second VS Code window opens
 with the extension loaded.

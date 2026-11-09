@@ -89,7 +89,7 @@ Other ways to run it:
 | `jimbo --user-accepts-risks` | accept the risk warning without being asked |
 | `cat log.txt \| jimbo --user-accepts-risks "explain this"` | include piped text with the task |
 
-A prototype VS Code extension is in [vscode/](vscode/README.md). It ships with jimbo; `jimbo vscode install` installs it.
+A prototype VS Code extension is in [vscode/](vscode/README.md). It ships with jimbo; `jimbo vscode install` installs it. In a clone, `jimbo vscode build` builds it first (needs Node.js 20 or later).
 
 ## What jimbo can do
 
@@ -148,31 +148,44 @@ approval_allow = ["shell:git status*", "shell:git diff*"]
 approval_deny  = ["shell:sudo *", "shell:rm -rf*"]
 ```
 
-- File tools only work inside the project folder.
-- Files such as `.env`, `*.pem` and `*.key` can't be read or searched by the model.
+- File tools only work inside the project folder, the scratch directory and library source folders.
+- Files such as `.env`, `*.pem` and `*.key` can't be read or searched by the model, and keys and tokens in
+  tool output are replaced with `[redacted: ...]`.
+- Files that run code later, such as `.git/hooks`, `.github/` and `.vscode/`, can't be changed by the model.
+  `protected_write = "ask"` lets it change them, asking each time. See
+  [Protected files](docs/reference.md#protected-files).
+- git is read-only: jimbo denies `git commit`, `git add`, `git checkout` and other commands that change the
+  repository, without asking. `git_write = true` lets them run, asking each time. `git push`, `gh pr create`
+  and other commands that change a remote are always denied. See [Git](docs/reference.md#git).
 - Commands you approve run in a sandbox, if one is available. See [Sandbox](#sandbox).
 
 See [Approvals](docs/reference.md#approvals).
 
 ## Sandbox
 
-A sandbox limits what a command can do after you approve it. The approval prompt and the status line say
-where commands run. Language servers run in the same sandbox.
+A sandbox limits what a command can do after you approve it. The approval prompt and the status line in every
+interface say where commands run. Language servers run in the same sandbox.
 
-| Setting | Where commands run | Commands can read | Commands can write |
+`sandbox = "auto"`, the default, uses Podman if it is running, then Docker, then `sandbox-exec` on macOS, and
+prints what it skipped and why. If none works, commands run with no sandbox, and the status line says
+`NOT sandboxed`.
+
+| Sandbox | Where commands run | Commands can read | Commands can write |
 |---------|--------------------|-------------------|--------------------|
-| `sandbox = "auto"` (default), on macOS | under `sandbox-exec` | everything | the project, temp folders and caches |
-| `sandbox = "auto"` (default), elsewhere | with no sandbox | everything | everything |
-| `sandbox = "docker"` | in a Docker container, on macOS and Linux | the project and the scratch directory | the project and the scratch directory |
-| `sandbox = "podman"` | in a Podman container, on macOS and Linux | the project and the scratch directory | the project and the scratch directory |
-| `sandbox = "off"` | with no sandbox | everything | everything |
+| `podman` | in a Podman container, on macOS and Linux | the project and the scratch directory | the project and the scratch directory |
+| `docker` | in a Docker container, on macOS and Linux | the project and the scratch directory | the project and the scratch directory |
+| `seatbelt` | under `sandbox-exec`, on macOS | the system, the project, the scratch directory and tool folders in your home folder, not the rest of it | the project, the scratch directory and caches |
+| `off`, or none available | with no sandbox | everything | everything |
+
+In every sandbox the project's `.git` folder is read-only, and commands don't get API keys or tokens from
+jimbo's environment. Temporary files go to the scratch directory (`TMPDIR`), not `/tmp`.
 
 The scratch directory is a folder for throwaway scripts and screenshots, one per session, in
 `~/.jimbo/scratch/<session id>`. Folders unused for 7 days are deleted. See [Scratch directory](docs/reference.md#scratch-directory).
 
-The container sandboxes also keep your home folder and environment variables, such as API keys, away from
-commands. Docker and Podman work the same way. To use Docker, start it and add this line to the top of
-`~/.jimbo/config.toml`:
+The container sandboxes keep your whole home folder and all environment variables away from commands. Docker
+and Podman work the same way. To require Docker, and not fall back to another sandbox, start it and add this line
+to the top of `~/.jimbo/config.toml`:
 
 ```toml
 sandbox = "docker"
@@ -195,7 +208,7 @@ and replaces it for that run.
 - To open a server in the container from your browser, type `/sandbox port 5173` and go to
   `http://localhost:5173`.
 - `sandbox_readonly = ["~/.gitconfig"]` adds a file or folder the container can read, for example so git
-  commits have your name.
+  commits have your name when `git_write = true`.
 - `sandbox_network = false` blocks network access in either sandbox.
 
 A sandbox doesn't protect the project itself: an approved command can still change or delete its files.

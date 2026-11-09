@@ -169,8 +169,11 @@ function showState(state: State | undefined): void {
     return;
   }
   const model = state.model.split(/[:/]/).pop() || "starting";
-  status.text = `${state.running ? "$(sync~spin)" : "$(hubot)"} jimbo: ${state.alive ? model : "stopped"} · ${state.mode}`;
-  status.tooltip = `jimbo ${state.alive ? `${state.running ? "working" : "idle"} with ${state.model}` : "stopped"}; approvals: ${state.mode}`;
+  const sandbox = state.sandbox ? ` · ${state.sandbox}` : "";
+  status.text = `${state.running ? "$(sync~spin)" : "$(hubot)"} jimbo: ${state.alive ? model : "stopped"} · ${state.mode}${sandbox}`;
+  status.tooltip = `jimbo ${state.alive ? `${state.running ? "working" : "idle"} with ${state.model}` : "stopped"}; approvals: ${state.mode}`
+    + (state.sandboxDetail ? `\nsandbox: ${state.sandboxDetail}` : "");
+  status.backgroundColor = state.sandbox === "NOT sandboxed" ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
 }
 
 async function withSession(fn: (s: Session) => unknown): Promise<void> {

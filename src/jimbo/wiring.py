@@ -14,8 +14,11 @@ from .config import BUNDLED_DIR, Settings
 from .config_edit import ConfigControl
 from .core.agents import AgentResult, AgentSpec, ForwardSink, load_agents
 from .core.assess import TASK as ASSESS_TASK, assess_shell
-from .core.approval import (ApprovalGate, ApprovalModes, ApprovalPolicy, AskUser, AutoApprove, PatternRules,
-                            PlanMode, ReadOnlyAllow, RememberedDecisions, Yolo)
+from .core.approval import (HEAD, ApprovalGate, ApprovalModes, ApprovalPolicy, AskUser, AutoApprove, PatternRules,
+                            PlanMode, ProtectedAsk, ReadOnlyAllow, RememberedDecisions, Yolo)
+from .core.git_rules import GitRules
+from .core.outside import dependency_dirs
+from .core.redact import add_env_secrets
 from .core.commands import load_markdown_commands
 from .core.deps import Deps
 from .core.events import EventSink
@@ -30,7 +33,7 @@ from .lsp.servers import executables, resolve_servers
 from .providers.preflight import ModelFacts, inspect_model
 from .providers.registry import build_model_from_spec
 from .tools.container_sandbox import ContainerSandbox, find_commands
-from .tools.sandbox import build_sandbox
+from .tools.sandbox import build_sandbox, configure_env, is_secret_env, startup_note
 
 
 ASSESS_WARN_AFTER = 3  # failed shell assessments in a row before the user is told
@@ -99,9 +102,12 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
         "auto": AutoApprove(assess if assess_mode != "off" else None),
         "ask": AskUser(ask, remembered, assess_asked),
     }
+    available["git"] = GitRules(settings.git_write, lambda: holder["s"].deps.scratch, available["ask"].evaluate,
+                                settings.secret_files)
+    available["protected"] = ProtectedAsk(available["ask"].evaluate)
     if "auto" in settings.approval and assess_mode == "off":
         print("jimbo: auto approval is off because jimbo-shell-assess mode is off", file=sys.stderr)
-    policies = [available["plan"], *(available[n] for n in settings.approval)]
+    policies = [*(available[n] for n in HEAD), *(available[n] for n in settings.approval)]
 
     async def observe(call, v):
         if v.action == "allow" and call.assessment is None and assess_mode == "always":
@@ -119,7 +125,13 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     scratch_root = (settings.user_dir / "scratch").expanduser().resolve()
     scratch_root.mkdir(parents=True, exist_ok=True)
     prune_scratch(scratch_root, settings.scratch_keep_days)
-    sandbox = build_sandbox(settings, workspace, scratch_root)
+    key_envs = [e for name, p in settings.providers.items() for e in (p.api_key_env, *p.fallback_key_envs) if e]
+    configure_env(settings.shell_env_keep, key_envs)
+    add_env_secrets(is_secret_env)
+    skipped: list[dict] = []
+    sandbox = build_sandbox(settings, workspace, scratch_root, skipped)
+    if note := startup_note(sandbox, skipped):
+        print(f"jimbo: {note}", file=sys.stderr)
     gate = ApprovalGate(policies, observe)
     # Started with --yolo or --auto: "default" means the normal chain, not that one.
     default_chain = (settings.approval if not {"yolo", "auto"} & set(settings.approval)
@@ -128,6 +140,9 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     deps = Deps(workspace=workspace, gate=gate, sandbox=sandbox,
                 shell_timeout=settings.shell_timeout, shell_timeout_max=settings.shell_timeout_max,
                 models=router, secret_files=settings.secret_files, scratch_root=scratch_root,
+                git_write=settings.git_write, sandbox_skipped=skipped, protected=settings.protected(),
+                protected_write=settings.protected_write,
+                read_paths=[*(p.expanduser().resolve() for p in settings.read_paths), *dependency_dirs(workspace)],
                 ask_user=getattr(frontend, "ask_questions", None))
     if settings.lsp:
         if isinstance(sandbox, ContainerSandbox):  # servers run in the container, so look for them in its image

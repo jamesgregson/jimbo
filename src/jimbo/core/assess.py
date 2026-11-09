@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .llm_tasks import run_task
+from .outside import outside_paths
 from .models import ModelRouter
 
 TASK = "jimbo-shell-assess"
@@ -115,14 +116,13 @@ _CHECKS: list[tuple[Risk, re.Pattern[str], str]] = [(r, re.compile(p), why) for 
     ("high", r"(?i)\b(drop\s+(table|database|schema|index|view|user|role)|truncate\s+(table\s+)?\w|delete\s+from"
              r"|alter\s+table|insert\s+into|update\s+\w+\s+set)\b|\bflush(all|db)\b|\bdropDatabase\b|\bdeleteMany\b",
      "changes database data"),
-    ("high", rf"\bssh(?![\w-])|\b(scp|rsync)\b{_SEG}\s(\S+@)?[\w.-]+:[^\s;&|]*\s*($|[;&|])",
+    ("high", rf"(?<![\w./-])ssh(?![\w-])|\b(scp|rsync)\b{_SEG}\s(\S+@)?[\w.-]+:[^\s;&|]*\s*($|[;&|])",
      "runs commands on or copies files to another machine"),
     ("high", r"\b(chmod|chown)\s+(-\w+\s+)*-\w*R", "recursive permission change"),
-    ("medium", r"\b(curl|wget|ssh|scp|rsync|nc)(?![\w-])", "network access"),
+    ("medium", r"(?<![\w./-])(curl|wget|ssh|scp|rsync|nc)(?![\w-])", "network access"),
     ("medium", r"\b(pip|pip3|npm|pnpm|yarn|uv|cargo|gem|brew|apt|apt-get)\s+(install|add|i)\b", "installs packages"),
     ("medium", r"\b(rm|mv|kill|pkill|docker|kubectl)\b", "removes, moves or stops things"),
 ]]
-_REDIRECT = re.compile(r"(?<![0-9&])>>?\s*(\"[^\"]+\"|'[^']+'|[^\s;|&<>]+)")
 # Requests that change something on a server. Fine against a test server on this machine, high otherwise.
 _HTTP_WRITE = re.compile(rf"(?i)\bcurl\b{_SEG}\s(-X\s*|--request\s+)['\"]?(POST|PUT|PATCH|DELETE)\b"
                          rf"|\bcurl\b{_SEG}\s(-d|--data(-\w+)?|-F|--form|-T|--upload-file|--json)\b"
@@ -142,8 +142,8 @@ def _local_only(command: str) -> bool:
 
 
 def check_command(command: str, workspace: Path, scratch: Path | None = None) -> tuple[Risk, list[str]]:
-    """The deterministic floor: the highest matching risk and why. Cheap, and not fooled by wording. Writes to the
-    workspace, /tmp and `scratch` are fine."""
+    """The deterministic floor: the highest matching risk and why. Cheap, and not fooled by wording. Reading outside
+    the workspace and `scratch` is medium, writing there high."""
     risk: Risk = "low"
     reasons: list[str] = []
     for level, pattern, why in _CHECKS:
@@ -154,14 +154,10 @@ def check_command(command: str, workspace: Path, scratch: Path | None = None) ->
     if _HTTP_WRITE.search(command) and not _local_only(command):
         reasons.append("sends a request that changes a server other than this machine")
         risk = max(risk, "high", key=RANK.__getitem__)
-    roots = [r.resolve() for r in (workspace, Path("/tmp"), *([scratch] if scratch else []))]
-    for m in _REDIRECT.finditer(command):
-        target = m.group(1).strip("'\"")
-        if target.startswith(("~", "/")) and not target.startswith("/dev/null"):
-            p = Path(target).expanduser()
-            if not any(p.resolve().is_relative_to(r) for r in roots):
-                reasons.append(f"writes outside the workspace ({target})")
-                risk = max(risk, "high", key=RANK.__getitem__)
+    for reach in outside_paths(command, workspace, [scratch] if scratch else []):
+        level: Risk = "high" if reach.write else "medium"
+        reasons.append(f"{'writes' if reach.write else 'reads'} outside the workspace ({reach.path})")
+        risk = max(risk, level, key=RANK.__getitem__)
     return risk, list(dict.fromkeys(reasons))
 
 

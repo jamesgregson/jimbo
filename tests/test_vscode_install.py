@@ -37,3 +37,49 @@ def test_errors(vsix, runs, argv, make, error):
     with pytest.raises(ValueError, match=error):
         vscode_install.install(argv)
     assert runs == []
+
+
+@pytest.fixture
+def clone(tmp_path, monkeypatch):
+    folder = tmp_path / "vscode"
+    folder.mkdir()
+    (folder / "package.json").write_text("{}")
+    monkeypatch.setattr(vscode_install, "VSCODE_DIR", folder)
+    monkeypatch.setattr(vscode_install.shutil, "which", lambda name: f"/bin/{name}" if name != "missing" else None)
+    return folder
+
+
+def test_build_runs_bundle_in_the_vscode_folder(clone, runs, monkeypatch):
+    monkeypatch.setattr(vscode_install.subprocess, "run",
+                        lambda argv, cwd: runs.append((argv, cwd)) or subprocess.CompletedProcess(argv, 0))
+    (clone / "node_modules").mkdir()
+    vscode_install.build([])
+    assert runs == [(["/bin/npm", "run", "bundle"], clone)]
+
+
+def test_build_installs_dependencies_when_missing(clone, monkeypatch):
+    calls = []
+    monkeypatch.setattr(vscode_install.subprocess, "run",
+                        lambda argv, cwd: calls.append(argv) or subprocess.CompletedProcess(argv, 0))
+    vscode_install.build([])
+    assert calls == [["/bin/npm", "install"], ["/bin/npm", "run", "bundle"]]
+
+
+def test_build_rejects_arguments(clone, runs):
+    with pytest.raises(ValueError, match="usage"):
+        vscode_install.build(["x"])
+    assert runs == []
+
+
+def test_build_needs_npm(clone, runs, monkeypatch):
+    monkeypatch.setattr(vscode_install.shutil, "which", lambda name: None)
+    with pytest.raises(ValueError, match="'npm' is not on PATH"):
+        vscode_install.build([])
+    assert runs == []
+
+
+def test_build_needs_a_clone(tmp_path, runs, monkeypatch):
+    monkeypatch.setattr(vscode_install, "VSCODE_DIR", tmp_path / "missing")
+    with pytest.raises(ValueError, match="works in a clone"):
+        vscode_install.build([])
+    assert runs == []

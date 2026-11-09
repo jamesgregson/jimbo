@@ -1,10 +1,12 @@
 import asyncio
+from pathlib import Path
 
 from pydantic_ai import ModelRetry, RunContext, Tool
 from pydantic_ai.tools import ToolDefinition
 
 from ..core.deps import Deps, ToolDenied
-from .sandbox import SHELL, SandboxError, kill, spawn
+from ..core.outside import blocked_notes, outside_paths
+from .sandbox import GIT_ENV, SHELL, SandboxError, kill, spawn
 
 MAX_OUTPUT_BYTES = 30_000
 
@@ -78,10 +80,26 @@ class BackgroundProcess:
             await self.proc.wait()
 
 
+def command_env(d: Deps) -> dict[str, str]:
+    """Variables set for a shell command: GIT_ENV, and TMPDIR in the scratch directory so temporary files land there."""
+    env = dict(GIT_ENV)
+    if d.sandbox and d.sandbox.container:  # mounted files can look owned by someone else, and git then refuses them
+        n = int(env["GIT_CONFIG_COUNT"])
+        env |= {"GIT_CONFIG_COUNT": str(n + 1), f"GIT_CONFIG_KEY_{n}": "safe.directory", f"GIT_CONFIG_VALUE_{n}": "*"}
+    if d.scratch:
+        tmp = d.scratch / "tmp"
+        try:
+            tmp.mkdir(parents=True, exist_ok=True)
+            env["TMPDIR"] = str(tmp.resolve())
+        except OSError:
+            pass
+    return env
+
+
 async def _start(d: Deps, command: str) -> asyncio.subprocess.Process:
     argv = [d.sandbox.shell if d.sandbox else SHELL, "-c", command]
     try:
-        return await spawn(d.sandbox, argv, cwd=d.workspace, stdin=asyncio.subprocess.DEVNULL,
+        return await spawn(d.sandbox, argv, cwd=d.workspace, env=command_env(d), stdin=asyncio.subprocess.DEVNULL,
                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     except SandboxError as e:
         raise ModelRetry(str(e)) from None
@@ -102,11 +120,13 @@ async def shell(ctx: RunContext[Deps], command: str, timeout: int | None = None,
     t = max(1, min(timeout or d.shell_timeout, d.shell_timeout_max))
     where = d.sandbox.describe() if d.sandbox else "NOT sandboxed"
     verb, limit = ("run in background", "no timeout") if background else ("run", f"timeout {t}s")
+    reach = outside_paths(command, d.workspace, [*d.read_roots(), *([d.scratch_root] if d.scratch_root else [])])
+    outside = f"\n\nReaches outside the workspace: {', '.join(map(str, reach))}" if reach else ""
     try:
         await d.authorize(ctx.tool_call_id, "shell", {"command": command}, f"{verb}: {' '.join(command.split())[:120]}",
-                          detail=f"$ {command}\n\n({where}; {limit})")
+                          detail=f"$ {command}{outside}\n\n({where}; {limit})")
     except ToolDenied as e:
-        raise ModelRetry(str(e)) from e
+        raise ModelRetry(str(e) + (d.went_outside() if reach else "")) from e
     proc = await _start(d, command)
     if background:
         pid = str(len(d.processes) + 1)
@@ -130,7 +150,20 @@ async def shell(ctx: RunContext[Deps], command: str, timeout: int | None = None,
     except asyncio.CancelledError:  # run interrupted: don't leave the command running
         await kill(d.sandbox, proc)
         raise
-    return f"{status}\n{out.text()}".rstrip()
+    text = out.text()
+    return f"{status}\n{text}".rstrip() + _sandbox_notes(d, text, reach)
+
+
+def _sandbox_notes(d: Deps, output: str, reach: list) -> str:
+    """Notes on paths the sandbox stopped the command from using, and the stay-inside notice when it is due."""
+    if d.sandbox is None:
+        return ""
+    readable = getattr(d.sandbox, "readable", None) or []
+    notes = blocked_notes(output, d.workspace, d.scratch, readable, {Path(r.path).expanduser() for r in reach
+                                                                     if r.write})
+    if not notes:
+        return ""
+    return "\n" + "\n".join(notes) + d.went_outside()
 
 
 def _process(ctx: RunContext[Deps], id: str) -> BackgroundProcess:

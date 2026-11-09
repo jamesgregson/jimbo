@@ -21,7 +21,10 @@ UNTRUSTED_KEYS = {"model", "api_key", "ollama_base_url", "openai_base_url", "ope
                   "workspace", "web_host", "approval", "approval_allow", "sandbox", "sandbox_writable",
                   "sandbox_network", "sandbox_image", "sandbox_readonly", "sandbox_ports", "sandbox_env",
                   "sandbox_memory", "sandbox_cpus", "log_dir", "user_dir", "scratch_keep_days", "providers",
-                  "model_aliases", "models", "tasks", "secret_files", "lsp_servers"}
+                  "model_aliases", "models", "tasks", "secret_files", "lsp_servers", "git_write",
+                  "sandbox_readable", "sandbox_system_temp", "secret_files_shell", "shell_env_keep", "read_paths",
+                  "protected_write"}
+ALWAYS_PROTECTED = [".git/hooks/**", ".git/config"]  # in protected_paths whatever the config says
 RENAMED_TASKS = {"shell_assess": "jimbo-shell-assess", "compaction": "jimbo-compaction"}
 
 
@@ -133,9 +136,15 @@ class Settings(BaseSettings):
     # "tool" or "tool:<glob on first arg>", e.g. "shell:git status*", "read_file:.env*". Deny wins.
     approval_allow: list[str] = []
     approval_deny: list[str] = []
+    # False: shell commands may only read git. True: they may change the local repository, asking each time.
+    # Changing a remote (git push, gh pr create, ...) is always denied.
+    git_write: bool = False
     # File names the model can't read or grep, even with --yolo. Shell can still reach them, with approval.
     secret_files: list[str] = [".env", ".env.local", ".env.*.local", ".env.development", ".env.production",
-                               ".env.staging", ".env.test", "*.pem", "*.key", "id_rsa", "id_ed25519"]
+                               ".env.staging", ".env.test", "*.pem", "*.key", "id_rsa", "id_ed25519", "id_ecdsa",
+                               "id_dsa", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.kdbx", ".netrc", ".npmrc",
+                               ".pypirc", ".git-credentials", "credentials.json", "service-account*.json",
+                               "*.tfstate", "*.tfstate.backup", ".htpasswd", "kubeconfig"]
     request_limit: int = 50
     log_sessions: bool = True
     log_dir: Path = Path.home() / ".jimbo" / "sessions"
@@ -155,7 +164,20 @@ class Settings(BaseSettings):
     shell_timeout_max: int = 600
     # auto: sandbox-exec when available (macOS); on: refuse to run without it; docker, podman: a container
     sandbox: SandboxMode = "auto"
-    sandbox_writable: list[Path] = []  # extra writable paths besides workspace, temp and cache dirs
+    sandbox_writable: list[Path] = []  # extra writable paths besides workspace, scratch and cache dirs
+    # seatbelt: extra folders in the home folder commands may read. The rest of it is unreadable, except tool folders.
+    sandbox_readable: list[Path] = []
+    sandbox_system_temp: bool = False  # seatbelt: True lets commands write /tmp and the macOS temp folder again
+    read_paths: list[Path] = []  # extra read-only folders for read_file, grep, glob and list_dir, e.g. library source
+    shell_env_keep: list[str] = []  # variables passed to commands even though their names look secret
+    # Files that run code when the project is used later. File tools and sandboxed commands can't change them. A
+    # workspace config adds to the list; ALWAYS_PROTECTED can't be removed.
+    protected_paths: list[str] = [".git/hooks/**", ".git/config", ".github/**", ".gitlab-ci.yml", ".vscode/**",
+                                  ".idea/**", ".envrc", ".husky/**", ".claude/settings*.json"]
+    # deny: file tools can't change protected_paths. ask: they can, asking each time in every mode. Commands can't
+    # write them in a sandbox either way.
+    protected_write: Literal["deny", "ask"] = "deny"
+    secret_files_shell: bool = False  # True: commands can't read secret_files either (seatbelt; masked in containers)
     sandbox_network: bool = True
     sandbox_image: str = ""  # docker, podman: empty means the bundled image, built on first use
     sandbox_readonly: list[Path] = []  # docker, podman: extra paths mounted read-only
@@ -185,9 +207,16 @@ class Settings(BaseSettings):
         merged = {**user, **{k: v for k, v in project.items() if k not in UNTRUSTED_KEYS}}
         if deny := [*user.get("approval_deny", []), *project.get("approval_deny", [])]:
             merged["approval_deny"] = deny  # project deny rules add to the user's, never replace them
+        if "protected_paths" in project:  # a workspace adds protected paths, never removes them
+            base = user.get("protected_paths", cls.model_fields["protected_paths"].default)
+            merged["protected_paths"] = list(dict.fromkeys([*base, *project["protected_paths"]]))
         if off := [*user.get("lsp_disabled", []), *project.get("lsp_disabled", [])]:
             merged["lsp_disabled"] = off
         return init_settings, InitSettingsSource(settings_cls, env), InitSettingsSource(settings_cls, merged)
+
+    def protected(self) -> list[str]:
+        """protected_paths, with ALWAYS_PROTECTED."""
+        return list(dict.fromkeys([*ALWAYS_PROTECTED, *self.protected_paths]))
 
     def task(self, name: str) -> TaskConfig:
         return self.tasks.get(name) or TaskConfig()

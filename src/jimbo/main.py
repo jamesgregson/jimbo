@@ -15,6 +15,7 @@ from .frontends.registry import build_frontend, pick_ui
 from .providers.preflight import inspect_model
 from .tools.container_sandbox import rebuild
 from .tools.shell import kill_background
+from .vscode_install import build as build_vscode
 from .vscode_install import install as install_vscode
 from .wiring import build_session
 
@@ -35,9 +36,10 @@ def parser() -> argparse.ArgumentParser:
                     help="continue a saved session (the most recent if no id/prefix is given)")
     ap.add_argument(ACCEPT_FLAG, action="store_true",
                     help="you have read the risk warning and accept it: show it without asking you to confirm")
-    ap.add_argument("--sandbox", choices=["auto", "on", "off", "docker", "podman"],
-                    help="where shell commands run, in place of the sandbox setting: auto (sandbox-exec on macOS "
-                         "when available), on (sandbox-exec or refuse to start), off, docker or podman")
+    ap.add_argument("--sandbox", choices=["auto", "seatbelt", "on", "off", "docker", "podman"],
+                    help="where shell commands run, in place of the sandbox setting: auto (podman, then docker, "
+                         "then sandbox-exec, using the first that works), seatbelt (sandbox-exec when available), "
+                         "on (sandbox-exec or refuse to start), off, docker or podman")
     return ap
 
 
@@ -64,9 +66,9 @@ def main() -> None:
         except ValueError as e:
             raise SystemExit(f"jimbo: {e}") from None
         return
-    if sys.argv[1:3] == ["vscode", "install"] and len(sys.argv) <= 4:
+    if sys.argv[1:2] == ["vscode"] and sys.argv[2:3] in (["install"], ["build"]):
         try:
-            install_vscode(sys.argv[3:])
+            (install_vscode if sys.argv[2] == "install" else build_vscode)(sys.argv[3:])
         except ValueError as e:
             raise SystemExit(f"jimbo: {e}") from None
         return

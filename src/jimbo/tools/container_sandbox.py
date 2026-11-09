@@ -15,6 +15,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -37,6 +38,10 @@ STOP_EXIT = 137  # SIGKILL, which is also what the kernel's out-of-memory killer
 _KILL_RUN = ('for _ in 1 2; do for p in /proc/[0-9]*; do tr "\\0" "\\n" < "$p/environ" 2>/dev/null '
              '| grep -qxF "JIMBO_RUN=$1" && kill -KILL "${p#/proc/}" 2>/dev/null; done; done; true')
 _FIND = 'for c in "$@"; do command -v "$c" >/dev/null 2>&1 && echo "$c"; done; true'
+
+
+MAX_MASK_SCAN = 50_000  # files looked at for secret_files when the container starts
+MAX_MASKED = 200
 
 
 @dataclass(frozen=True)
@@ -82,14 +87,14 @@ def parse_info(cli: str, info: dict) -> Runtime:
     return Runtime(cli, "docker", any("name=rootless" in o for o in opts), any("name=selinux" in o for o in opts))
 
 
-def probe(cli: str = "docker") -> Runtime:
-    """What runs behind `cli`. Raises Unavailable when it is missing or doesn't answer in 10s."""
+def probe(cli: str = "docker", timeout: float = 10) -> Runtime:
+    """What runs behind `cli`. Raises Unavailable when it is missing or doesn't answer in `timeout` seconds."""
     try:
-        r = _cli(cli, "info", "--format", "{{json .}}", timeout=10)
+        r = _cli(cli, "info", "--format", "{{json .}}", timeout=timeout)
     except FileNotFoundError:
         raise Unavailable(f"{cli} is not installed") from None
     except subprocess.TimeoutExpired:
-        raise Unavailable(f"{cli} info didn't answer in 10s") from None
+        raise Unavailable(f"{cli} info didn't answer in {timeout:g}s") from None
     try:
         info = json.loads(r.stdout) if r.returncode == 0 else {}
     except json.JSONDecodeError:
@@ -255,8 +260,15 @@ class ContainerSandbox:
 
     def __init__(self, image: str, workspace: Path, *, runtime: Runtime = Runtime(), writable: list[Path] = (), readonly: list[Path] = (),
                  network: bool = True, ports: list[tuple[int, int]] = (), env: dict[str, str] | None = None,
-                 memory: str = "", cpus: float = 0) -> None:
+                 memory: str = "", cpus: float = 0, git_write: bool = True, secret_files: list[str] = (),
+                 protected: list[str] = ()) -> None:
+        """`git_write` False: the workspace's git folders are mounted read-only. True: only .git/hooks and
+        .git/config are. `secret_files`: workspace files with these names, as they are when the container starts,
+        are covered with an empty file."""
         self.image = image
+        self.git_write = git_write
+        self.secret_files = list(secret_files)
+        self.protected = list(protected)
         self.runtime = runtime
         self.cli = runtime.cli
         self.kind: Engine = runtime.engine
@@ -279,8 +291,50 @@ class ContainerSandbox:
 
     # ---- the container ----
 
+    def locked(self) -> list[Path]:
+        """Existing paths in the workspace's git folders that are mounted read-only over the workspace."""
+        from .sandbox import git_dirs
+        dirs = git_dirs(self.workspace)
+        paths = [p for d in dirs for p in (d / "hooks", d / "config")] if self.git_write else dirs
+        return [p.resolve() for p in [*paths, *self.protected_found()] if p.exists()]
+
+    def protected_found(self) -> list[Path]:
+        """Existing workspace paths matching `protected`: a folder for `dir/**`, and matching files."""
+        if not self.protected:
+            return []
+        from .search import SKIP_DIRS, glob_to_regex
+        found = [self.workspace / g[:-3] for g in self.protected if g.endswith("/**") and "*" not in g[:-3]]
+        rxs = [glob_to_regex(g) for g in self.protected]
+        seen = 0
+        for top, dirs, files in os.walk(self.workspace):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            for f in files:
+                rel = Path(top, f).relative_to(self.workspace).as_posix()
+                if any(rx.fullmatch(rel) for rx in rxs) and not any(Path(top, f).is_relative_to(d) for d in found):
+                    found.append(Path(top, f))
+            seen += len(files)
+            if seen > MAX_MASK_SCAN:
+                break
+        return [p for p in found if not (p.is_relative_to(self.workspace / ".git"))]
+
+    def masked(self) -> list[Path]:
+        """Files in the workspace matching `secret_files`, covered with /dev/null in the container."""
+        if not self.secret_files:
+            return []
+        from .search import SKIP_DIRS
+        found, seen = [], 0
+        for top, dirs, files in os.walk(self.workspace):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            seen += len(files)
+            found += [Path(top, f).resolve() for f in files if any(fnmatchcase(f, g) for g in self.secret_files)]
+            if seen > MAX_MASK_SCAN or len(found) > MAX_MASKED:
+                break
+        return found[:MAX_MASKED]
+
     def run_argv(self) -> list[str]:
-        mounts = [(self.workspace, ""), *((p, "") for p in self.writable), *((p, ":ro") for p in self.readonly)]
+        mounts = [(self.workspace, ""), *((p, "") for p in self.writable), *((p, ":ro") for p in self.readonly),
+                  *((p, ":ro") for p in self.locked())]
+        masks = [x for p in self.masked() for x in ("-v", f"/dev/null:{p}:ro")]
         argv = [self.cli, "run", "-d", "--init", "--name", self.name, "--label", f"{PID_LABEL}={os.getpid()}",
                 "--label", f"jimbo.workspace={self.workspace}", "--user", f"{os.getuid()}:{os.getgid()}",
                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", str(PIDS_LIMIT)]
@@ -298,7 +352,7 @@ class ContainerSandbox:
             argv += ["--cpus", str(self.cpus)]
         for p, ro in dict(mounts).items():
             argv += ["-v", f"{p}:{p}{ro}"]
-        argv += ["-v", f"{CACHE_VOLUME}:{HOME}/.cache"]
+        argv += [*masks, "-v", f"{CACHE_VOLUME}:{HOME}/.cache"]
         for k, v in {"HOME": HOME, "TERM": "dumb", "LANG": "C.UTF-8", **self.env}.items():
             argv += ["-e", f"{k}={v}"]
         return [*argv, "-w", str(self.workspace), "--entrypoint", "sleep", self.image, "infinity"]
@@ -470,7 +524,12 @@ class ContainerSandbox:
     def describe(self) -> str:
         net = "network allowed" if self.network else "no network"
         shell = "" if self.shell == "bash" else "; no bash in the image, using sh"
-        return f"in {self.kind} container {self.name}, image {self.image}; {self.mounts_text()}; {net}{shell}"
+        git = "; .git hooks and config read-only" if self.git_write else "; git read-only"
+        if self.protected:
+            git += "; protected_paths read-only (those there when the container started)"
+        if self.secret_files:
+            git += "; secret files hidden (only those there when the container started)"
+        return f"in {self.kind} container {self.name}, image {self.image}; {self.mounts_text()}{git}; {net}{shell}"
 
     def status(self) -> str:
         """What /sandbox shows."""
@@ -499,11 +558,12 @@ async def _run(*argv: str) -> int:
     return await p.wait()
 
 
-def build(settings: "Settings", workspace: Path, cli: str = "docker", scratch: Path | None = None) -> ContainerSandbox:
-    """The sandbox for `sandbox = "docker"` or `"podman"`, with `scratch` mounted too. Checks the runtime and gets
-    the image now, before any UI starts."""
+def build(settings: "Settings", workspace: Path, cli: str = "docker", scratch: Path | None = None,
+          runtime: Runtime | None = None) -> ContainerSandbox:
+    """The sandbox for `sandbox = "docker"` or `"podman"`, with `scratch` mounted too. Checks the runtime (unless
+    `runtime` is the answer from a probe already made) and gets the image now, before any UI starts."""
     try:
-        runtime = probe(cli)
+        runtime = runtime or probe(cli)
     except Unavailable as e:
         raise ValueError(f'sandbox = "{cli}" but {cli.capitalize()} is not available: {e}. {_advice(cli)}, or set '
                          'sandbox to "auto" or "off".') from None
@@ -512,7 +572,9 @@ def build(settings: "Settings", workspace: Path, cli: str = "docker", scratch: P
     sandbox = ContainerSandbox(image, workspace, runtime=runtime, writable=writable,
                                readonly=settings.sandbox_readonly, network=settings.sandbox_network,
                                ports=[parse_port(p) for p in settings.sandbox_ports], env=settings.sandbox_env,
-                               memory=settings.sandbox_memory, cpus=settings.sandbox_cpus)
+                               memory=settings.sandbox_memory, cpus=settings.sandbox_cpus,
+                               git_write=settings.git_write, protected=settings.protected(),
+                               secret_files=settings.secret_files if settings.secret_files_shell else [])
     remove_stale(cli)
     ensure_image(image, cli)
     return sandbox

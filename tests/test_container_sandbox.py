@@ -55,6 +55,20 @@ def test_run_argv(tmp_path):
     assert "OPENROUTER" not in joined and f"label {ds.PID_LABEL}={os.getpid()}" in joined.replace("--label ", "label ")
 
 
+def test_git_folders_are_mounted_read_only(tmp_path):
+    ws = tmp_path.resolve()
+    (ws / ".git" / "hooks").mkdir(parents=True)
+    (ws / ".git" / "config").write_text("")
+    joined = " ".join(ds.ContainerSandbox("img:1", ws, git_write=False).run_argv())
+    assert f"-v {ws / '.git'}:{ws / '.git'}:ro" in joined
+    box = ds.ContainerSandbox("img:1", ws, git_write=True)
+    joined = " ".join(box.run_argv())
+    assert f"{ws / '.git'}:{ws / '.git'}:ro" not in joined
+    assert f"-v {ws / '.git' / 'hooks'}:{ws / '.git' / 'hooks'}:ro" in joined and "config:ro" in joined
+    assert "hooks and config read-only" in box.describe()
+    assert "git read-only" in ds.ContainerSandbox("img:1", ws, git_write=False).describe()
+
+
 def test_run_argv_podman(tmp_path, monkeypatch):
     ws = tmp_path.resolve()
     rootless = ds.ContainerSandbox("img:1", ws, runtime=ds.Runtime("podman", "podman", rootless=True)).run_argv()
@@ -140,7 +154,7 @@ def test_parse_port():
 def test_describe(tmp_path):
     box = ds.ContainerSandbox("img:1", tmp_path, readonly=[tmp_path / "cfg"])
     assert box.describe() == (f"in docker container {box.name}, image img:1; the workspace and {tmp_path / 'cfg'} "
-                              "(read-only) are mounted; network allowed")
+                              "(read-only) are mounted; .git hooks and config read-only; network allowed")
     assert "only the workspace is mounted" in ds.ContainerSandbox("img:1", tmp_path).describe()
     assert "not started" in box.status()
 
@@ -394,3 +408,41 @@ def test_build_cli(tmp_path, monkeypatch):
     assert build_cli([]) == "podman"
     with pytest.raises(ValueError, match="usage"):
         build_cli(["lxc"])
+
+
+async def test_git_is_read_only_in_the_container(rt, tmp_path):
+    ws = tmp_path.resolve()
+    subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+    (ws / "a.txt").write_text("A")
+    b = ds.ContainerSandbox(IMAGE, ws, runtime=rt, git_write=False)
+    try:
+        out = await shell(ctx(b, ws), "git status --short; git add a.txt; echo rc=$?")
+        assert "?? a.txt" in out and "rc=128" in out
+    finally:
+        await b.close()
+
+
+def test_secret_files_are_masked_only_when_asked(tmp_path):
+    ws = tmp_path.resolve()
+    (ws / "svc").mkdir()
+    (ws / ".env").write_text("A=1")
+    (ws / "svc" / "key.pem").write_text("K")
+    (ws / "node_modules").mkdir()
+    (ws / "node_modules" / ".env").write_text("skip")
+    assert ds.ContainerSandbox("img:1", ws).masked() == []
+    box = ds.ContainerSandbox("img:1", ws, secret_files=[".env", "*.pem"])
+    assert sorted(box.masked()) == [ws / ".env", ws / "svc" / "key.pem"]
+    joined = " ".join(box.run_argv())
+    assert f"-v /dev/null:{ws / '.env'}:ro" in joined and "secret files hidden" in box.describe()
+
+
+async def test_masked_secret_files_read_as_empty(rt, tmp_path):
+    ws = tmp_path.resolve()
+    (ws / ".env").write_text("SECRET=1")
+    b = ds.ContainerSandbox(IMAGE, ws, runtime=rt, secret_files=[".env"])
+    try:
+        out = await shell(ctx(b, ws), "cat .env; echo rc=$?; echo x > .env")  # the write goes to /dev/null
+        assert "SECRET" not in out and "rc=0" in out
+    finally:
+        await b.close()
+    assert (ws / ".env").read_text() == "SECRET=1"

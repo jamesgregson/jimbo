@@ -193,9 +193,10 @@ async def test_approval_shows_risk_assessment():
 
 async def test_toolbar_shows_model_and_modes():
     f = TuiFrontend(console=Console(file=StringIO()), ask=lambda m: None)
-    status = {"model": "p:m", "workspace": "/w", "mode": "normal", "yolo": False, "sandboxed": True}
+    status = {"model": "p:m", "workspace": "/w", "mode": "normal", "yolo": False, "sandboxed": True,
+              "sandbox": "seatbelt"}
     await f.render(Event(seq=1, session_id="s", kind="status", data=status))
-    assert f._toolbar() == "p:m · s · "  # the session id
+    assert f._toolbar() == "p:m · seatbelt sandbox · s · "  # the sandbox and the session id
     await f.render(Event(seq=2, session_id="s", kind="status", data={**status, "mode": "plan", "yolo": True}))
     assert "[PLAN]" in f._toolbar() and "[YOLO]" in f._toolbar()
     assert f.console.file.getvalue().count("jimbo · p:m") == 1  # the banner prints once

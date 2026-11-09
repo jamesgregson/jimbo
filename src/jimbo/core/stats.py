@@ -78,7 +78,5 @@ class AgentProgress:
 
 def sandbox_label(status: dict) -> str:
     """How a status line names the sandbox, from a `status` event."""
-    if not status.get("sandboxed"):
-        return "NOT sandboxed"
-    kind = status.get("sandbox")
-    return f"{kind} sandbox" if kind in ("docker", "podman") else "sandboxed"
+    from ..tools.sandbox import label
+    return label(status.get("sandbox") if status.get("sandboxed") else None, status.get("sandbox_network", True))

@@ -221,8 +221,8 @@ def test_requests_to_a_local_test_server_are_not_high(tmp_path, command):
     assert check_command(command, tmp_path)[0] == "medium"
 
 
-async def test_auto_asks_for_a_push_even_if_the_model_says_low(tmp_path):
-    s, fe = build(tmp_path, "git push origin main", Assessor(risk="low"), approval=AUTO)
+async def test_auto_asks_for_a_publish_even_if_the_model_says_low(tmp_path):
+    s, fe = build(tmp_path, "npm publish", Assessor(risk="low"), approval=AUTO)
     await s.send("go")
     assert fe.requests[0].assessment["risk"] == "high" and fe.requests[0].assessment["raised"] is True
 
@@ -248,6 +248,7 @@ def test_check_command_levels(tmp_path):
     assert risk("mkfs.ext4 /dev/sda1") == "critical"
     assert risk("dd if=/dev/zero of=/dev/sda") == "critical"
     assert risk("echo ls | sort") == "low"
+    assert risk("ls .ssh/") == "low" and risk("cat ~/.ssh/config") == "medium"  # a path, not the ssh command
 
 
 def test_writes_to_the_scratch_directory_are_low(tmp_path):

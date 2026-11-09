@@ -78,23 +78,30 @@ def list_files(root: Path, base: Path) -> list[str]:
     return sorted(out)
 
 
-async def _authorize_path(ctx: RunContext[Deps], tool: str, args: dict, summary: str, path: str) -> Path:
+async def _authorize_path(ctx: RunContext[Deps], tool: str, args: dict, summary: str,
+                          path: str) -> tuple[Path, Path, str]:
+    """The folder or file to search, the root its results are relative to (the workspace, or the read root it is
+    in), and the prefix results get: "" in the workspace, the root's path outside it."""
     try:
         await ctx.deps.authorize(ctx.tool_call_id, tool, args, summary, read_only=True)
-        p = resolve_in_workspace(ctx.deps.workspace, path)
+        p = ctx.deps.readable(path)
     except (PathEscape, ToolDenied) as e:
         raise ModelRetry(str(e)) from e
     if not p.exists():
         raise ModelRetry(f"{path!r} does not exist")
-    return p
+    ws = ctx.deps.workspace.resolve()
+    if p == ws or p.is_relative_to(ws):
+        return p, ws, ""
+    root = next(r for r in (x.resolve() for x in ctx.deps.read_roots()) if p == r or p.is_relative_to(r))
+    return p, root, f"{root}/"
 
 
 async def glob(ctx: RunContext[Deps], pattern: str, path: str = ".") -> str:
     """Find files by name, e.g. `**/*.py` or `test_*.py` (no '/' matches at any depth). Ignores git-ignored files."""
-    base = await _authorize_path(ctx, "glob", {"pattern": pattern, "path": path}, f"glob {pattern} in {path}", path)
+    base, root, prefix = await _authorize_path(ctx, "glob", {"pattern": pattern, "path": path},
+                                               f"glob {pattern} in {path}", path)
     rx = glob_to_regex(pattern)
-    root = ctx.deps.workspace
-    hits = [f for f in await asyncio.to_thread(list_files, root, base) if rx.fullmatch(f)]
+    hits = [prefix + f for f in await asyncio.to_thread(list_files, root, base) if rx.fullmatch(f)]
     out = hits[:MAX_GLOB_RESULTS]
     if len(hits) > MAX_GLOB_RESULTS:
         out.append(f"[{len(hits) - MAX_GLOB_RESULTS} more; narrow the pattern or path]")
@@ -124,17 +131,18 @@ def _grep(root: Path, files: list[str], rx: re.Pattern) -> tuple[list[str], int]
 async def grep(ctx: RunContext[Deps], pattern: str, path: str = ".", glob: str | None = None,
                ignore_case: bool = False) -> str:
     """Search file contents with a Python regex. Returns `path:line:text`. `glob` filters files, e.g. `*.py`."""
-    base = await _authorize_path(ctx, "grep", {"pattern": pattern, "path": path}, f"grep {pattern!r} in {path}", path)
+    base, root, prefix = await _authorize_path(ctx, "grep", {"pattern": pattern, "path": path},
+                                               f"grep {pattern!r} in {path}", path)
     try:
         rx = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
     except re.error as e:
         raise ModelRetry(f"invalid regex: {e}") from None
-    root = ctx.deps.workspace
     files = [f for f in await asyncio.to_thread(list_files, root, base) if not ctx.deps.is_secret(f)]
     if glob:
         frx = glob_to_regex(glob)
         files = [f for f in files if frx.fullmatch(f)]
     out, total = await asyncio.to_thread(_grep, root, files, rx)
+    out = [prefix + line for line in out]
     if total > len(out):
         out.append(f"[{total - len(out)} more matches; narrow the pattern, path or glob]")
     return "\n".join(out) or "[no matches]"

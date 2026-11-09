@@ -57,6 +57,7 @@
                    background: currentColor; animation: pulse 1.2s infinite; }
   #thinking span:nth-child(2) { animation-delay: .2s; } #thinking span:nth-child(3) { animation-delay: .4s; }
   #status.off { color: var(--err); }
+  #st-sandbox { cursor: pointer; } #st-sandbox.unsafe { color: var(--err); font-weight: 600; }
   #main { flex: 1; min-height: 0; display: flex; }  /* the log and the todo list, between the stats and the input */
   #log { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 16px; }
   #log > * { max-width: 860px; margin-left: auto; margin-right: auto; }
@@ -182,7 +183,7 @@
 </head>
 <body>
 <header><h1>Jimbo</h1><span id="status" class="off">connecting…</span><a id="sid" target="_blank" title="Open this session's trace" hidden></a><button id="settings-btn" class="sec" type="button" title="Models and providers">Settings</button></header>
-<div id="stats"><select id="st-model" title="Model for this session (Settings saves it)" hidden></select><span id="st-status"></span><span id="st-cycle"></span><span id="st-ctx">context —</span><span class="meter" id="st-meter"><i></i></span><span id="st-turn"></span><span id="st-session"></span></div>
+<div id="stats"><select id="st-model" title="Model for this session (Settings saves it)" hidden></select><span id="st-status"></span><span id="st-sandbox" title="Sandbox"></span><span id="st-cycle"></span><span id="st-ctx">context —</span><span class="meter" id="st-meter"><i></i></span><span id="st-turn"></span><span id="st-session"></span></div>
 <div id="main"><div id="log"></div><aside id="todos" hidden></aside></div>
 <div id="thinking"><span></span><span></span><span></span> working…</div>
 <div id="hint"></div>
@@ -271,6 +272,15 @@ function scroll() { if (follow) log.scrollTop = log.scrollHeight; }
 // Any change: new rows, tool results filling in a card, streamed text. Images grow the log when they load.
 new MutationObserver(scroll).observe(log, { childList: true, subtree: true, characterData: true });
 log.addEventListener("load", scroll, true);
+// The sandbox in the status bar, from a status event; clicking it prints what it allows.
+let sandboxInfo = "";
+function showSandbox(d) {
+  const s = $("#st-sandbox");
+  s.textContent = d.sandboxed ? `${d.sandbox} sandbox${d.sandbox_network === false ? " (no network)" : ""}` : "NOT sandboxed";
+  sandboxInfo = [d.sandbox_detail, ...(d.sandbox_skipped || []).map(x => `skipped ${x.kind}: ${x.reason}`)].filter(Boolean).join("\n");
+  s.title = sandboxInfo || "Sandbox";
+  s.classList.toggle("unsafe", !d.sandboxed);
+}
 function add(node) { endThinking(); log.append(node); scroll(); return node; }
 // Reasoning stays open while it streams and folds away once the model moves on.
 function endThinking() { if (thinkSeg) { thinkSeg.open = false; thinkSeg = null; } }
@@ -445,7 +455,8 @@ function onEvent(ev) {
     case "context": lastCtx = d; showStats(d); break;
     case "status":
       currentModel = d.model; renderModelPicker();
-      $("#st-status").textContent = [d.mode === "plan" && "PLAN", d.yolo && "YOLO", d.auto && "AUTO", (d.sandbox === "docker" || d.sandbox === "podman") && `${d.sandbox} sandbox`, !d.sandboxed && "not sandboxed"].filter(Boolean).join(" · ");
+      $("#st-status").textContent = [d.mode === "plan" && "PLAN", d.yolo && "YOLO", d.auto && "AUTO"].filter(Boolean).join(" · ");
+      showSandbox(d);
       approvalMode = d.yolo ? "yolo" : d.auto ? "auto" : "default";
       document.querySelectorAll(".mode select").forEach(syncMode);
       break;
@@ -856,6 +867,7 @@ $("#settings-btn").onclick = () => {
 $("#settings-close").onclick = () => { $("#settings").hidden = true; };
 document.querySelectorAll("#settings .tabs button").forEach((b) => { b.onclick = () => { settingsTab = b.dataset.tab; renderSettings(); }; });
 connect();
+$("#st-sandbox").addEventListener("click", () => { if (sandboxInfo) add(el("div", "note", sandboxInfo)); });
 </script>
 </body>
 </html>

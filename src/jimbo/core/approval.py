@@ -21,6 +21,7 @@ class ToolCallInfo(BaseModel):
     assessment: dict | None = None  # advisory summary/risk, filled in by an Assessor
     wording: dict = {}  # ApprovalRequest fields that word the prompt for this call, e.g. {"title": ...}
     proposed: dict | None = None  # file tools: {"path", "text"}, the whole file after the change
+    protected: str | None = None  # file tools: the protected_paths file the call changes, when protected_write = "ask"
 
 
 class Verdict(BaseModel):
@@ -131,6 +132,24 @@ class PlanMode:
             return Verdict(action="ask", decided_by=self.name)
         return Verdict(action="deny", reason="plan mode: present a plan instead (call exit_plan)",
                        decided_by=self.name)
+
+
+class ProtectedAsk:
+    """Head of every chain: a file tool change to a protected file (protected_write = "ask") asks the user each
+    time, with no "always", so no other policy (auto, yolo, remembered) can allow it."""
+
+    name = "protected"
+
+    def __init__(self, ask: Callable[[ToolCallInfo], Awaitable[Verdict]]) -> None:
+        self._ask = ask
+
+    async def evaluate(self, call: ToolCallInfo) -> Verdict:
+        if not call.protected:
+            return Verdict(action="ask", decided_by=self.name)
+        call.detail = (f"This changes a protected file: {call.protected} (protected_paths; it can run code when the "
+                       f"project is used later)\n\n{call.detail or ''}").rstrip()
+        call.wording = {**call.wording, "always": None}
+        return await self._ask(call)
 
 
 class RememberedDecisions:
@@ -299,6 +318,7 @@ class AskUser:
             return Verdict(action="allow" if d.allow else "deny", reason=reason, decided_by="user")
 
 
+HEAD = ["plan", "git", "protected"]  # ahead of every chain, whatever the mode
 AUTO_CHAIN = ["rules", "readonly", "remembered", "auto", "ask"]
 YOLO_CHAIN = ["rules", "yolo"]  # deny rules still apply
 RISKY_MODES = ("auto", "yolo")
@@ -333,7 +353,8 @@ class ApprovalModes:
     def set(self, mode: str) -> None:
         self.check(mode)
         self.names = list(self.chains[mode])
-        self._gate.policies = [self._policies["plan"], *(self._policies[n] for n in self.names)]
+        head = [self._policies[n] for n in HEAD if n in self._policies]
+        self._gate.policies = [*head, *(self._policies[n] for n in self.names)]
 
 
 class ApprovalGate:

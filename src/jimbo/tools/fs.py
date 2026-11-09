@@ -1,4 +1,5 @@
 import difflib
+import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -41,6 +42,7 @@ async def read_file(ctx: RunContext[Deps], path: str, offset: int = 1, limit: in
         text = p.read_bytes()[:MAX_READ_BYTES * 4].decode("utf-8")
     except UnicodeDecodeError:
         raise ModelRetry(f"{path!r} is not valid UTF-8 text") from None
+    _saw(ctx, p)
     lines = text.splitlines()
     start = max(offset, 1) - 1
     chunk = lines[start:start + limit]
@@ -68,6 +70,28 @@ async def list_dir(ctx: RunContext[Deps], path: str = ".") -> str:
     return "\n".join(names) or "[empty]"
 
 
+def _digest(p: Path) -> str | None:
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _saw(ctx: RunContext[Deps], p: Path) -> None:
+    """Remember the file as the model now knows it."""
+    if (h := _digest(p)) is not None:
+        ctx.deps.seen_files[p] = h
+
+
+def _check_fresh(ctx: RunContext[Deps], p: Path, path: str) -> None:
+    """Refuse to change a file that changed (in an editor, or by a command) since the model last read or wrote it.
+    A file the model never saw has nothing to compare with."""
+    known = ctx.deps.seen_files.get(p)
+    if known is not None and p.is_file() and _digest(p) != known:  # kept until a read_file updates it
+        raise ModelRetry(f"{path} changed since you last read it (edited by the user or a command); read it again "
+                         "before changing it")
+
+
 def _proposed(p: Path, text: str) -> dict | None:
     """The file as it will be after a change, for frontends that show it in an editor; None if too large."""
     return {"path": str(p), "text": text} if len(text.encode("utf-8")) <= MAX_PROPOSED_BYTES else None
@@ -82,6 +106,7 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     """Create or overwrite a text file in the workspace or the scratch directory (parent directories are created)."""
     try:
         p = ctx.deps.writable(path)
+        _check_fresh(ctx, p, path)
         old = p.read_text("utf-8") if p.is_file() else ""
         verb = "overwrite" if p.is_file() else "create"
         await ctx.deps.authorize(ctx.tool_call_id, "write_file", {"path": path}, f"{verb} {path}",
@@ -93,9 +118,11 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
     if p.is_dir():
         raise ModelRetry(f"{path!r} is a directory")
     existed = p.is_file()
+    _check_fresh(ctx, p, path)  # again: the file may have changed while the user was being asked
     ctx.deps.checkpoints.record(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, "utf-8")
+    _saw(ctx, p)
     return f"wrote {len(content)} chars to {path}" + await errors_after_edit(ctx, [(p, old if existed else None)])
 
 
@@ -121,6 +148,7 @@ async def _edit(ctx: RunContext[Deps], path: str, edits: list[Edit]) -> tuple[Pa
         p = ctx.deps.writable(path)
         if not p.is_file():
             raise ModelRetry(f"{path!r} is not a file")
+        _check_fresh(ctx, p, path)
         text = updated = p.read_text("utf-8")
         total = 0
         for i, e in enumerate(edits, 1):
@@ -133,8 +161,10 @@ async def _edit(ctx: RunContext[Deps], path: str, edits: list[Edit]) -> tuple[Pa
         raise ModelRetry(str(e)) from e
     except UnicodeDecodeError:
         raise ModelRetry(f"{path!r} is not valid UTF-8 text") from None
+    _check_fresh(ctx, p, path)  # again: the file may have changed while the user was being asked
     ctx.deps.checkpoints.record(p)
     p.write_text(updated, "utf-8")
+    _saw(ctx, p)
     return p, text, total
 
 

@@ -108,7 +108,10 @@ class AgentSession:
         status = {"model": d.models.explain("main").spec if d.models else None, "workspace": str(d.workspace),
                   "mode": d.mode, "yolo": any(p.name == "yolo" for p in d.gate.policies),
                   "auto": any(p.name == "auto" for p in d.gate.policies),
-                  "sandboxed": d.sandbox is not None, "sandbox": d.sandbox.kind if d.sandbox else None}
+                  "sandboxed": d.sandbox is not None, "sandbox": d.sandbox.kind if d.sandbox else None,
+                  "sandbox_network": d.sandbox.network if d.sandbox else True,
+                  "sandbox_detail": d.sandbox.describe() if d.sandbox else "NOT sandboxed: commands run as you",
+                  "sandbox_skipped": d.sandbox_skipped}
         if initial or self._status_sent not in (None, status):
             self._status_sent = status
             await self.emit("status", **status)
@@ -400,6 +403,8 @@ class AgentSession:
         run = None
         if not self.nested:
             self.deps.checkpoints.begin()
+            self.deps.outside_attempts = 0
+            self.deps.failures, self.deps.stop_reason = {}, None
         base = self.total_usage
         self.turn_usage = RunUsage()
         try:
@@ -468,6 +473,8 @@ class AgentSession:
         u = self.turn_usage = result.usage
         self.total_usage = base + u
         await self.emit("assistant_text", text=result.output)
+        if self.deps.stop_reason and not self.nested:
+            await self.emit("warning", text=self.deps.stop_reason.split(". Reply")[0] + ".")
         await self._emit_usage()
         await self.emit_context()
         await self.emit("run_finished", ok=True)

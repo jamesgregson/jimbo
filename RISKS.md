@@ -37,23 +37,35 @@ as your attention when you answer it.
   misled. Fixed checks raise the rating for some known commands, but they are regular expressions and are
   easy to get around, for example with `python -c`, `bash -c`, or a script the model has just written. In
   practice, auto mode lets the model run code you have not seen.
-- **`--yolo` removes approvals.** Every call runs without asking. Only deny rules and `secret_files` still
-  apply.
+- **`--yolo` removes approvals.** Every call runs without asking. Only deny rules, `secret_files` and the git
+  rules still apply.
 - **Deny rules are best effort.** `approval_deny` matches text patterns. `bash -c "sudo …"`, a script file,
   or another spelling of the same command gets past them.
 - **`--ui json` with `--yolo` or `--auto` runs unattended.** Nobody sees the calls as they happen.
 
 ## The sandbox has gaps
 
-| Setting | Gaps |
-|---------|------|
-| `sandbox = "auto"` on Linux and other systems | There is no sandbox. Commands can read and write everything your user can. |
-| `sandbox = "auto"` on macOS (`sandbox-exec`) | Commands can **read every file** your user can, including `~/.ssh`, `~/.aws`, browser profiles and password stores. They can write to the project, temp folders and cache folders. The network is open. Commands inherit jimbo's environment variables, including API keys such as `OPENROUTER_API_KEY`. |
-| `sandbox = "docker"` or `"podman"` | The project and jimbo's scratch directory are mounted read-write. The network is open unless `sandbox_network = false`. Folders added with `sandbox_writable` or `sandbox_readonly` are reachable. The container engine and the kernel are shared with your computer. |
-| `sandbox = "off"` | There is no sandbox. |
+`sandbox = "auto"` uses Podman, then Docker, then `sandbox-exec`, and falls back to **no sandbox** if none of
+them works. Check the status line, or set `sandbox = "podman"`, `"docker"` or `"on"` to refuse to start
+without one.
 
-No sandbox protects the project folder. An approved command can change or delete any file in it, including
-the `.git` folder. `/undo` only reverts changes made with jimbo's file tools, not changes made by commands.
+| Sandbox | Gaps |
+|---------|------|
+| none (`auto` with nothing available, or `off`) | Commands can read and write everything your user can. Only secret-looking environment variables are removed. |
+| `sandbox-exec` on macOS (`auto` or `seatbelt`) | Commands can read everything outside your home folder, and in it the tool folders (`~/.cache`, `~/.local`, `~/.cargo`, `~/.npm` and others), folders on `PATH` and `~/.gitconfig`. They can see which files exist in your home folder and their sizes. They can write to the project, the scratch directories, cache folders and the macOS per-user temp folder. The network is open. Environment variables whose names don't look secret are passed on. git can read passwords saved in the macOS keychain. |
+| `sandbox = "docker"` or `"podman"` | The project and jimbo's scratch directory are mounted read-write. The network is open unless `sandbox_network = false`. Folders added with `sandbox_writable` or `sandbox_readonly` are reachable. The container engine and the kernel are shared with your computer. |
+
+No sandbox protects the project folder. An approved command can change or delete any file in it. The `.git`
+folder is read-only in every sandbox (only `.git/hooks` and `.git/config` with `git_write = true`), but not
+without one. `/undo` only reverts changes made with jimbo's file tools, not changes made by commands.
+
+## The git rules read text
+
+jimbo denies git commands that change the repository, and always denies commands that change a remote (see
+Git in the reference). These rules read the command's text. A script, a test or `python -c` that runs git gets
+past them. The sandbox's read-only `.git` and the missing credentials stop those, but without a sandbox only
+the text rules apply, and with `sandbox-exec` git can still use passwords from the macOS keychain. A program
+other than git or `gh` that talks to GitHub or another server is not covered.
 
 ## Changes in the project can run later, outside the sandbox
 
@@ -67,9 +79,16 @@ the project later on your own computer, outside any sandbox:
 - `.envrc` (direnv), editor settings and task files (`.vscode/`, `.idea/`) can run commands when you open
   the folder.
 
-Jimbo's file tools and approved commands can write all of these. A change made inside the container sandbox
-can run on your computer the next time you run `git commit`. After a session, check these files before you
-use the project outside the sandbox.
+Jimbo's file tools never write `.git`, and can't change the files in `protected_paths` unless
+`protected_write = "ask"` and you approve each change. By default the list is
+`.git/hooks`, `.git/config`, `.github/`, `.gitlab-ci.yml`, `.vscode/`, `.idea/`, `.envrc` (in any folder),
+`.husky/` and `.claude/settings*.json`. In a sandbox, commands can't write them either, except that a container
+only covers the ones that existed when it started. With no sandbox, commands can.
+
+`Makefile`, `package.json`, `pyproject.toml`, `setup.py`, test files and other build files are not protected,
+because changing them is normal work. A change made inside the container sandbox can run on your computer the
+next time you build or open the project. After a session, check these files before you use the project outside
+the sandbox.
 
 ## Data loss
 
@@ -103,13 +122,17 @@ for future sessions.
 
 - `secret_files` only stops `read_file`, `grep`, the language server tools and `show_image` from reading files
   such as `.env` and `*.pem`. An approved command such as `cat .env` can still read them, and so can a test
-  or script.
-- Without the container sandbox, commands can read your home folder: SSH keys, cloud credentials,
-  `~/.netrc`, `~/.gitconfig`, shell history, browser data and other API keys.
-- Without the container sandbox, commands get jimbo's environment variables, which usually include your
-  model provider API key.
-- Secrets that appear in file contents or command output are sent to the model provider and saved in the
-  session log.
+  or script, unless `secret_files_shell = true`. With that on, a container only hides the files that existed
+  when it started.
+- With no sandbox, commands can read your home folder: SSH keys, cloud credentials, `~/.netrc`,
+  `~/.gitconfig`, shell history, browser data and other API keys.
+- Environment variables are removed by name. A secret in a variable whose name doesn't contain `KEY`,
+  `TOKEN`, `SECRET`, `PASSWORD` or similar is passed to commands, except in a container.
+- jimbo hides secrets in tool results before the model and the session log see them: known formats (private
+  keys, AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic and OpenRouter keys, JWTs), your provider
+  API keys and the values of secret-looking environment variables. Any other secret in file contents or command
+  output, such as a database password, is sent to the model provider and saved in the session log. Your own
+  messages and `@path` attachments are not checked.
 
 ## What is sent to the model provider
 
@@ -162,6 +185,10 @@ than you expect. The evals make many requests. Use an API key with a spending li
 
 The model can write wrong code, break working code, delete tests, change tests so they pass, and report that
 work is done or tested when it is not. Read every change before you use it.
+
+jimbo refuses a file change when the file changed since the model last read it, so it doesn't overwrite your
+edits with an old copy. It only knows about files the model read or wrote with the file tools. A file changed by
+a command and not read again is checked; a file the model never read is not.
 
 ## The software itself
 
