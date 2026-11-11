@@ -30,6 +30,27 @@ def load_results(run_dir: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def suite_of(r: dict) -> str:
+    """A trial's suite. Runs from before suites have none: their tasks are all in core now."""
+    return r.get("suite") or "core"
+
+
+def by_suite(groups: dict[str, list[dict]]) -> dict[str, dict[str, list[dict]]]:
+    out: dict[str, dict[str, list[dict]]] = defaultdict(dict)
+    for task, rs in groups.items():
+        out[suite_of(rs[0])][task] = rs
+    return dict(sorted(out.items()))
+
+
+def graded(rs: list[dict]) -> list[dict]:
+    """The trials that have a result: not those waiting for their suite's grader."""
+    return [r for r in rs if r["pass"] is not None]
+
+
+def pending(rs: list[dict]) -> list[dict]:
+    return [r for r in rs if r["pass"] is None]
+
+
 def by_task(results: list[dict]) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = defaultdict(list)
     for r in sorted(results, key=lambda r: (r["task"], r["trial"])):
@@ -65,18 +86,28 @@ def retried(run_dir: Path) -> bool:
     return bool(load_meta(run_dir).get("retry_failed_only"))
 
 
-def task_passed(rs: list[dict], retry: bool = False) -> bool:
+def task_passed(rs: list[dict], retry: bool = False) -> bool | None:
+    """Whether the task passed; None while all its trials are pending."""
+    if not (rs := graded(rs)):
+        return None
     return any(r["pass"] for r in rs) if retry else all(r["pass"] for r in rs)
 
 
 def rate(rs: list[dict], retry: bool = False) -> float:
-    """The share of trials that passed; with retry, 1 or 0 for whether the task passed."""
+    """The share of graded trials that passed; with retry, 1 or 0 for whether the task passed."""
+    rs = graded(rs)
     if retry:
         return float(any(r["pass"] for r in rs))
     return sum(r["pass"] for r in rs) / len(rs) if rs else 0.0
 
 
 def passes(rs: list[dict], retry: bool = False) -> str:
+    waiting = len(pending(rs))
+    if waiting:
+        rs = graded(rs)
+        if not rs:
+            return "pending" if waiting == 1 else f"pending x{waiting}"
+        return f"{passes(rs, retry)} +{waiting} pending"
     if retry:
         first = next((r["trial"] for r in rs if r["pass"]), None)
         if first is None:
@@ -87,38 +118,57 @@ def passes(rs: list[dict], retry: bool = False) -> str:
 
 
 def overall_rate(groups: dict[str, list[dict]], retry: bool) -> float:
-    """The share of tasks that passed with retry, else of trials."""
+    """The share of tasks that passed with retry, else of trials. Pending trials don't count."""
     if retry:
-        return sum(map(rate, groups.values(), [True] * len(groups))) / max(len(groups), 1)
+        done = [rs for rs in groups.values() if graded(rs)]
+        return sum(rate(rs, True) for rs in done) / max(len(done), 1)
     return rate([r for rs in groups.values() for r in rs])
 
 
 def passed_line(groups: dict[str, list[dict]], retry: bool) -> str:
-    """'3/4 trials passed (75%)', or with retry '2/3 tasks passed (67%) in 5 trials'."""
-    trials = sum(map(len, groups.values()))
+    """'3/4 trials passed (75%)', or with retry '2/3 tasks passed (67%) in 5 trials'; then ', 2 pending'."""
+    waiting = sum(len(pending(rs)) for rs in groups.values())
+    more = f", {waiting} pending" if waiting else ""
     if retry:
-        n = sum(task_passed(rs, True) for rs in groups.values())
-        return f"{n}/{len(groups)} tasks passed ({100 * n / max(len(groups), 1):.0f}%) in {trials} trials"
-    n = sum(r["pass"] for rs in groups.values() for r in rs)
-    return f"{n}/{trials} trials passed ({100 * n / max(trials, 1):.0f}%)"
+        done = [rs for rs in groups.values() if graded(rs)]
+        trials = sum(len(graded(rs)) for rs in done)
+        n = sum(bool(task_passed(rs, True)) for rs in done)
+        return f"{n}/{len(done)} tasks passed ({100 * n / max(len(done), 1):.0f}%) in {trials} trials{more}"
+    trials = sum(len(graded(rs)) for rs in groups.values())
+    n = sum(r["pass"] for rs in groups.values() for r in graded(rs))
+    return f"{n}/{trials} trials passed ({100 * n / max(trials, 1):.0f}%){more}"
+
+
+def suite_lines(groups: dict[str, list[dict]], retry: bool) -> list[str]:
+    """A pass line per suite, when the run has more than one suite."""
+    suites = by_suite(groups)
+    return [f"{name}: {passed_line(g, retry)}" for name, g in suites.items()] if len(suites) > 1 else []
 
 
 def run_report(run_dir: Path) -> str:
     results = load_results(run_dir)
     groups = by_task(results)
     retry = retried(run_dir)
-    rows = [[task, passes(rs, retry), f"{mean(rs, 'requests'):.1f}", f"{sum(map(tokens, rs)) / len(rs):,.0f}",
-             cost(rs), f"{mean(rs, 'seconds'):.0f}s"] for task, rs in groups.items()]
-    out = [table(["task", "pass", "requests", "tokens", "cost", "time"], rows)]
+    rows = [[task, suite_of(rs[0]), passes(rs, retry), f"{mean(rs, 'requests'):.1f}",
+             f"{sum(map(tokens, rs)) / len(rs):,.0f}", cost(rs), f"{mean(rs, 'seconds'):.0f}s"]
+            for task, rs in groups.items()]
+    out = [table(["task", "suite", "pass", "requests", "tokens", "cost", "time"], rows)]
+    if lines := suite_lines(groups, retry):
+        out.append("\n" + "\n".join(lines))
     out.append(f"\n{passed_line(groups, retry)}, "
                f"{sum(map(tokens, results)):,} tokens, {cost(results, total=True)} estimated, run {run_dir.name}")
-    failed = [r for r in results if not r["pass"]]
+    failed = [r for r in results if r["pass"] is False]
     if failed:
         out.append("\nFailed trials:")
         for r in sorted(failed, key=lambda r: (r["task"], r["trial"])):
             trial = run_dir / r["task"] / str(r["trial"])
             why = f" ({r['error']})" if r.get("error") else ""
             out.append(f"  {r['task']} #{r['trial']}{why}\n    {trial / 'check.txt'}\n    {trial / 'trace.html'}")
+    if waiting := pending(results):
+        out.append(f"\nPending trials, waiting for their suite's grader: {len(waiting)}. "
+                   f"Run: uv run python -m evals grade {run_dir.name}")
+    for e in load_meta(run_dir).get("grade_errors") or []:
+        out.append(f"grader error: {e}")
     return "\n".join(out)
 
 
@@ -145,6 +195,10 @@ def compare_report(a_dir: Path, b_dir: Path) -> str:
                f"tokens per trial A {sum(map(tokens, ra)) / max(len(ra), 1):,.0f}, "
                f"B {sum(map(tokens, rb)) / max(len(rb), 1):,.0f}; estimated cost A {cost(ra, total=True)}, "
                f"B {cost(rb, total=True)}")
+    sa, sb = by_suite({t: a[t] for t in shared}), by_suite({t: b[t] for t in shared})
+    if len(sa) > 1:
+        for name in sa:
+            out.append(f"  {name}: A {overall_rate(sa[name], a_retry):.0%}, B {overall_rate(sb[name], b_retry):.0%}")
     for name, only in (("A", a.keys() - b.keys()), ("B", b.keys() - a.keys())):
         if only:
             out.append(f"only in {name}: {', '.join(sorted(only))}")

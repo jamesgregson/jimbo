@@ -1,4 +1,4 @@
-"""uv run python -m evals {run,compare,check-task,assess,compaction}. See evals/README.md."""
+"""uv run python -m evals {run,report,compare,grade,suites,check-task,assess,compaction}. See evals/README.md."""
 
 import argparse
 import asyncio
@@ -11,10 +11,10 @@ from jimbo.core.runner import ACCEPT_FLAG, RISK_WARNING
 from jimbo.providers.registry import build_model_from_spec
 
 from .html_report import write_html_report
-from .report import compare_report, find_run, run_report
-from .runner import RunConfig, make_settings, run_suite
+from .report import compare_report, find_run, load_results, run_report, suite_of, table
+from .runner import DEFAULT_JOBS, RunConfig, grade_run, make_settings, run_suite, trials_for
 from .side_tasks import assess_eval, compaction_eval, load_compaction_cases, load_shell_cases
-from .tasks import load_tasks
+from .tasks import load_suites, load_tasks
 from .validate import check_task
 
 
@@ -31,7 +31,7 @@ def task_models(pairs: list[str]) -> dict[str, str]:
 def config(args) -> RunConfig:
     if args.requests_per_minute is not None and args.requests_per_minute < 0:
         raise ValueError(f"--requests-per-minute must be 0 or more, got {args.requests_per_minute}")
-    return RunConfig(model=args.model, task_models=task_models(args.set), trials=getattr(args, "trials", 1),
+    return RunConfig(model=args.model, task_models=task_models(args.set), trials=getattr(args, "trials", None),
                      retry_failed_only=getattr(args, "retry_failed_only", False),
                      jobs=args.jobs,
                      sandbox="off" if getattr(args, "no_sandbox", False) else getattr(args, "sandbox", "seatbelt"),
@@ -46,7 +46,7 @@ def model_args(p: argparse.ArgumentParser) -> None:
                    help="model for another task, as /models set does; e.g. evals-judge=strong")
     p.add_argument("--config", type=Path, help="config.toml to read providers and aliases from "
                                                "(default: ~/.jimbo/config.toml)")
-    p.add_argument("--jobs", type=int, default=4, help="trials or cases at once (default 4)")
+    p.add_argument("--jobs", type=int, help=f"trials or cases at once (default: the suites' jobs, else {DEFAULT_JOBS})")
     p.add_argument("--requests-per-minute", type=int, metavar="N",
                    help="cap requests to each provider, replacing requests_per_minute in the config; 0 for no cap")
     accept_arg(p)
@@ -73,25 +73,51 @@ def accept_risks(accepted: bool) -> str | None:
 
 
 async def cmd_run(args) -> int:
-    tasks = load_tasks(args.task or None, args.tag or None)
+    tasks = load_tasks(args.task or None, args.tag or None, args.suite or None)
     if not tasks:
         raise ValueError("no tasks match")
     cfg = config(args)
-    total = len(tasks) * cfg.trials
+    total = sum(trials_for(t, cfg) for t in tasks)
     done = {"n": 0}
 
     def progress(r: dict) -> None:
         done["n"] += 1
         why = f"  {r['error']}" if r.get("error") else ""
         counter = f"[{done['n']:>{len(str(total))}}/{'<=' if cfg.retry_failed_only else ''}{total}]"
-        print(f"{counter} {'pass' if r['pass'] else 'FAIL'} {r['task']} #{r['trial']} "
+        result = "pending" if r["pass"] is None else "pass" if r["pass"] else "FAIL"
+        print(f"{counter} {result} {r['task']} #{r['trial']} "
               f"({r['requests']} requests, {r['seconds']:.0f}s){why}", file=sys.stderr, flush=True)
 
     until = " until one passes" if cfg.retry_failed_only else ""
-    print(f"running {len(tasks)} task(s) x {'up to ' if until else ''}{cfg.trials} trial(s){until}", file=sys.stderr)
+    suites = sorted({t.suite_name for t in tasks if t.suite_name})
+    print(f"running {len(tasks)} task(s) from {', '.join(suites) or 'no suite'}, {'up to ' if until else ''}"
+          f"{total} trial(s){until}", file=sys.stderr)
     run_dir = await run_suite(tasks, cfg, on_result=progress)
     print(run_report(run_dir))
     print(f"\nreport: {write_html_report(run_dir)}")
+    return 0
+
+
+async def cmd_grade(args) -> int:
+    run_dir = find_run(args.run) if args.run else latest_run()
+    names = {suite_of(r) for r in load_results(run_dir)}
+    suites = {n: s for n, s in load_suites().items() if n in names and s.grade}
+    if not suites:
+        raise ValueError(f"no suite in run {run_dir.name} has a grader")
+    errors = await grade_run(run_dir, suites)
+    print(run_report(run_dir))
+    print(f"\nreport: {write_html_report(run_dir)}")
+    return 1 if errors else 0
+
+
+async def cmd_suites(args) -> int:
+    rows = []
+    for s in load_suites().values():
+        r = s.requires
+        needs = [*r.commands, *(["--sandbox " + "/".join(r.sandbox)] if r.sandbox else []),
+                 *(["network"] if r.network else [])]
+        rows.append([s.name, "yes" if s.default else "", str(len(s.tasks())), ", ".join(needs), s.description])
+    print(table(["suite", "default", "tasks", "requires", "description"], rows))
     return 0
 
 
@@ -117,7 +143,7 @@ async def cmd_compare(args) -> int:
 
 async def cmd_check_task(args) -> int:
     bad = 0
-    for task in load_tasks(args.task or None):
+    for task in load_tasks(args.task or None, suites=args.suite or None):
         problems = await check_task(task, args.sandbox)
         bad += bool(problems)
         status = "ok" if not problems else "FAIL"
@@ -139,7 +165,7 @@ async def cmd_assess(args) -> int:
     if args.model:  # here --model is the assessment model, not main
         args.set.insert(0, f"jimbo-shell-assess={args.model}")
         args.model = None
-    print(await assess_eval(router_for(args), load_shell_cases(), jobs=args.jobs))
+    print(await assess_eval(router_for(args), load_shell_cases(), jobs=args.jobs or DEFAULT_JOBS))
     return 0
 
 
@@ -156,8 +182,10 @@ def main() -> None:
     p = sub.add_parser("run", help="run tasks and grade them")
     model_args(p)
     p.add_argument("--task", action="append", default=[], help="run this task (repeatable)")
+    p.add_argument("--suite", action="append", default=[],
+                   help="run this suite (repeatable; 'all' for every suite; default: the default suites)")
     p.add_argument("--tag", action="append", default=[], help="run tasks with this tag (repeatable)")
-    p.add_argument("--trials", type=int, default=1, help="attempts per task (default 1)")
+    p.add_argument("--trials", type=int, help="attempts per task (default: the suite's trials, else 1)")
     p.add_argument("--retry-failed-only", action="store_true",
                    help="run each task's trials one at a time and stop at the first pass")
     p.add_argument("--sandbox", choices=["seatbelt", "docker", "podman", "off"], default="seatbelt",
@@ -173,6 +201,14 @@ def main() -> None:
     p.add_argument("run", nargs="?", help="run id, start of an id, or folder (default: the latest run)")
     p.set_defaults(fn=cmd_report)
 
+    p = sub.add_parser("grade", help="run the suites' graders on a run again")
+    p.add_argument("run", nargs="?", help="run id, start of an id, or folder (default: the latest run)")
+    accept_arg(p)  # graders run code the model wrote
+    p.set_defaults(fn=cmd_grade)
+
+    p = sub.add_parser("suites", help="list the suites")
+    p.set_defaults(fn=cmd_suites)
+
     p = sub.add_parser("compare", help="compare two runs")
     p.add_argument("a", help="run id, start of an id, or folder")
     p.add_argument("b")
@@ -180,6 +216,8 @@ def main() -> None:
 
     p = sub.add_parser("check-task", help="check that tasks' checks fail unsolved and pass solved")
     p.add_argument("task", nargs="*")
+    p.add_argument("--suite", action="append", default=[],
+                   help="check this suite's tasks (repeatable; 'all' for every suite; default: the default suites)")
     p.add_argument("--sandbox", choices=["seatbelt", "docker", "podman", "off"], default="off",
                    help="run each check in this sandbox, as a trial with --sandbox does (default: off)")
     accept_arg(p)

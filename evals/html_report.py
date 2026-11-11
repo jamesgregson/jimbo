@@ -4,8 +4,9 @@ import html
 import json
 from pathlib import Path
 
-from .report import by_task, cost, load_results, mean, passed_line, passes, retried, task_passed, tokens
-from .tasks import TASKS_DIR, Task, load_task
+from .report import (by_suite, by_task, cost, load_results, mean, passed_line, passes, retried, suite_of,
+                     task_passed, tokens)
+from .tasks import Task, load_tasks
 
 DIFF_LIMIT = 20_000  # characters of a diff shown inline
 
@@ -27,6 +28,7 @@ a { color: var(--link); }
 .muted { color: var(--muted); }
 .pass { color: var(--pass); font-weight: 600; }
 .fail { color: var(--fail); font-weight: 600; }
+.pending { color: var(--muted); font-weight: 600; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
@@ -46,8 +48,10 @@ def esc(text) -> str:
     return html.escape(str(text))
 
 
-def status(ok: bool, label: str | None = None) -> str:
-    return f'<span class="{"pass" if ok else "fail"}">{esc(label or ("pass" if ok else "FAIL"))}</span>'
+def status(ok: bool | None, label: str | None = None) -> str:
+    """ok None: waiting for the suite's grader."""
+    cls, text = ("pending", "pending") if ok is None else ("pass", "pass") if ok else ("fail", "FAIL")
+    return f'<span class="{cls}">{esc(label or text)}</span>'
 
 
 def read(path: Path, limit: int | None = None) -> str | None:
@@ -58,12 +62,12 @@ def read(path: Path, limit: int | None = None) -> str | None:
     return text if limit is None or len(text) <= limit else text[:limit] + "\n[cut]"
 
 
-def task_info(task_id: str) -> Task | None:
-    """The task as it is now. It may have changed since the run."""
+def current_tasks() -> dict[str, Task]:
+    """Every task as it is now, by id. They may have changed since the run."""
     try:
-        return load_task(TASKS_DIR / task_id)
+        return {t.id: t for t in load_tasks(suites=["all"])}
     except (OSError, ValueError):
-        return None
+        return {}
 
 
 def trial_html(run_dir: Path, r: dict) -> str:
@@ -88,13 +92,12 @@ def trial_html(run_dir: Path, r: dict) -> str:
     return "\n".join(parts)
 
 
-def task_html(run_dir: Path, task_id: str, rs: list[dict], retry: bool = False) -> str:
-    task = task_info(task_id)
+def task_html(run_dir: Path, task_id: str, rs: list[dict], retry: bool = False, task: Task | None = None) -> str:
     ok = task_passed(rs, retry)
     parts = [f'<section class="task" id="{esc(task_id)}">', f"<h3>{esc(task_id)}</h3> {status(ok, passes(rs, retry))}"]
     if task:
         tags = ", ".join(task.tags)
-        parts.append(f'<p class="muted">{esc(tags)}{" · plan mode" if task.mode == "plan" else ""}'
+        parts.append(f'<p class="muted">suite {esc(suite_of(rs[0]))} · {esc(tags)}{" · plan mode" if task.mode == "plan" else ""}'
                      f'{" · fixture " + esc(task.fixture) if task.fixture else ""}</p>')
         parts.append(f"<p><b>Prompt</b></p><pre>{esc(chr(10).join([task.prompt, *task.followups]))}</pre>")
         if task.check.command:
@@ -116,34 +119,41 @@ def write_html_report(run_dir: Path) -> Path:
     except (OSError, ValueError):
         meta = {}
     retry = retried(run_dir)
-    failed_first = sorted(groups, key=lambda t: (task_passed(groups[t], retry), t))
+    order = {False: 0, None: 1, True: 2}  # failed, then pending, then passed
+    failed_first = sorted(groups, key=lambda t: (order[task_passed(groups[t], retry)], t))
     rows = "\n".join(
-        f'<tr><td><a href="#{esc(t)}">{esc(t)}</a></td><td>{status(task_passed(rs, retry), passes(rs, retry))}</td>'
+        f'<tr><td><a href="#{esc(t)}">{esc(t)}</a></td><td>{esc(suite_of(rs[0]))}</td>'
+        f'<td>{status(task_passed(rs, retry), passes(rs, retry))}</td>'
         f'<td class="n">{mean(rs, "requests"):.1f}</td><td class="n">{sum(map(tokens, rs)) / len(rs):,.0f}</td>'
         f'<td class="n">{cost(rs)}</td><td class="n">{mean(rs, "seconds"):.0f}s</td></tr>'
         for t in failed_first for rs in [groups[t]])
     models = meta.get("models", {})
+    suites = by_suite(groups)
     meta_rows = [("Passed", passed_line(groups, retry).replace(" passed", "")),
+                 *((f"Suite {name}", passed_line(g, retry).replace(" passed", ""))
+                   for name, g in (suites.items() if len(suites) > 1 else ())),
+                 *(("Grader error", e) for e in meta.get("grade_errors") or []),
                  ("Tokens", f"{sum(map(tokens, results)):,}"), ("Estimated cost", cost(results, total=True)),
                  ("Main model", models.get("main", "?")), ("Judge model", models.get("evals-judge", "?")),
                  ("Trials per task", f'{"up to " if retry else ""}{meta.get("trials", "?")}'
                                      f'{", stopping at the first pass" if retry else ""}'),
                  ("jimbo commit", f'{(meta.get("commit") or "?")[:12]}{" (with uncommitted changes)" if meta.get("dirty") else ""}'),
                  ("Started", meta.get("started", "?")), ("Finished", meta.get("finished", "not finished"))]
+    tasks = current_tasks()
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Eval run {esc(run_dir.name)}</title><style>{STYLE}</style></head>
 <body><main>
 <h1>Eval run {esc(run_dir.name)}</h1>
 <p class="muted">Each trial links to its trace, check output, diff and session log. Task prompts and rubrics are
-read from evals/tasks/ as they are now.</p>
+read from evals/suites/ as they are now.</p>
 <table class="meta">{"".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in meta_rows)}</table>
 <h2>Tasks</h2>
-<div class="wrap"><table><tr><th>task</th><th>pass</th><th class="n">requests</th><th class="n">tokens</th>
+<div class="wrap"><table><tr><th>task</th><th>suite</th><th>pass</th><th class="n">requests</th><th class="n">tokens</th>
 <th class="n">cost</th><th class="n">time</th></tr>
 {rows}</table></div>
 <h2>Details</h2>
-{"".join(task_html(run_dir, t, groups[t], retry) for t in failed_first)}
+{"".join(task_html(run_dir, t, groups[t], retry, tasks.get(t)) for t in failed_first)}
 </main></body></html>
 """
     out = run_dir / "report.html"

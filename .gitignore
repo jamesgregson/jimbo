@@ -31,3 +31,6 @@ evals/results/
 
 # The VS Code extension's launch config (F5)
 !/vscode/.vscode/
+
+# Workspaces that eval suites build from datasets
+evals/.cache/

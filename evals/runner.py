@@ -1,6 +1,7 @@
 """Running trials: one task, one attempt, in its own temp workspace with its own session."""
 
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -29,7 +30,7 @@ from jimbo.tools.shell import kill_background
 from jimbo.wiring import build_session
 
 from .grading import JUDGE_TASK, Outcome, check_events, judge, run_check
-from .tasks import EVALS_DIR, Task
+from .tasks import EVALS_DIR, Suite, Task, resolve
 
 RESULTS_DIR = EVALS_DIR / "results"
 # --sandbox -> the sandbox setting
@@ -39,15 +40,17 @@ BASE_DENY = ["shell:git push*", "shell:sudo *"]
 PLAN_NOTE = ("This is an evaluation run: the plan is recorded and will not be carried out. "
              "Do not call exit_plan again; end your turn with a one-line summary.")
 REPO_ROOT = EVALS_DIR.parent
+DEFAULT_JOBS = 4
+GRADE_MARK = "--- suite grade ---"  # in check.txt: what follows is the suite grader's output
 
 
 @dataclass
 class RunConfig:
     model: str | None = None  # main model: an alias or <provider>:<name>; None uses the config's
     task_models: dict[str, str] = field(default_factory=dict)  # like /models set
-    trials: int = 1
+    trials: int | None = None  # None: each suite's default, else 1
     retry_failed_only: bool = False  # run a task's trials one after another, stopping at its first pass
-    jobs: int = 4
+    jobs: int | None = None  # None: the smallest of the suites' defaults, else 4
     sandbox: str = "seatbelt"  # seatbelt, docker or podman (a container per trial), or off
     network: bool = True
     lsp: bool = True  # False: no language servers, to compare runs with and without them
@@ -56,6 +59,19 @@ class RunConfig:
     user_config: Path | None = None  # config.toml with providers and aliases; default ~/.jimbo/config.toml
     model_builder: object = None  # tests: a fake model builder for build_session and the judge
     main_model: object = None  # tests: a ready-made main model
+
+
+def trials_for(task: Task, cfg: RunConfig) -> int:
+    return cfg.trials or (task.suite and task.suite.defaults.trials) or 1
+
+
+def jobs_for(suites: list[Suite], cfg: RunConfig) -> int:
+    given = [s.defaults.jobs for s in suites if s.defaults.jobs]
+    return cfg.jobs or (min(given) if given else DEFAULT_JOBS)
+
+
+def suites_of(tasks: list[Task]) -> list[Suite]:
+    return list({t.suite.name: t.suite for t in tasks if t.suite}.values())
 
 
 class EvalFrontend:
@@ -227,9 +243,16 @@ async def run_trial(task: Task, trial: int, cfg: RunConfig, out: Path, facts: Mo
     (out / "check.txt").write_text((f"error: {error}\n\n" if error else "") + text + "\n")
     usage = session.total_usage if session else None
     command_exit = next((o.exit for o in outcomes if o.exit is not None), None)
+    checked = all(o.ok for o in outcomes) if outcomes else None  # None: the task has no checks of its own
+    if error is not None:
+        passed = False
+    elif task.suite_grade:
+        passed = None if checked is not False else False  # pending until the suite's grader runs
+    else:
+        passed = bool(checked)
     return {
-        "task": task.id, "trial": trial, "pass": error is None and bool(outcomes) and all(o.ok for o in outcomes),
-        "check_exit": command_exit, "requests": usage.requests if usage else 0,
+        "task": task.id, "suite": task.suite_name, "trial": trial, "pass": passed, "check_pass": checked,
+        "grade": task.suite_grade, "check_exit": command_exit, "requests": usage.requests if usage else 0,
         "input_tokens": usage.input_tokens if usage else 0, "output_tokens": usage.output_tokens if usage else 0,
         "thinking_tokens": thinking_tokens(usage) if usage else 0,
         "cost": estimate_cost(usage, facts.prices if facts else None),
@@ -259,8 +282,36 @@ def jimbo_commit() -> dict:
         return {"commit": None, "dirty": None}
 
 
-async def preflight(cfg: RunConfig) -> tuple[Settings, ModelFacts]:
-    """Check the setup once before any trial: sandbox, main model and its key."""
+def suite_image(suite: Suite, settings: Settings) -> str:
+    """The image a suite's trials run in with --sandbox docker or podman."""
+    return suite.defaults.settings.get("sandbox_image") or settings.sandbox_image or container_sandbox.bundled_image()
+
+
+def missing_requirements(suites: list[Suite], cfg: RunConfig, settings: Settings, find=None) -> list[str]:
+    """What each suite's [requires] asks for that this run doesn't have. `find(image, names)` gives the commands
+    found in a container image (default: container_sandbox.find_commands)."""
+    container = cfg.sandbox in ("docker", "podman")
+    find = find or (lambda image, names: container_sandbox.find_commands(image, names, cfg.sandbox))
+    missing = []
+    for s in suites:
+        req = s.requires
+        if req.sandbox and cfg.sandbox not in req.sandbox:
+            missing.append(f"{s.name}: needs --sandbox {' or '.join(req.sandbox)}")
+        if req.network and not cfg.network:
+            missing.append(f"{s.name}: needs network access; leave out --no-network")
+        if req.commands:
+            if container:
+                image = suite_image(s, settings)
+                found, where = find(image, req.commands), f"in the image {image}"
+            else:
+                found, where = {c for c in req.commands if shutil.which(c)}, "on PATH"
+            if lost := [c for c in req.commands if c not in found]:
+                missing.append(f"{s.name}: needs {', '.join(lost)} {where}")
+    return missing
+
+
+async def preflight(cfg: RunConfig, suites: list[Suite] = ()) -> tuple[Settings, ModelFacts]:
+    """Check the setup once before any trial: sandbox, the suites' requirements, main model and its key."""
     if cfg.sandbox == "seatbelt" and not sandbox_available():
         raise ValueError("no sandbox-exec on this system: use --sandbox docker or podman, or --sandbox off to run commands "
                          "unconfined")
@@ -271,6 +322,11 @@ async def preflight(cfg: RunConfig) -> tuple[Settings, ModelFacts]:
     tmp = Path(tempfile.mkdtemp(prefix="jimbo-eval-preflight-"))
     try:
         settings = make_settings(cfg, None, tmp, tmp / "home" / ".jimbo", tmp / "logs")
+        if cfg.sandbox in ("docker", "podman"):
+            for image in {suite_image(s, settings) for s in suites if s.requires.commands}:
+                await asyncio.to_thread(container_sandbox.ensure_image, image, cfg.sandbox)
+        if missing := await asyncio.to_thread(missing_requirements, list(suites), cfg, settings):
+            raise ValueError("the run's suites need:\n  " + "\n  ".join(missing))
         if cfg.main_model is not None:
             return settings, ModelFacts()
         spec = settings.model_aliases.get(MAIN)
@@ -295,21 +351,37 @@ def request_limits(settings: Settings, specs: dict[str, str]) -> dict[str, int |
     return {n: provider_config(n, settings).requests_per_minute for n in names}
 
 
+def read_results(run_dir: Path) -> list[dict]:
+    with open(run_dir / "results.jsonl", encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def suite_meta(suite: Suite, tasks: list[Task], cfg: RunConfig) -> dict:
+    mine = [t for t in tasks if t.suite_name == suite.name]
+    return {**suite.model_dump(mode="json", exclude={"name", "dir"}),
+            "trials": max((trials_for(t, cfg) for t in mine), default=None)}
+
+
 async def run_suite(tasks: list[Task], cfg: RunConfig, results_dir: Path = RESULTS_DIR,
                     on_result=None) -> Path:
-    """Run every trial of every task, up to cfg.jobs at once. Returns the run folder."""
-    settings, facts = await preflight(cfg)
+    """Run every trial of every task, up to the run's jobs at once, then the suites' graders. Returns the run
+    folder."""
+    suites = suites_of(tasks)
+    settings, facts = await preflight(cfg, suites)
     specs = model_specs(settings) if cfg.main_model is None else {MAIN: "(test model)"}
     run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{short_name(specs[MAIN])}"
     run_dir = results_dir / run_id
     run_dir.mkdir(parents=True)
-    meta = {"id": run_id, **jimbo_commit(), "models": specs, "model_arg": cfg.model, "trials": cfg.trials,
+    trial_counts = {trials_for(t, cfg) for t in tasks}
+    meta = {"id": run_id, **jimbo_commit(), "models": specs, "model_arg": cfg.model,
+            "trials": trial_counts.pop() if len(trial_counts) == 1 else "per suite",
             "retry_failed_only": cfg.retry_failed_only, "sandbox": cfg.sandbox, "network": cfg.network, "lsp": cfg.lsp, "requests_per_minute": request_limits(settings, specs),
+            "suites": {s.name: suite_meta(s, tasks, cfg) for s in suites},
             "tasks": [t.id for t in tasks],
             "task_settings": {t.id: t.settings for t in tasks if t.settings},
             "started": datetime.now().astimezone().isoformat(timespec="seconds")}
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
-    gate = asyncio.Semaphore(cfg.jobs)
+    gate = asyncio.Semaphore(jobs_for(suites, cfg))
     lines = open(run_dir / "results.jsonl", "a", encoding="utf-8")
 
     async def one(task: Task, trial: int) -> dict:
@@ -322,7 +394,7 @@ async def run_suite(tasks: list[Task], cfg: RunConfig, results_dir: Path = RESUL
         return r
 
     async def until_pass(task: Task) -> None:
-        for n in range(1, cfg.trials + 1):
+        for n in range(1, trials_for(task, cfg) + 1):
             if (await one(task, n))["pass"]:
                 break
 
@@ -330,9 +402,59 @@ async def run_suite(tasks: list[Task], cfg: RunConfig, results_dir: Path = RESUL
         if cfg.retry_failed_only:  # tasks still run in parallel; each task's trials run in turn
             await asyncio.gather(*(until_pass(t) for t in tasks))
         else:
-            await asyncio.gather(*(one(t, n) for t in tasks for n in range(1, cfg.trials + 1)))
+            await asyncio.gather(*(one(t, n) for t in tasks for n in range(1, trials_for(t, cfg) + 1)))
     finally:
         lines.close()
+    if any(s.grade for s in suites):
+        await grade_run(run_dir, {s.name: s for s in suites})
+    meta = json.loads((run_dir / "run.json").read_text())
     meta["finished"] = datetime.now().astimezone().isoformat(timespec="seconds")
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
     return run_dir
+
+
+def _write_grade_text(check: Path, text: str) -> None:
+    """Put the grader's output at the end of check.txt, replacing what an earlier grading put there."""
+    old = check.read_text() if check.is_file() else ""
+    old = old.split(GRADE_MARK, 1)[0].rstrip()
+    check.write_text((old + "\n\n" if old else "") + f"{GRADE_MARK}\n{text.strip()}\n")
+
+
+async def grade_run(run_dir: Path, suites: dict[str, Suite]) -> list[str]:
+    """Run the grader of each suite in `suites` that has one, on that suite's trials in the run, and write the
+    results into results.jsonl and check.txt. A trial the grader gives no result for keeps its pass value.
+    Returns the graders' errors, which are also saved as grade_errors in run.json."""
+    rows = read_results(run_dir)
+    errors: list[str] = []
+    for name, suite in suites.items():
+        mine = [r for r in rows if (r.get("suite") or "core") == name]
+        if not suite.grade or not mine:
+            continue
+        try:
+            fn = resolve(suite.grade)
+            if inspect.iscoroutinefunction(fn):
+                graded = await fn(suite, run_dir)
+            else:
+                graded = await asyncio.to_thread(fn, suite, run_dir)
+            got = {(g["task"], int(g["trial"])): g for g in graded}
+        except Exception as e:  # the trials stay pending; `grade <run>` can try again
+            errors.append(f"{name}: {suite.grade} failed: {type(e).__name__}: {e}"[:1000])
+            continue
+        for r in mine:
+            if (g := got.get((r["task"], r["trial"]))) is None:
+                continue
+            r["grade"] = suite.grade
+            r["grade_pass"] = bool(g["pass"])
+            r["pass"] = r.get("error") is None and r.get("check_pass") is not False and r["grade_pass"]
+            _write_grade_text(run_dir / r["task"] / str(r["trial"]) / "check.txt",
+                              f"{suite.grade}: {'pass' if g['pass'] else 'FAIL'}\n{g.get('text', '')}")
+    tmp = run_dir / "results.jsonl.tmp"
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), "utf-8")
+    tmp.replace(run_dir / "results.jsonl")
+    try:
+        meta = json.loads((run_dir / "run.json").read_text())
+    except (OSError, ValueError):
+        meta = {}
+    meta["grade_errors"] = errors
+    (run_dir / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
+    return errors

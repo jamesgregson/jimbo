@@ -710,4 +710,7 @@ and assert on emitted events. They cover the loop, approvals, commands and tools
 copies a fixture to a temp git repo, builds a session with `build_session()` and an approval chain of `rules`
 then allow-all, runs the prompt, and grades the result with a check command (hidden tests copied in after the
 run), counts of events, and a judge model (task `evals-judge`). Results, session logs and diffs go to
-`evals/results/`. `assess` and `compaction` evaluate the `jimbo-shell-assess` and `jimbo-compaction` tasks.
+`evals/results/`. Tasks are grouped in suites under `evals/suites/`, each with a `suite.toml` that sets its
+defaults and requirements; `core` runs by default and other suites run with `--suite`. A suite can also make its
+tasks with code (`source`) and grade all its trials together after they finish (`grade`), for benchmarks such as
+SWE-bench. `assess` and `compaction` evaluate the `jimbo-shell-assess` and `jimbo-compaction` tasks.

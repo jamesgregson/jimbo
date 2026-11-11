@@ -1,0 +1,2 @@
+description = "Small Python and C++ tasks on the shop and ledger fixtures: reading, bug fixes, features, refactors, tests, tools, plan mode, denials, agents and skills."
+default = true
