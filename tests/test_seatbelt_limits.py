@@ -66,6 +66,14 @@ def test_home_readable_includes_tool_folders_and_path_entries(monkeypatch, tmp_p
     assert Path("/usr/bin") not in r
 
 
+def test_home_readable_includes_the_whole_virtual_environment_of_a_path_entry(monkeypatch, tmp_path):
+    venv = tmp_path / "proj" / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    monkeypatch.setenv("PATH", f"{venv / 'bin'}:/usr/bin")
+    r = sb.home_readable(tmp_path)
+    assert venv in r and venv / "bin" not in r
+
 def test_git_dirs_follows_a_worktree_file(tmp_path):
     main = tmp_path / "main" / ".git" / "worktrees" / "wt"
     main.mkdir(parents=True)

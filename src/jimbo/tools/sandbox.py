@@ -134,10 +134,12 @@ def default_writable(workspace: Path, system_temp: bool = False) -> list[Path]:
 
 
 def home_readable(home: Path | None = None) -> list[Path]:
-    """HOME_READABLE, and the folders on PATH that are in the home folder, so the programs in them run."""
+    """HOME_READABLE, and the folders on PATH that are in the home folder, so the programs in them run. For a
+    virtual environment's bin folder, the whole environment: its python reads pyvenv.cfg and lib/ beside bin/."""
     home = home or Path.home()
     on_path = [Path(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p]
-    return [*(home / p for p in HOME_READABLE), *(p for p in on_path if p.is_relative_to(home))]
+    on_path = [p.parent if (p.parent / "pyvenv.cfg").is_file() else p for p in on_path if p.is_relative_to(home)]
+    return [*(home / p for p in HOME_READABLE), *on_path]
 
 
 def git_dirs(workspace: Path) -> list[Path]:
