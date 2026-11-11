@@ -260,7 +260,9 @@ def project_context(ctx: RunContext[Deps]) -> str:
     others = {n: s for n, s in deps.skills.items() if s is not active}
     if others and deps.can_load_skills:
         parts.append("# Skills\nBefore you start a task, check this list. If a skill's description fits the "
-                     "task, even partly, call load_skill(name) first and follow its instructions:\n"
+                     "task, even partly, call load_skill(name) first and follow its instructions. Check the "
+                     "list again before you finish: some skills apply after a change, such as one that "
+                     "records it:\n"
                      + format_skill_index(others))
     if deps.can_use_lsp:
         parts.append(lsp_prompt(deps))

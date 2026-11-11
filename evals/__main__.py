@@ -83,7 +83,8 @@ async def cmd_run(args) -> int:
     def progress(r: dict) -> None:
         done["n"] += 1
         why = f"  {r['error']}" if r.get("error") else ""
-        print(f"[{done['n']}/{'<=' if cfg.retry_failed_only else ''}{total}] {r['task']} #{r['trial']}: {'pass' if r['pass'] else 'FAIL'} "
+        counter = f"[{done['n']:>{len(str(total))}}/{'<=' if cfg.retry_failed_only else ''}{total}]"
+        print(f"{counter} {'pass' if r['pass'] else 'FAIL'} {r['task']} #{r['trial']} "
               f"({r['requests']} requests, {r['seconds']:.0f}s){why}", file=sys.stderr, flush=True)
 
     until = " until one passes" if cfg.retry_failed_only else ""
