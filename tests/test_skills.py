@@ -70,7 +70,7 @@ async def test_skill_command_and_listing(tmp_path):
     seen = []
 
     async def model(messages, info):
-        seen.append(messages[-1].parts[-1].content)
+        seen.append((messages[-1].parts[-1].content, info.instructions or ""))
         yield "ok"
 
     fe = ScriptedFrontend()
@@ -79,7 +79,15 @@ async def test_skill_command_and_listing(tmp_path):
     out = [e.data for e in fe.events if e.kind == "command_output"][-1]["text"]
     assert "- deploy: deploy the app" in out
     await s.commands.dispatch(s, "/deploy to staging")
-    assert "Run make deploy." in seen[0] and seen[0].endswith("to staging")
+    # the message is the user's own words; the skill is in the instructions, and no longer offered for loading
+    assert seen[0][0] == "to staging"
+    assert "# Active skill: deploy" in seen[0][1] and "Run make deploy." in seen[0][1]
+    assert "- deploy: deploy the app" not in seen[0][1]
+    await s.send("carry on")  # it stays active on later turns
+    assert seen[1][0] == "carry on" and "Run make deploy." in seen[1][1]
+    await s.commands.dispatch(s, "/clear")
+    await s.send("hello")
+    assert "Run make deploy." not in seen[2][1] and "- deploy: deploy the app" in seen[2][1]
     assert {c["name"]: c["help"] for c in s.commands.describe()}["help"] == "list commands"
 
 
@@ -201,3 +209,38 @@ async def test_reload_command_rereads_skills_and_agents(tmp_path):
     assert "deploy" in s.deps.skills and "helper" in s.deps.agents
     await s.commands.dispatch(s, "/reload")
     assert "No skill changed." in [e for e in fe.events if e.kind == "command_output"][-1].data["text"]
+
+
+async def test_an_active_skill_raises_the_turn_request_limit(tmp_path):
+    make_skill(tmp_path, "long", "---\ndescription: long work\nrequest_limit: 80\n---\nWork.\n")
+    make_skill(tmp_path, "short", "---\ndescription: short work\nrequest_limit: 5\n---\nWork.\n")
+    limits = []
+
+    async def model(messages, info):
+        limits.append(s.deps.request_limit)
+        yield "ok"
+
+    s = build_session(settings(tmp_path, request_limit=50), ScriptedFrontend(),
+                      model=FunctionModel(stream_function=model))
+    await s.send("before")
+    await s.commands.dispatch(s, "/long")
+    await s.send("carry on")
+    assert limits == [50, 80, 80] and s.request_limit == 50  # raised for the skill's turns only
+    await s.commands.dispatch(s, "/short")  # a skill can't lower the setting
+    assert limits[-1] == 50
+
+
+async def test_the_active_skill_is_saved_with_the_session(tmp_path):
+    make_skill(tmp_path, "deploy", "---\ndescription: deploy the app\n---\nRun make deploy.\n")
+
+    async def model(messages, info):
+        yield "ok"
+
+    s = build_session(settings(tmp_path, log_dir=tmp_path / "logs"), ScriptedFrontend(),
+                      model=FunctionModel(stream_function=model))
+    await s.commands.dispatch(s, "/deploy")
+    sid = s.session_id
+    await s.commands.dispatch(s, "/clear")
+    assert s.deps.active_skill is None
+    await s.resume(sid)
+    assert s.deps.active_skill == "deploy"

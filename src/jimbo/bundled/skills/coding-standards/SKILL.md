@@ -1,5 +1,7 @@
-# Coding standards
-
+---
+name: coding-standards
+description: Design, code, error-handling and test standards for new code. Use when writing or reviewing code in a project that has no standards of its own
+---
 Follow the project's own conventions first. Use these where the project has none.
 
 ## Design

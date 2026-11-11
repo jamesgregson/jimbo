@@ -85,10 +85,12 @@ def test_default_writable_leaves_out_system_temp():
 
 def test_build_sandbox_passes_the_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(sb, "available", lambda: True)
-    s = sb.build_sandbox(settings(tmp_path, sandbox="seatbelt", git_write=True, secret_files_shell=True,
+    s = sb.build_sandbox(settings(tmp_path, sandbox="seatbelt", git_write=True, secret_files_shell=True, bundled=True,
                                   sandbox_readable=[tmp_path / "extra"]), tmp_path, tmp_path / "scratch")
     assert (tmp_path / "extra").resolve() in s.readable and tmp_path.resolve() in s.readable
     assert (tmp_path / "user" / "skills").resolve() in s.readable
+    from jimbo.config import BUNDLED_DIR
+    assert BUNDLED_DIR.resolve() in s.readable  # a bundled skill's references can be read from the shell
     assert s.git_write and s.secret_files and s.workspace == tmp_path.resolve()
     s = sb.build_sandbox(settings(tmp_path, sandbox="seatbelt"), tmp_path)
     assert not s.git_write and s.secret_files == []
@@ -176,3 +178,15 @@ async def test_blocked_writes_say_where_to_write_and_git_writes_say_why(world):
     assert f"[jimbo: the sandbox blocks writing /tmp/jimbo-probe-y. Write temporary files to the scratch directory " \
            f"{world.scratch}.]" in out
     assert "git is read-only" in out
+
+
+@macos
+async def test_commands_read_a_bundled_skill_reference_through_the_built_sandbox(world, tmp_path):
+    """The sandbox jimbo builds at startup (build_sandbox, not a hand-made profile) lets the shell read the
+    bundled skills, which can be outside the workspace."""
+    from jimbo.config import BUNDLED_DIR
+    target = BUNDLED_DIR / "skills" / "coding-standards" / "SKILL.md"
+    box = sb.build_sandbox(settings(tmp_path, sandbox="seatbelt", bundled=True), world.ws, world.scratch)
+    assert box is not None and box.__class__.__name__ == "SeatbeltSandbox"
+    out = await shell(ctx(world.ws, box, world.scratch), f"cat {target}")
+    assert "name: coding-standards" in out and "Operation not permitted" not in out

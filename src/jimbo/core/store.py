@@ -22,6 +22,7 @@ class SavedSession:
     history: list[ModelMessage]
     todos: list[dict]
     spend: dict | None = None  # cost.Spend; None in sessions saved before it was recorded
+    skill: str | None = None  # the skill started with /<skill>, still active when the session was saved
 
 
 class SessionStore:
@@ -38,10 +39,11 @@ class SessionStore:
     def _meta(self, sid: str) -> Path:
         return self.directory / f"{sid}.meta.json"  # small, so listings needn't parse whole histories
 
-    def save(self, sid: str, history: list[ModelMessage], todos: list[dict], spend: dict | None = None) -> None:
+    def save(self, sid: str, history: list[ModelMessage], todos: list[dict], spend: dict | None = None,
+             skill: str | None = None) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         payload = {"history": json.loads(ModelMessagesTypeAdapter.dump_json(history)), "todos": todos,
-                   **({"spend": spend} if spend is not None else {})}
+                   **({"spend": spend} if spend is not None else {}), **({"skill": skill} if skill else {})}
         tmp = self._state(sid).with_suffix(".tmp")
         tmp.write_text(json.dumps(payload), "utf-8")
         os.replace(tmp, self._state(sid))  # a crash mid-write never leaves a truncated state file
@@ -82,7 +84,7 @@ class SessionStore:
         try:
             data = json.loads(self._state(sid).read_text("utf-8"))
             return SavedSession(sid, ModelMessagesTypeAdapter.validate_python(data["history"]),
-                                data.get("todos", []), data.get("spend"))
+                                data.get("todos", []), data.get("spend"), data.get("skill"))
         except (OSError, ValueError, KeyError) as e:
             raise ValueError(f"cannot load session {sid}: {e}") from None
 

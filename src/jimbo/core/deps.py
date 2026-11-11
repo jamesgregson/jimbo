@@ -96,6 +96,9 @@ class Deps:
     # Set by wiring when the frontend can display images: shows (file, path as given, media type, caption).
     show_image: "Callable[[Path, str, str, str], Awaitable[None]] | None" = None
     compact_requested: str | None = None  # set by the compact tool: compact before the next request, with this focus
+    # The skill the user started with /<skill>. Its instructions are in the main model's prompt, and its
+    # frontmatter applies each turn, until /clear or another /<skill>.
+    active_skill: str | None = None
     no_questions: str | None = None  # a skill marked `interactive: false` in use this turn: ask_user is hidden
     # Set by wiring: reloads agents if their files changed. Returns warnings, or None if nothing changed.
     reload_agents: "Callable[..., list[str] | None] | None" = None  # force=True: reload even if unchanged

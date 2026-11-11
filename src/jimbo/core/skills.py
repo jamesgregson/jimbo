@@ -23,6 +23,7 @@ class Skill:
     path: Path
     models: dict[str, str] = field(default_factory=dict)  # task -> model alias, applied while the skill is in use
     interactive: bool = True  # false: no questions to the user (ask_user) while the skill is in use
+    request_limit: int | None = None  # a turn started with /<skill> may use this many requests, if more than the setting
 
 
 def _read(path: Path) -> str | None:
@@ -66,8 +67,9 @@ def load_skills(dirs: list[Path]) -> dict[str, Skill]:
             raw = meta.get("models")
             models = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
             interactive = meta.get("interactive", True) not in (False, "false")
+            limit = meta.get("request_limit")
             skills[name] = Skill(name, " ".join(str(meta.get("description") or "").split()), body, path, models,
-                                 interactive)
+                                 interactive, limit if isinstance(limit, int) and limit > 0 else None)
     return skills
 
 
@@ -100,6 +102,7 @@ def use_skill(deps, skill: Skill) -> str | None:
     if not skill.models or deps.models is None:
         return None
     try:
+        deps.models.pop_scope(f"skill {skill.name}")  # applied again each turn while the skill is active
         deps.models.push_scope(f"skill {skill.name}", skill.models)
     except ValueError as e:
         return str(e)

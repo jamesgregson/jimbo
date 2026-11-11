@@ -332,3 +332,21 @@ async def test_model_command_accepts_aliases(tmp_path):
     await s.commands.dispatch(s, "/model")
     assert last_text(fe) == "model: ollama:small"
     assert s.deps.models.explain("jimbo-compaction").spec == "ollama:small"
+
+
+@pytest.mark.parametrize("level, sent", [("low", "low"), ("off", "none"), ("max", "max")])
+async def test_thinking_setting_reaches_the_request(tmp_path, level, sent):
+    """`thinking` is sent as the reasoning effort of the request. (pydantic-ai maps it per API.)"""
+    from pydantic_ai import Agent, models
+    from helpers import settings as make_settings
+    from jimbo.providers.registry import build_model_from_spec
+    model = build_model_from_spec("ollama:qwen3:4b", make_settings(tmp_path, thinking=level))
+    sent_kwargs = {}
+
+    async def capture(**kwargs):
+        sent_kwargs.update(kwargs)
+        raise RuntimeError("stop after capturing the request")
+    model.client.chat.completions.create = capture
+    with models.override_allow_model_requests(True), pytest.raises(RuntimeError, match="stop after capturing"):
+        await Agent(model).run("hi")
+    assert sent_kwargs.get("reasoning_effort") == sent

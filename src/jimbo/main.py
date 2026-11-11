@@ -32,6 +32,8 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("--yolo", action="store_true", help="auto-approve everything")
     mode.add_argument("--auto", action="store_true",
                       help="auto-approve file edits, and shell commands the assessment model rates medium risk or lower")
+    ap.add_argument("--thinking", choices=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+                    help="how hard the model thinks before it answers, in place of the thinking setting")
     ap.add_argument("--resume", nargs="?", const="", metavar="ID",
                     help="continue a saved session (the most recent if no id/prefix is given)")
     ap.add_argument(ACCEPT_FLAG, action="store_true",
@@ -45,7 +47,8 @@ def parser() -> argparse.ArgumentParser:
 
 def overrides(args: argparse.Namespace) -> dict:
     """Settings given on the command line; they win over both config files."""
-    return {k: v for k, v in {"workspace": args.workspace, "ui": args.ui, "sandbox": args.sandbox}.items() if v}
+    return {k: v for k, v in {"workspace": args.workspace, "ui": args.ui, "sandbox": args.sandbox,
+                              "thinking": args.thinking}.items() if v}
 
 
 def build_cli(argv: list[str]) -> str:

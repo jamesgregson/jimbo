@@ -15,6 +15,8 @@ class OpenAICompatProvider:
         ms: OpenAIChatModelSettings = {"timeout": settings.request_timeout}
         if settings.temperature is not None:
             ms["temperature"] = settings.temperature
+        if settings.thinking is not None:  # sent as reasoning_effort; "none" is off
+            ms["openai_reasoning_effort"] = "none" if settings.thinking == "off" else settings.thinking
         if cfg.send_num_ctx and settings.num_ctx is not None:
             ms["extra_body"] = {"options": {"num_ctx": settings.num_ctx}}
         return OpenAIChatModel(model_name, provider=provider, settings=ms)

@@ -204,7 +204,8 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
     async def spawn_agent(spec: AgentSpec, task: str, usage: RunUsage, *, model: str | None = None,
                           reserve: int = 0, share: int = 1) -> AgentResult:
         parent = holder["s"]
-        limit = (settings.request_limit - usage.requests - reserve) // max(share, 1)
+        # a share of what the turn has left (a skill may have raised its limit), and never more than the setting
+        limit = min((parent.request_limit - usage.requests - reserve) // max(share, 1), settings.request_limit)
         if limit < 1:
             return AgentResult(False, f"agent {spec.name} didn't start: this turn has too few requests left")
         choice, warning = router.for_agent(spec.name, model or spec.model)
@@ -229,6 +230,7 @@ def build_session(settings: Settings, frontend: Frontend, extra_sinks: list[Even
                                              or settings.context_window or settings.num_ctx),
                              vision=settings.vision, compact_threshold=settings.compact_threshold,
                              compact_keep=settings.compact_keep, nested=True)
+        child.steers_from = parent  # what the user types while the agent works reaches the agent
         try:
             report = await child.send(task)
         finally:

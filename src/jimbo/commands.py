@@ -45,6 +45,7 @@ def register_builtins(registry: CommandRegistry, settings: Settings, modes: Appr
         session.context_tokens = 0
         session.turn_usage = RunUsage()
         session.deps.todos = []
+        session.deps.active_skill = None
         session.new_session()  # the cleared conversation stays resumable
         await session._emit_todos()
         await session.emit_context()
@@ -399,9 +400,11 @@ def register_skill_commands(registry: CommandRegistry, skills: dict[str, Skill])
             continue
 
         def prompt(session: AgentSession, args: str, skill: Skill = skill) -> str:
+            # The skill's instructions go in the model's instructions (see project_context), not in this
+            # message: a model re-reads its messages each step, and takes a skill pasted there as a new request.
+            session.deps.active_skill = skill.name
             use_skill(session.deps, skill)  # a bad alias just leaves the user's models in place
-            text = f"Use the skill '{skill.name}'. Its instructions:\n\n{skill.body}"
-            return f"{text}\n\n{args}" if args else text
+            return args or f"Run the {skill.name} skill."
 
         async def run(session: AgentSession, args: str, prompt=prompt) -> None:
             await session.send(prompt(session, args))

@@ -42,6 +42,7 @@ before the `[tables]`.
 # ---- Model ------------------------------------------------------------------------------------
 ui = "auto"                   # auto (tui in a terminal, otherwise plain) | tui | plain | web | json | stdio
 temperature = 0.2             # sample value; unset by default (the provider's default is used)
+thinking = "medium"           # off | minimal | low | medium | high | xhigh | max; unset: the model's default
 request_timeout = 600         # seconds to wait for a model response
 request_limit = 50            # max model requests per turn; the model is told to wrap up for the last 3
 tool_retries = 3              # how often the model may retry a failed or denied tool call
@@ -692,7 +693,8 @@ command = ["/opt/node/bin/pyright-langserver", "--stdio"]
   starting with `--auto` or `--yolo`. If you don't answer yes, the mode stays as it was, or the session starts in
   the default mode. `json` and one-shot runs don't ask.
 - **Steering (`tui`, `web`):** type while the agent works and your message reaches the model at its next
-  step. A skill (`/name [args]`) steers the same way: its instructions reach the model at its next step. Other
+  step. While an agent is running, the agent gets the message at its next step, and the main model sees it too
+  when the agent returns. A skill (`/name [args]`) steers the main model the same way. Other
   slash commands are refused mid-run, except `/approve`, which changes the approval mode for the calls
   that follow. A call already waiting for your answer keeps the mode it started with.
 - **Questions (`tui`, `plain`, `web`):** the model can ask you yes/no and multiple choice questions, several at a
@@ -811,6 +813,13 @@ skills apply from your next message. When jimbo writes or edits a skill itself, 
 skills while you work on jimbo, it calls `reload_skills` to use the change in the same run. To reload
 yourself, type `/reload`, or ask jimbo to reload skills.
 
+`/name [args]` starts a skill yourself. Its instructions are added to the model's instructions, and your message
+is only the text after the name. The skill stays active on later turns, and after `/resume`, until `/clear` or
+another `/name`. One skill is active at a time.
+
+Add `request_limit: 300` to a skill's frontmatter for a long workflow. While the skill is active, a turn may use
+that many requests if it is more than the `request_limit` setting. An agent still gets at most the setting.
+
 Add `interactive: false` to a skill's frontmatter for a skill that must run without stopping for answers. For the
 rest of that turn the model can't ask you questions, and a skill it loads is told to decide instead of asking.
 Approval prompts still appear. Agents never ask questions, and skills they load follow the same rule.
@@ -826,6 +835,9 @@ Jimbo ships these in the package. They work in every project, with no setup:
 | Agent | `critic` | finds requirements the project doesn't need yet. It doesn't edit files |
 | Command | `/review [change]` | runs `reviewer` on uncommitted changes, or on the change you name |
 | Command | `/init` | writes or updates `AGENTS.md`, which applies from the next session |
+| Agent | `tdd-spec`, `tdd-critique`, `tdd-tests`, `tdd-code`, `tdd-review` | the steps of the `tdd-feature` skill: write and critique the specification, then write tests, code and a review for one step |
+| Skill | `tdd-feature` | build a feature test-first: requirements, a specification in steps, then tests, code and review for each step. State is kept in `.tdd/`, so `/tdd-feature <slug>` continues later |
+| Skill | `coding-standards` | design, code, error-handling and test standards, for projects that have none |
 | Skill | `debug` | reproduce a problem, find the cause, fix it, add a test |
 | Skill | `write-tests` | write tests in the style the project already uses |
 | Skill | `dont-overthink-it` | run code instead of reasoning in circles; for vague tasks, write code, run it, stop at a time box and report |
@@ -941,7 +953,7 @@ commands. `approval_deny = ["run_agent:reviewer"]` stops the main model starting
 whose `tools` are all read-only (`read_file`, `list_dir`, `glob`, `grep`, `load_skill`, `todo_write`, `web_fetch`,
 `shell_output` and the `lsp_*` tools other than `lsp_rename`) run at the same time, and so do all agents in plan
 mode. Other agents run one at a time. Agents started in one response share the requests left in the turn
-equally. A second run of the same agent at the same time is named with a number, as in `explore-2`. An agent uses the turn's `request_limit`. When the
+equally. A second run of the same agent at the same time is named with a number, as in `explore-2`. An agent gets a share of the requests left in the turn, and at most the `request_limit` setting. When the
 main model starts one, 5 requests are kept for it to finish the turn, and it receives the first 20,000 characters of
 the report. Ctrl+C stops the agent and the current run. `/undo` reverts an agent's file edits with the rest of the turn.
 

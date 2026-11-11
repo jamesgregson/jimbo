@@ -252,10 +252,16 @@ def project_context(ctx: RunContext[Deps]) -> str:
     for name in deps.agent.skills if deps.agent else ():
         if skill := deps.skills.get(name):
             parts.append(f"# Skill {name}\nSkill directory: {skill.path.parent}\n\n{skill.body}")
-    if deps.skills and deps.can_load_skills:
+    active = deps.skills.get(deps.active_skill or "") if deps.agent is None else None
+    if active:  # in the instructions, not the conversation: it is never read as a new request or compacted away
+        parts.append(f"# Active skill: {active.name}\nThe user started this skill. Its instructions follow. "
+                     f"Follow them in every turn until the skill is finished.\n"
+                     f"Skill directory: {active.path.parent}\n\n{active.body}")
+    others = {n: s for n, s in deps.skills.items() if s is not active}
+    if others and deps.can_load_skills:
         parts.append("# Skills\nBefore you start a task, check this list. If a skill's description fits the "
                      "task, even partly, call load_skill(name) first and follow its instructions:\n"
-                     + format_skill_index(deps.skills))
+                     + format_skill_index(others))
     if deps.can_use_lsp:
         parts.append(lsp_prompt(deps))
     if index := format_agent_index(deps.agents):

@@ -323,8 +323,10 @@ def build_sandbox(settings: "Settings", workspace: Path, scratch: Path | None = 
         return None
     extra = [scratch] if scratch else []
     user = settings.user_dir.expanduser()
+    from ..config import BUNDLED_DIR  # the bundled skills (their references and scripts) can be outside the workspace
     skills = [user / "skills", user.parent / ".claude" / "skills", user.parent / ".agents" / "skills"]
-    readable = [workspace, *extra, *skills, *home_readable(), *settings.sandbox_readable]
+    bundled = [BUNDLED_DIR] if settings.bundled else []
+    readable = [workspace, *extra, *skills, *bundled, *home_readable(), *settings.sandbox_readable]
     return SeatbeltSandbox([*default_writable(workspace, settings.sandbox_system_temp), *extra,
                             *settings.sandbox_writable], settings.sandbox_network, readable=readable,
                            workspace=workspace, git_write=settings.git_write, protected=settings.protected(),

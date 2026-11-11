@@ -36,7 +36,11 @@ from .stats import OUTPUT_TOOLS, thinking_tokens
 from .deps import Deps
 from .events import Event, EventKind, EventSink
 from .scratch import remove_if_empty
+from .skills import use_skill
 from .store import REPLAY_KINDS, SessionStore
+
+
+STEER_PASSED_NOTE = "[The user sent the message above while an agent was running. The agent has already seen it.]"
 
 
 class AgentSession:
@@ -69,20 +73,38 @@ class AgentSession:
         self.last_output: str | None = None  # the latest shell result in full, for /output
         self._status_sent: dict | None = None
         self._steers: list[str | list[UserContent]] = []  # typed during a run, not yet seen by the model
+        # An agent's run: the session whose steers it also reads. The user types to the main session, which makes
+        # no request while an agent works, so the agent takes the message with its own next request.
+        self.steers_from: AgentSession | None = None
+        self._steers_read: list = []  # the parent's steers this agent has had
+        self._steers_passed: list = []  # steers an agent has had, still queued for this session's model
         self.context_tokens = 0  # size of the last model request + response
         self.total_usage = RunUsage()  # whole session; updated live during a run
         self.turn_usage = RunUsage()  # the current (or most recent) prompt
         self.prices: dict[str, float] | None = None  # the main model's listed prices, when the provider gives them
         self.spend = Spend()  # this session id, across resumes; saved with its history
         self.run_spend = Spend()  # this jimbo process, across /clear and /resume
-        self.request_limit = request_limit
-        self._limits = UsageLimits(request_limit=request_limit)
-        self.deps.request_limit = request_limit  # so the prompt can warn the model before it runs out
+        self._base_request_limit = request_limit  # the setting; an active skill can raise a turn's limit
+        self._set_request_limit(request_limit)
         self._seq = 0
         self._todos_sent: list = []
         self._instructions_sent: str | None = None  # logged again whenever they change, and in each new log
         self._task: asyncio.Task | None = None
         self._use_scratch()
+
+    def _set_request_limit(self, limit: int) -> None:
+        self.request_limit = limit
+        self._limits = UsageLimits(request_limit=limit)
+        self.deps.request_limit = limit  # so the prompt can warn the model before it runs out
+
+    def _apply_active_skill(self) -> None:
+        """Start a turn under the skill the user started with /<skill>: its frontmatter applies again, and the
+        turn may use the skill's `request_limit` if that is more than the setting."""
+        skill = None if self.nested else self.deps.skills.get(self.deps.active_skill or "")
+        if skill is None:
+            return
+        use_skill(self.deps, skill)
+        self._set_request_limit(max(self._base_request_limit, skill.request_limit or 0))
 
     async def emit(self, kind: EventKind, **data) -> None:
         if kind in ("run_finished", "command_output") and not data.get("ok", True):
@@ -133,7 +155,7 @@ class AgentSession:
             return
         try:
             self.store.save(self.session_id, self.history, [t.model_dump() for t in self.deps.todos],
-                            self.spend.to_dict())
+                            self.spend.to_dict(), self.deps.active_skill)
         except OSError:
             pass
 
@@ -174,6 +196,7 @@ class AgentSession:
         self._instructions_sent = None
         self.deps.todos = [TodoItem.model_validate(t) for t in saved.todos]
         self._todos_sent = list(self.deps.todos)
+        self.deps.active_skill = saved.skill
         self.context_tokens = 0
         self.turn_usage, self.total_usage = RunUsage(), RunUsage()
         self.spend = Spend.from_dict(saved.spend)
@@ -220,12 +243,34 @@ class AgentSession:
                             text=f"run did not finish; discarded {len(pending)} queued message(s)")
 
     async def _inject_steers(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        if self.steers_from is not None:
+            return await self._inject_parent_steers(self.steers_from, messages)
         if not self._steers or not messages or not isinstance(messages[-1], ModelRequest):
             return messages
         parts = []
         for content in self.take_steers():
             _, prompt = await self._compose(content, steer=True)
             parts.append(UserPromptPart(prompt))
+            if any(content is c for c in self._steers_passed):
+                parts.append(UserPromptPart(STEER_PASSED_NOTE))
+        self._steers_passed = []
+        last = messages[-1]
+        return [*messages[:-1], replace(last, parts=[*last.parts, *parts])]
+
+    async def _inject_parent_steers(self, parent: "AgentSession", messages: list[ModelMessage]) -> list[ModelMessage]:
+        """An agent's side of steering: add the messages the user typed since this agent's last request. They
+        stay queued in `parent`, whose model sees them too when the agent returns."""
+        new = [c for c in parent._steers if not any(c is seen for seen in self._steers_read)]
+        if not new or not messages or not isinstance(messages[-1], ModelRequest):
+            return messages
+        parts = []
+        for content in new:
+            self._steers_read.append(content)
+            parent._steers_passed.append(content)
+            text, prompt = await self._compose(content, steer=True)
+            parts.append(UserPromptPart(prompt))
+            name = self.deps.agent.name if self.deps.agent else "agent"
+            await parent.emit("command_output", command="steer", ok=True, text=f"passed to agent {name}: {text}")
         last = messages[-1]
         return [*messages[:-1], replace(last, parts=[*last.parts, *parts])]
 
@@ -327,11 +372,13 @@ class AgentSession:
                 await self.compact()
             except Exception as e:
                 await self.emit("error", type=type(e).__name__, message=f"auto-compaction failed: {e}")
+        self._apply_active_skill()
         self._task = asyncio.create_task(self._run(content))  # own task so cancel() can't hit the caller
         try:
             return await self._task
         finally:
             self._task = None
+            self._set_request_limit(self._base_request_limit)
             if self.deps.models:
                 self.deps.models.pop_scope()  # skill model choices last for one turn
             self.deps.no_questions = None  # so does a skill's `interactive: false`

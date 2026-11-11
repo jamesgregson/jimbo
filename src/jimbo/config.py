@@ -124,6 +124,9 @@ class Settings(BaseSettings):
     compact_keep: int = 6  # recent messages kept verbatim when compacting
     vision: bool = True  # False for text-only models: pasted images are dropped with a warning
     temperature: float | None = None
+    # How hard the model thinks before it answers, sent as the reasoning effort. Unset: the model's default.
+    # Whether a server honours it depends on the server and the model.
+    thinking: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     request_timeout: float = 600.0
 
     workspace: Path = Path.cwd()

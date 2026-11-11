@@ -300,8 +300,42 @@ async def test_a_skill_typed_mid_run_steers_it(tmp_path):
         return await real(*a, **k)
     s.deps.authorize = slow
     await asyncio.wait_for(run_frontend(s, fe), 5)
-    assert seen[-1][0] == "go" and seen[-1][1].startswith("Use the skill 'quiet'")
-    assert seen[-1][1].endswith("Work alone.\n\nfocus on tests")
+    assert seen[-1][0] == "go"
+    assert seen[-1][1] == "focus on tests" and s.deps.active_skill == "quiet"
     assert quiet_during_run == ["quiet"]  # the skill's frontmatter applies at once
     assert len([e for e in fe.events if e.kind == "run_finished"]) == 1  # one turn: a steer, not a new run
     assert not [e for e in fe.events if e.kind == "command_output" and not e.data["ok"]]
+
+
+async def test_a_steer_typed_while_an_agent_runs_reaches_the_agent(tmp_path):
+    """The main model makes no request while an agent works, so the agent takes the message with its own next
+    request. The main model sees it too when the agent returns, with a note that the agent has had it."""
+    from jimbo.core.session import STEER_PASSED_NOTE
+    main_seen, agent_seen, ref = [], [], {}
+
+    async def main(messages, info):
+        main_seen.append(user_texts(messages))
+        if isinstance(messages[-1].parts[0], ToolReturnPart):
+            yield "done"
+        else:
+            yield {0: DeltaToolCall(name="run_agent", json_args='{"agent": "general", "task": "look around"}')}
+
+    async def agent(messages, info):
+        agent_seen.append(user_texts(messages))
+        if len(agent_seen) == 1:
+            ref["s"].steer("dispute the test")  # typed while the agent is mid-run
+            yield {0: DeltaToolCall(name="list_dir", json_args='{"path": "."}')}
+        else:
+            yield "report"
+
+    built = {"t:main": FunctionModel(stream_function=main), "t:fast": FunctionModel(stream_function=agent)}
+    fe = ScriptedFrontend()
+    s = ref["s"] = build_session(settings(tmp_path, model_aliases={"main": "t:main", "fast": "t:fast"},
+                                          models={"general": "fast"}),
+                                 fe, model_builder=lambda spec, _: built[spec])
+    assert await s.send("go") == "done"
+    assert agent_seen == [["look around"], ["look around", "dispute the test"]]  # between the agent's tool calls
+    assert main_seen[-1] == ["go", "dispute the test", STEER_PASSED_NOTE]
+    passed = [e.data["text"] for e in fe.events if e.kind == "command_output" and e.data.get("command") == "steer"]
+    assert passed == ["passed to agent general: dispute the test"]
+    assert s.take_steers() == []
