@@ -4,13 +4,22 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+def _require_options(schema: dict) -> None:
+    # Required in the schema the model sees, so it can't leave the field out (some providers decode against
+    # it), while code that builds a yes_no Question can still omit it.
+    schema["required"] = [*schema.get("required", []), "options"]
 
 
 class Question(BaseModel):
+    model_config = ConfigDict(json_schema_extra=_require_options)
+
     question: str
     kind: Literal["yes_no", "choice"] = "choice"
-    options: list[str] = Field(default_factory=list, description="for kind 'choice': 2 or more options")
+    options: list[str] = Field(default_factory=list,
+                               description="for kind 'choice': 2 or more options; for kind 'yes_no': []")
     multiple: bool = Field(False, description="for kind 'choice': the user may pick any number of options")
 
 
@@ -29,8 +38,11 @@ def check_questions(questions: list[Question]) -> str | None:
     for i, q in enumerate(questions, 1):
         if not q.question.strip():
             return f"question {i} is empty"
+        if q.kind == "choice" and not any(o.strip() for o in q.options):
+            return (f"question {i} has no `options`. List 2 or more in `options`, or, if it has no short list "
+                    "of answers, ask it in a message instead of with ask_user")
         if q.kind == "choice" and len({o.strip().lower() for o in q.options if o.strip()}) < 2:
-            return f"question {i}: a choice needs 2 or more different options"
+            return f"question {i}: a choice needs 2 or more different options in `options`"
         if q.kind == "yes_no" and (q.options or q.multiple):
             return f"question {i}: a yes_no question takes no options"
     return None

@@ -49,6 +49,13 @@ def test_a_reply_is_a_number_an_option_or_yes_no():
 def test_questions_that_cant_be_asked():
     assert check_questions([]) and check_questions([Question(question=" ", kind="yes_no")])
     assert "2 or more" in check_questions([Question(question="q", options=["a", "A"])])
+    assert "has no `options`" in check_questions([Question(question="q", multiple=True)])
+
+
+def test_the_model_must_send_options():
+    # Some providers drop optional fields; the schema the model sees requires `options`, even for yes_no ([]).
+    assert Question.model_json_schema()["required"] == ["question", "options"]
+    assert Question(question="q", kind="yes_no").options == []
     assert "no options" in check_questions([Question(question="q", kind="yes_no", options=["a", "b"])])
     assert check_questions(QUESTIONS) is None
 
